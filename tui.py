@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-PyPlayer - 基于 curses/ncurses 的终端用户界面
-支持 MP3, WAV, AVI, MP4, MKV 等常见音视频格式
+PyPlayer - Terminal user interface based on curses/ncurses
+Supports common audio/video formats: MP3, WAV, AVI, MP4, MKV, etc.
 """
 
 import curses
@@ -16,7 +16,7 @@ import i18n
 
 @dataclass
 class Track:
-    """播放列表项"""
+    """Playlist item"""
     path: str
     title: str
     duration: float = 0.0
@@ -26,7 +26,7 @@ class Track:
 
 
 class TerminalUI:
-    """基于 curses 的终端用户界面"""
+    """Terminal user interface based on curses"""
 
     COLORS = {
         'header': None,
@@ -61,15 +61,15 @@ class TerminalUI:
         self.COLORS['footer'] = curses.color_pair(5)
 
     def set_player(self, player):
-        """设置播放器实例"""
+        """Set player instance"""
         self.player = player
 
     def refresh_status(self, msg: str):
-        """更新状态信息"""
+        """Update status message"""
         self.status_message = msg
 
     def draw_header(self):
-        """绘制头部"""
+        """Draw header"""
         height, width = self.stdscr.getmaxyx()
 
         try:
@@ -95,7 +95,7 @@ class TerminalUI:
             pass
 
     def draw_playlist(self):
-        """绘制播放列表（支持层级展示）"""
+        """Draw playlist (supports hierarchical display)"""
         height, width = self.stdscr.getmaxyx()
         start_row = 3
 
@@ -147,7 +147,7 @@ class TerminalUI:
         self._playlist_display_items = display_items
 
     def draw_footer(self):
-        """绘制底部"""
+        """Draw footer"""
         height, width = self.stdscr.getmaxyx()
         row = height - 2
 
@@ -167,7 +167,7 @@ class TerminalUI:
             pass
 
     def draw(self):
-        """绘制整个界面"""
+        """Draw entire interface"""
         self.stdscr.clear()
         self.draw_header()
         self.draw_playlist()
@@ -175,11 +175,11 @@ class TerminalUI:
         self.stdscr.refresh()
 
     def run(self):
-        """主循环"""
+        """Main loop"""
         while self.running:
             self.draw()
 
-            # 读取按键（带超时）
+            # Read key input (with timeout)
             try:
                 key = self.stdscr.getch(100)  # 100ms timeout for status updates
             except curses.error:
@@ -210,7 +210,7 @@ class TerminalUI:
                 self.selected_index = min(len(self.playlist) - 1, self.selected_index + 1)
 
     def _handle_play_pause(self):
-        """处理播放/暂停"""
+        """Handle play/pause"""
         if not self.player:
             return
 
@@ -230,7 +230,7 @@ class TerminalUI:
                     self.refresh_status("Playing")
 
     def _handle_stop(self):
-        """处理停止"""
+        """Handle stop"""
         if not self.player:
             return
 
@@ -238,7 +238,7 @@ class TerminalUI:
         self.refresh_status("Playback stopped")
 
     def _handle_next(self):
-        """处理下一首"""
+        """Handle next track"""
         if not self.playlist or len(self.playlist) < 2:
             return
 
@@ -249,7 +249,7 @@ class TerminalUI:
             self.refresh_status(f"Now playing: {track.title}")
 
     def _handle_prev(self):
-        """处理上一首"""
+        """Handle previous track"""
         if not self.playlist or len(self.playlist) < 2:
             return
 
@@ -260,7 +260,7 @@ class TerminalUI:
             self.refresh_status(f"Now playing: {track.title}")
 
     def _handle_open(self):
-        """处理打开文件"""
+        """Handle open file"""
         try:
             filename = curses.getstr(5, 2, 80)
             filepath = filename.decode('utf-8').strip()
@@ -290,7 +290,7 @@ class TerminalUI:
             else:
                 self.refresh_status(f"Failed to play: {path.name}")
 
-        except Exception as e:
+        except (OSError, IOError, RuntimeError) as e:
             self.refresh_status(f"Error opening file: {e}")
 
     def _handle_double_click(self):
@@ -318,7 +318,7 @@ class TerminalUI:
                             self.refresh_status(f"Now playing from folder: {folder_name}")
 
     def _show_library_manager_menu(self):
-        """显示媒体库管理菜单"""
+        """Show library management menu"""
         from config import SettingsManager
 
         # Initialize settings manager if not already done
@@ -327,7 +327,7 @@ class TerminalUI:
                 self.settings_manager = SettingsManager()
             else:
                 self.settings_manager.load()  # Reload to get latest changes
-        except Exception as e:
+        except (ImportError, AttributeError, OSError, IOError) as e:
             self.refresh_status(f"Failed to load settings: {e}")
             time.sleep(1)
             return
@@ -415,7 +415,7 @@ class TerminalUI:
         return None
 
     def _menu_add_library(self, menu_win, lib_count):
-        """显示路径输入框添加媒体库"""
+        """Show path input dialog to add library"""
         input_h, input_w = 6, 50
         start_y, start_x = (menu_win.getmaxyx()[0] - input_h) // 2 + 2, \
                            (menu_win.getmaxyx()[1] - input_w) // 2
@@ -457,18 +457,18 @@ class TerminalUI:
                 else:
                     self.refresh_status("Failed to add library")
                     time.sleep(1)
-            except Exception as e:
+            except (OSError, IOError, AttributeError) as e:
                 self.refresh_status(f"Error adding library: {e}")
                 time.sleep(1)
 
-        except Exception as e:
+        except (ValueError, TypeError, AttributeError) as e:
             curses.noecho()
             curses.curs_set(0)
             self.refresh_status(f"Input error: {e}")
             time.sleep(0.5)
 
     def _menu_scan_libraries(self, menu_win):
-        """显示扫描结果"""
+        """Show scan results"""
         from library_manager import LibraryManager
 
         try:
@@ -503,13 +503,13 @@ class TerminalUI:
 
             return total
 
-        except Exception as e:
+        except (OSError, IOError, PermissionError) as e:
             self.refresh_status(f"Scan error: {e}")
             time.sleep(1)
             return 0
 
     def show_help(self):
-        """显示帮助信息"""
+        """Show help information"""
         height, width = self.stdscr.getmaxyx()
         help_msg = [
             "=== PyPlayer Controls ===",
@@ -554,7 +554,7 @@ class TerminalUI:
 
 
 def load_test_file(ui):
-    """加载测试文件"""
+    """Load test file"""
     test_dir = Path(__file__).parent / "test"
     if not test_dir.exists():
         ui.refresh_status("Test directory not found: ./test")
@@ -568,8 +568,8 @@ def load_test_file(ui):
 
 
 def main(stdscr):
-    """主函数"""
-    # 设置 noecho mode
+    """Main function"""
+    # Set noecho mode
     curses.noecho()
     # Enable keypad
     stdscr.keypad(True)
@@ -603,7 +603,7 @@ def main(stdscr):
 
 
 def scan_directory(ui, location):
-    """扫描媒体文件"""
+    """Scan media files"""
     if ui.player is None:
         import player as pm
         ui.player = pm.create_manager()

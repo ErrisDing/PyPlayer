@@ -43,15 +43,25 @@ def detect_locale() -> str:
     # Check environment first
     lang = os.environ.get('LANG', '') or os.environ.get('LC_ALL', '')
 
-    if 'zh' in lang.lower():
+    if 'Chinese (Simplified)_China' in lang.lower():
         return 'zh_CN'
 
     # Fall back to OS default locale
     try:
-        detected = locale.getdefaultlocale()[0]  # Returns (lang, encoding)
-        if detected and 'zh' in detected.lower():
+        # Prefer getlocale() (recommended for Python 3.11+)
+        detected = locale.getlocale()[0]
+
+        # If getlocale returns None, try old API for backward compatibility
+        if detected is None:
+            try:
+                detected = locale.getdefaultlocale()[0]
+            except AttributeError:
+                # getdefaultlocale removed in Python 3.11+
+                pass
+
+        if detected and 'Chinese (Simplified)_China' == detected:
             return 'zh_CN'
-    except Exception:
+    except (locale.Error, AttributeError, ValueError):
         pass
 
     return 'en_US'
@@ -109,7 +119,7 @@ def load_properties(filename: str) -> dict:
                 if '=' in line:
                     key, value = line.split('=', 1)
                     props[key.strip()] = value.strip()
-    except Exception as e:
+    except (OSError, IOError, UnicodeDecodeError, ValueError) as e:
         print(f"Error loading properties file {filepath}: {e}")
 
     _properties_cache[cache_key] = props
@@ -146,7 +156,9 @@ def get(keyword: str, **kwargs) -> str:
     value = props.get(keyword, None)
 
     if value is None:
-        return default_value or f"[MISSING: {keyword}]"
+        if default_value is not None:
+            return default_value
+        return f"[MISSING: {keyword}]"
 
     # Replace {{key}} style placeholders with provided values
     for key, val in kwargs.items():
@@ -178,17 +190,13 @@ def get_category(category: str, keyword: str, **kwargs) -> str:
     # Separate default from placeholders (if provided as kwarg)
     default_value = kwargs.pop('default', None)
 
-    full_name = f"{category}/{keyword}"
-    cache_key = f"{_current_locale}/{full_name}"
 
-    if cache_key in _properties_cache:
-        value = _properties_cache[cache_key]
-    else:
-        props = load_properties(category)
-        value = props.get(keyword, None)
-        if value is None:
-            return default_value or f"[MISSING: {keyword}]"
-        _properties_cache[cache_key] = value
+    props = load_properties(category)
+    value = props.get(keyword, None)
+    if value is None:
+        if default_value is not None:
+            return default_value
+        return f"[MISSING: {keyword}]"
 
     # Replace placeholders
     for key, val in kwargs.items():

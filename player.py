@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-音乐播放器核心模块
-支持格式：MP3, WAV, AVI, MP4, MKV 等常见音视频格式
+Music player core module
+Supported formats: MP3, WAV, AVI, MP4, MKV and other common audio/video formats
 """
-
+import cv2
 import pygame
 import sys
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import re
 import i18n
 
 
 @dataclass
 class Track:
-    """播放列表项"""
+    """Playlist item"""
     path: str
     title: str
 
 
 class AudioPlayer:
-    """音频播放器（MP3, WAV 等）"""
+    """Audio player (MP3, WAV, etc.)"""
 
     def __init__(self):
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
@@ -31,7 +31,7 @@ class AudioPlayer:
         self.queue: List[Track] = []
 
     def play_file(self, filepath: str) -> bool:
-        """播放单个文件"""
+        """Play single file"""
         try:
             pygame.mixer.music.load(filepath)
             if pygame.mixer.music.get_busy():
@@ -41,16 +41,16 @@ class AudioPlayer:
             self.is_playing = True
             self.is_paused = False
             return True
-        except Exception as e:
+        except (pygame.error, OSError, IOError) as e:
             print(i18n.console('console.play_failed', error=str(e)))
             return False
 
     def play_queue(self, files: List[str]) -> bool:
-        """从队列播放"""
+        """Play from queue"""
         try:
             if not files:
                 return False
-            pygame.mixer.music.queue(files[-1])  # 先加载最后一个
+            pygame.mixer.music.queue(files[-1])  # Load the last one first
             pygame.mixer.music.load(files[0])
             if pygame.mixer.music.get_busy():
                 pygame.mixer.music.stop()
@@ -60,61 +60,61 @@ class AudioPlayer:
             self.is_playing = True
             self.is_paused = False
             return True
-        except Exception as e:
+        except (pygame.error, OSError, IOError) as e:
             print(i18n.console('console.queue_failed', error=str(e)))
             return False
 
-    def pause(self):
-        """暂停播放"""
+    def pause(self) -> None:
+        """Pause playback"""
         if pygame.mixer.music.get_busy():
             pygame.mixer.music.pause()
             self.is_paused = True
 
-    def resume(self):
-        """恢复播放"""
+    def resume(self) -> None:
+        """Resume playback"""
         if pygame.mixer.music.get_busy():
             pygame.mixer.music.unpause()
             self.is_paused = False
 
-    def stop(self):
-        """停止播放"""
+    def stop(self) -> None:
+        """Stop playback"""
         pygame.mixer.music.stop()
         self.is_playing = False
         self.is_paused = False
         self.current_track = None
 
-    def set_volume(self, level: float):
-        """设置音量，level 范围 0.0-1.0"""
+    def set_volume(self, level: float) -> None:
+        """Set volume, level range 0.0-1.0"""
         pygame.mixer.music.set_volume(max(0.0, min(1.0, level)))
 
     def get_volume(self) -> float:
-        """获取当前音量"""
+        """Get current volume"""
         return pygame.mixer.music.get_volume()
 
     def is_active(self) -> bool:
-        """是否正在播放"""
+        """Check if playing"""
         return pygame.mixer.music.get_busy() > 0 or (self.is_playing and not pygame.mixer.music.get_busy())
 
 
 class VideoPlayer:
-    """视频播放器（AVI, MP4, MKV 等）"""
+    """Video player (AVI, MP4, MKV, etc.)"""
 
     def __init__(self):
         self.is_playing = False
         self.current_file: Optional[str] = None
         import cv2
         self.cap = None
-        self.frame_delay = 0.033  # 约 30fps
+        self.frame_delay = 0.033  # Approximately 30fps
 
     def play_video(self, filepath: str) -> bool:
-        """播放视频文件"""
+        """Play video file"""
         try:
             if not self._close():
-                print("关闭失败，强制重新打开")
+                print("Failed to close, forcing reopen")
             self.cap = cv2.VideoCapture(filepath)
             if not self.cap.isOpened():
                 return False
-            # 设置输出窗口大小
+            # Set output window size
             width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             cv2.namedWindow('PyPlayer Video', cv2.WINDOW_NORMAL)
@@ -122,32 +122,32 @@ class VideoPlayer:
             self.current_file = filepath
             self.is_playing = True
             return True
-        except Exception as e:
+        except (cv2.error, OSError, IOError) as e:
             print(i18n.console('console.video_play_failed', error=str(e)))
             import traceback
             traceback.print_exc()
             return False
 
-    def _close(self):
-        """关闭当前视频"""
+    def _close(self) -> None:
+        """Close current video"""
         if self.cap is not None and self.cap.isOpened():
             try:
                 self.cap.release()
-            except:
+            except (cv2.error, AttributeError):
                 pass
             self.cap = None
         try:
             cv2.destroyWindow('PyPlayer Video')
-        except:
+        except cv2.error:
             pass
 
     def render_frame(self) -> bool:
-        """渲染一帧"""
+        """Render a frame"""
         if not self.is_playing or self.cap is None:
             return False
         ret, frame = self.cap.read()
         if not ret:
-            self.stop()  # 视频播完
+            self.stop()  # Video finished playing
             return False
         cv2.imshow('PyPlayer Video', frame)
         key = cv2.waitKey(1) & 0xFF
@@ -159,14 +159,14 @@ class VideoPlayer:
         time.sleep(self.frame_delay)
         return True
 
-    def stop(self):
-        """停止播放"""
+    def stop(self) -> None:
+        """Stop playback"""
         self._close()
         self.is_playing = False
 
 
 class PlayerManager:
-    """播放器管理器，自动选择音频或视频模式"""
+    """Player manager, automatically selects audio or video mode"""
 
     SUPPORTED_AUDIO = {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac'}
     SUPPORTED_VIDEO = {'.avi', '.mp4', '.mkv', '.mov', '.wmv'}
@@ -177,14 +177,14 @@ class PlayerManager:
         self._is_video_playing = False
 
     def get_supported_formats(self) -> dict:
-        """获取支持的格式"""
+        """Get supported formats"""
         return {
             "音频": list(sorted(self.SUPPORTED_AUDIO)),
             "视频": list(sorted(self.SUPPORTED_VIDEO))
         }
 
     def _check_file_type(self, filepath: str) -> Optional[str]:
-        """判断文件类型：audio 或 video"""
+        """Determine file type: audio or video"""
         ext = Path(filepath).suffix.lower()
         if ext in self.SUPPORTED_AUDIO:
             return 'audio'
@@ -194,8 +194,8 @@ class PlayerManager:
             return None
 
     def play(self, filepath: str) -> bool:
-        """播放文件（自动选择模式）"""
-        # 先停止之前可能正在播放的
+        """Play file (auto-select mode)"""
+        # First stop any previously playing media
         if self._is_video_playing and self.video_player:
             self.video_player.stop()
 
@@ -209,10 +209,10 @@ class PlayerManager:
             pygame.mixer.quit()
             import cv2
             cv2.destroyAllWindows()
-        except:
+        except (pygame.error, cv2.error):
             pass
 
-        # 重新初始化
+        # Re-initialize
         self.audio_player = AudioPlayer()
         self.video_player = VideoPlayer()
         self._is_video_playing = False
@@ -227,14 +227,14 @@ class PlayerManager:
         return result
 
     def play_playlist(self, files: List[str]) -> bool:
-        """播放列表"""
+        """Play playlist"""
         if not files:
             return False
 
         audio_files = [f for f in files if self._check_file_type(f) == 'audio']
         video_files = [f for f in files if self._check_file_type(f) == 'video']
 
-        # 先处理音频列表
+        # Process audio list first
         if audio_files:
             import pygame.mixer
             pygame.mixer.quit()
@@ -253,12 +253,12 @@ class PlayerManager:
 
         return len(audio_files) > 0 or len(video_files) > 0
 
-    def get_status(self) -> dict:
-        """获取当前播放状态"""
+    def get_status(self) -> Dict[str, Any]:
+        """Get current playback status"""
         import pygame.mixer
         try:
             pygame.mixer.init()
-        except:
+        except pygame.error:
             pass
         return {
             "audio_playing": self.audio_player.is_active(),
@@ -267,66 +267,66 @@ class PlayerManager:
             "paused": self.audio_player.is_paused
         }
 
-    def get_playlist(self) -> list:
-        """获取当前播放列表（仅音频）"""
+    def get_playlist(self) -> List[Track]:
+        """Get current playlist (audio only)"""
         return self.audio_player.queue if hasattr(self.audio_player, 'queue') else []
 
-    def pause(self):
-        """暂停播放"""
+    def pause(self) -> None:
+        """Pause playback"""
         import pygame.mixer
         try:
             pygame.mixer.init()
-        except:
+        except pygame.error:
             pass
         if not self._is_video_playing:
             self.audio_player.pause()
         else:
             import cv2
-            # 视频暂停会显示当前帧，不实际暂停解码
+            # Video pause shows current frame, doesn't actually pause decoding
 
-    def resume(self):
-        """恢复播放"""
+    def resume(self) -> None:
+        """Resume playback"""
         import pygame.mixer
         try:
             pygame.mixer.init()
-        except:
+        except pygame.error:
             pass
         if not self._is_video_playing:
             self.audio_player.resume()
         else:
-            # 视频继续渲染帧
+            # Video continues rendering frames
             if self.video_player and self.video_player.render_frame():
                 import time
                 while True:
                     import cv2
                     key = cv2.waitKey(1) & 0xFF
-                    if key == ord('r'):  # r 恢复
+                    if key == ord('r'):  # r resume
                         break
                     elif key == ord('q'):
                         return
 
-    def stop(self):
-        """停止播放"""
+    def stop(self) -> None:
+        """Stop playback"""
         import pygame.mixer
         try:
             pygame.mixer.init()
-        except:
+        except pygame.error:
             pass
         self.audio_player.stop()
         if self._is_video_playing and self.video_player:
             self.video_player.stop()
         self._is_video_playing = False
 
-    def toggle_play_pause(self):
-        """切换播放/暂停状态"""
+    def toggle_play_pause(self) -> bool:
+        """Toggle play/pause state"""
         import pygame.mixer
         try:
             pygame.mixer.init()
-        except:
+        except pygame.error:
             pass
 
         if self._is_video_playing and self.video_player:
-            # 视频：不能简单暂停，显示当前帧
+            # Video: cannot simply pause, shows current frame
             return False
 
         status = self.audio_player.get_status()
@@ -340,38 +340,38 @@ class PlayerManager:
             self.pause()
             return True
 
-    def next_track(self):
-        """切换到下一首"""
-        # 简单实现：重新播放当前文件（实际项目中可以使用队列）
+    def next_track(self) -> None:
+        """Switch to next track"""
+        # Simple implementation: replay current file (actual projects could use queue)
         pass
 
-    def set_volume(self, level: float):
-        """设置音量，level 范围 0.0-1.0"""
+    def set_volume(self, level: float) -> None:
+        """Set volume, level range 0.0-1.0"""
         self.audio_player.set_volume(level)
 
 
-def create_manager():
-    """创建播放器管理器单例"""
+def create_manager() -> PlayerManager:
+    """Create player manager singleton"""
     import pygame
     import cv2
     # Initialize pygame mixer first to avoid later issues
     try:
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
-    except Exception as e:
+    except pygame.error as e:
         print(i18n.console('console.init_warning_audio', error=str(e)))
 
     # Setup OpenCV display backend (to avoid conflicts with Pygame)
     try:
         cv2.namedWindow('PyPlayer Video', cv2.WINDOW_NORMAL)
         cv2.destroyWindow('PyPlayer Video')
-    except Exception as e:
+    except (cv2.error, RuntimeError) as e:
         print(i18n.console('console.init_warning_video', error=str(e)))
 
     return PlayerManager()
 
 
-def main():
-    """简单测试"""
+def main() -> int:
+    """Simple test"""
     print(i18n.get('console.test_title'))
     player = create_manager()
 
@@ -407,8 +407,8 @@ def main():
         print(f"{i18n.console('console.supported_formats_video', formats=video_fmts)}\n")
 
 
-def launch_tui():
-    """启动终端 UI 模式"""
+def launch_tui() -> None:
+    """Launch terminal UI mode"""
     try:
         from tui import main as tui_main
         import curses

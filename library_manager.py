@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-PyPlayer 媒体库管理模块
-负责扫描目录获取媒体文件列表，提供缓存机制避免重复扫描
+PyPlayer Media Library Management Module
+Scans directories for media files and provides caching to avoid repeated scans
 """
 
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 
 
 @dataclass
 class MediaFile:
-    """表示单个媒体文件信息"""
+    """Represents information about a single media file"""
     path: str
     title: str
     file_type: str      # 'audio' or 'video'
-    extension: str      # 扩展名 (如 .mp3)
+    extension: str      # File extension (e.g., .mp3)
     size_bytes: int = 0
     modified_time: float = 0.0
 
@@ -30,45 +30,45 @@ class MediaFile:
             pass
 
 
-# 支持的媒体文件扩展名
+# Supported media file extensions
 SUPPORTED_AUDIO = {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac'}
 SUPPORTED_VIDEO = {'.avi', '.mp4', '.mkv', '.mov', '.wmv'}
 ALL_SUPPORTED = SUPPORTED_AUDIO | SUPPORTED_VIDEO
 
-# 需要跳过的目录
+# Directories to skip
 SKIP_DIRS = {'node_modules', '.git', '__pycache__', 'vendor', 'build', 'dist'}
 
 
 class LibraryScanner:
-    """递归扫描目录获取媒体文件"""
+    """Recursively scan directories to get media files"""
 
     def __init__(self):
         self._scanned_times: Dict[str, float] = {}  # path -> scan timestamp
 
     def _is_supported_file(self, filename: str) -> bool:
-        """判断是否为支持的媒体文件"""
+        """Check if file is a supported media file"""
         ext = Path(filename).suffix.lower()
         return ext in ALL_SUPPORTED
 
     def _is_skip_directory(self, directory: str) -> bool:
-        """判断是否为需要跳过的目录"""
+        """Check if directory should be skipped"""
         dir_name = os.path.basename(directory.lower())
         return dir_name in SKIP_DIRS or any(skip in directory.lower() for skip in ['node_modules', '.git'])
 
     def scan_directory(self, directory: str, force_refresh: bool = False) -> List[MediaFile]:
         """
-        扫描目录获取媒体文件列表
-        :param directory: 要扫描的目录路径
-        :param force_refresh: 是否强制重新扫描（忽略缓存）
-        :return: MediaFile 列表
+        Scan directory to get list of media files
+        :param directory: Directory path to scan
+        :param force_refresh: Whether to force rescan (ignore cache)
+        :return: List of MediaFile objects
         """
         directory = os.path.normpath(directory)
 
-        # 检查缓存（除非强制刷新）
+        # Check cache (unless forced refresh)
         cache_key = os.path.normpath(directory)
         if not force_refresh and cache_key in self._scanned_times:
             cached_time, files = self._get_cached_files(cache_key)
-            # 简单检查：如果目录修改时间未变化，返回缓存
+            # Simple check: if directory modification time unchanged, return cache
             try:
                 dir_stat = os.stat(directory)
                 if dir_stat.st_mtime <= cached_time:
@@ -82,7 +82,7 @@ class LibraryScanner:
             return files
 
         for root, dirs, filenames in os.walk(directory):
-            # 跳过指定目录（原地修改 dirs 以阻止 os.walk 进入子目录）
+            # Skip specified directories (modify dirs in-place to prevent os.walk from entering subdirectories)
             dirs[:] = [d for d in dirs if not self._is_skip_directory(os.path.join(root, d))]
 
             for filename in sorted(filenames):
@@ -100,12 +100,12 @@ class LibraryScanner:
                     )
                     files.append(media_file)
 
-        # 更新缓存
+        # Update cache
         self._scanned_times[cache_key] = datetime.now().timestamp()
         return files
 
-    def _get_cached_files(self, path: str):
-        """获取已缓存的文件列表"""
+    def _get_cached_files(self, path: str) -> Tuple[Optional[float], List[MediaFile]]:
+        """Get cached file list"""
         cache_dir = Path.home() / '.pyplayer' / 'cache'
         cache_file = cache_dir / f'{hash(path)}.cache'
 
@@ -115,14 +115,14 @@ class LibraryScanner:
         try:
             with open(cache_file, 'r', encoding='utf-8') as f:
                 content = f.read()
-                # 简单解析：第一行是时间戳，后续是文件路径
+                # Simple parsing: first line is timestamp, subsequent lines are file paths
                 lines = content.strip().split('\n')
                 if not lines:
                     return None, []
                 cached_time = float(lines[0])
                 file_paths = [l for l in lines[1:] if l]
 
-                # 重新构建 MediaFile 对象
+                # Reconstruct MediaFile objects
                 files = []
                 for p in file_paths:
                     try:
@@ -141,12 +141,12 @@ class LibraryScanner:
                         pass
 
                 return cached_time, files
-        except Exception:
+        except (OSError, IOError, ValueError, UnicodeDecodeError):
             return None, []
 
 
 class LibraryManager:
-    """统一管理多个媒体库的扫描和缓存"""
+    """Unified management of scanning and caching for multiple media libraries"""
 
     def __init__(self):
         self._scanner = LibraryScanner()
@@ -154,7 +154,7 @@ class LibraryManager:
 
     @classmethod
     def load_libraries(cls) -> 'LibraryManager':
-        """从配置加载所有媒体库并创建 Manager"""
+        """Load all media libraries from config and create Manager"""
         from config import SettingsManager
         manager = cls()
 
@@ -164,13 +164,13 @@ class LibraryManager:
             for lib in libs:
                 files = manager.refresh_library(lib.path)
                 print(f"Loaded {len(files)} files from '{lib.name or lib.path}'")
-        except Exception as e:
+        except (ImportError, AttributeError, OSError, IOError) as e:
             print(f"Failed to load libraries: {e}")
 
         return manager
 
     def refresh_library(self, path: str) -> List[MediaFile]:
-        """刷新单个库缓存"""
+        """Refresh single library cache"""
         if not Path(path).exists():
             return []
 
@@ -179,17 +179,17 @@ class LibraryManager:
         return list(files)
 
     def get_cached_files(self, path: str) -> List[MediaFile]:
-        """获取已缓存文件列表"""
+        """Get cached file list"""
         if path in self._cache:
             return list(self._cache[path])
 
-        # 尝试扫描（不使用缓存）
+        # Try scanning (without using cache)
         cached = self._scanner.scan_directory(path)
         self._cache[path] = cached
         return list(cached)
 
     def get_all_files(self) -> Dict[str, List[MediaFile]]:
-        """获取所有媒体库的文件"""
+        """Get files from all media libraries"""
         result = {}
         for path in self._cache.keys():
             if Path(path).exists():
@@ -197,12 +197,12 @@ class LibraryManager:
         return result
 
     def scan_all_libraries(self) -> Dict[str, List[MediaFile]]:
-        """扫描所有媒体库"""
+        """Scan all media libraries"""
         from config import SettingsManager
         try:
             sm = SettingsManager()
             libs = sm.settings.media_libraries
-        except Exception as e:
+        except (ImportError, AttributeError, OSError, IOError) as e:
             print(f"Failed to load libraries for scanning: {e}")
             return {}
 
@@ -214,15 +214,15 @@ class LibraryManager:
         return result
 
 
-# 便捷函数
+# Convenience functions
 def scan_directory(path: str, force_refresh: bool = False) -> List[MediaFile]:
-    """扫描目录的便捷函数"""
+    """Convenience function to scan directory"""
     scanner = LibraryScanner()
     return scanner.scan_directory(path, force_refresh=force_refresh)
 
 
 def get_media_files(directories: List[str]) -> Dict[str, List[MediaFile]]:
-    """从多个目录获取媒体文件"""
+    """Get media files from multiple directories"""
     manager = LibraryManager()
     return manager.get_all_files()
 
@@ -234,21 +234,23 @@ class _HierarchicalPlaylist:
         # folder_name -> {'files': [], 'children': {}, 'path': str, 'is_folder': True}
         self.root_folders = {}
 
-    def add_track(self, full_path: str, display_title: str):
+    def add_track(self, full_path: str, display_title: str) -> None:
         """Add a track and build hierarchy from its path
 
         Args:
-            full_path: 完整的文件路径如 "/Music/Artists/Artist/song.mp3"
-            display_title: 用于显示的名称如 "song.mp3" or relative path
+            full_path: Complete file path like "/Music/Artists/Artist/song.mp3"
+            display_title: Name for display like "song.mp3" or relative path
         """
-        # Parse the full path to build hierarchy - normalize separators first
-        normalized_path = str(Path(full_path)).replace('\\', '/')
-        parts = [p for p in normalized_path.split('/') if p]  # Filter out empty strings
+        # Parse the full path to build hierarchy - use Path object for cross-platform compatibility
+        path_obj = Path(full_path)
+        parts = list(path_obj.parts)  # Get path components as tuple
         current = self.root_folders
 
         for i, part in enumerate(parts[:-1]):  # All but last part are folder levels
             if part not in current:
-                parent_path = '/' + '/'.join(parts[:i+1])
+                # Use Path object to build cross-platform path
+                parent_path_obj = Path(*parts[:i+1])
+                parent_path = parent_path_obj.as_posix()  # Use forward slashes for consistency
                 current[part] = {
                     'files': [],
                     'children': {},
@@ -264,7 +266,7 @@ class _HierarchicalPlaylist:
             'full_path': full_path
         }
 
-    def build_display_list(self):
+    def build_display_list(self) -> List[Tuple[str, Dict[str, Any]]]:
         """Build list of (display_text, track_info) tuples with indentation
 
         Returns:
@@ -274,7 +276,7 @@ class _HierarchicalPlaylist:
         self._collect_items(self.root_folders, "", result)
         return result
 
-    def _collect_items(self, items, indent, result):
+    def _collect_items(self, items: Dict[str, Any], indent: str, result: List[Tuple[str, Dict[str, Any]]]) -> None:
         """Recursively collect folders and files"""
         for name, data in sorted(items.items()):
             if data.get('is_file'):

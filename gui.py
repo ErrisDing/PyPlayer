@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-PyPlayer - 基于 Tkinter 的图形用户界面
-支持 MP3, WAV, AVI, MP4, MKV 等常见音视频格式
-跨平台（Windows/Linux/macOS）
+PyPlayer - Tkinter-based graphical user interface
+Supports common audio/video formats: MP3, WAV, AVI, MP4, MKV, etc.
+Cross-platform (Windows/Linux/macOS)
 """
 
 import os
@@ -17,7 +17,7 @@ import i18n
 
 
 class PyPlayerGUI:
-    """PyPlayer 图形界面播放器"""
+    """PyPlayer graphical interface player"""
 
     COLORS = {
         'primary': '#2196F3',
@@ -38,7 +38,7 @@ class PyPlayerGUI:
         try:
             import player as pm
             self.player = pm.create_manager()
-        except Exception as e:
+        except (ImportError, AttributeError, RuntimeError) as e:
             messagebox.showerror(
                 i18n.dialog('dialog.title.error'),
                 i18n.dialog('dialog.error.init_player', error=str(e))
@@ -49,7 +49,7 @@ class PyPlayerGUI:
         try:
             from config import SettingsManager
             self.settings_manager = SettingsManager()
-        except Exception as e:
+        except (ImportError, AttributeError, OSError, IOError) as e:
             messagebox.showwarning(
                 i18n.dialog('dialog.title.warning'),
                 i18n.dialog('dialog.warning.init_settings', error=str(e))
@@ -87,7 +87,7 @@ class PyPlayerGUI:
                 libs = self.settings_manager.settings.media_libraries
                 if libs:
                     self.status_var.set(i18n.get('status.loaded_libraries', n=len(libs)))
-        except Exception:
+        except AttributeError:
             pass
 
         # Playlist container
@@ -387,7 +387,7 @@ class PyPlayerGUI:
                                 self.status_var.set(f"Now playing: {t.title}")
                             break
                 self._update_playlist_display()
-        except Exception as e:
+        except (OSError, IOError, AttributeError, RuntimeError) as e:
             self.status_var.set(f"Error on double-click: {e}")
 
     def _play_folder(self, folder_path: str, folder_name: str):
@@ -477,13 +477,13 @@ class PyPlayerGUI:
         self._update_playlist_display()
 
     def _set_volume(self, value):
-        """设置音量 (仅对音频文件生效)"""
+        """Set volume (only effective for audio files)"""
         import player as pm
         volume = float(value) / 100.0  # Convert 0-100 to 0.0-1.0
         self.player.set_volume(volume)
 
     def _show_library_manager_dialog(self):
-        """显示媒体库管理弹窗"""
+        """Show media library management dialog"""
         dialog = tk.Toplevel(self.root)
         dialog.title(i18n.dialog('dialog.title.library_management'))
         dialog.geometry("500x400")
@@ -528,7 +528,7 @@ class PyPlayerGUI:
         ttk.Button(dialog, text=i18n.get('button.close', default='Close'), command=lambda: dialog.destroy()).pack(pady=(5, 0))
 
     def _add_library(self):
-        """添加媒体库 - 打开目录选择对话框"""
+        """Add media library - open directory selection dialog"""
         path = filedialog.askdirectory(title=i18n.get('file.select_library', default="Select Library Folder"))
         if path and self.settings_manager:
             # Use folder name as default name
@@ -552,7 +552,7 @@ class PyPlayerGUI:
                 )
 
     def _remove_library(self, listbox):
-        """删除选中的媒体库"""
+        """Delete selected media library"""
         selection = listbox.curselection() if listbox else []
         if not selection and not hasattr(self, 'library_listbox'):
             return
@@ -580,7 +580,7 @@ class PyPlayerGUI:
                     self.library_listbox.insert(tk.END, display_text)
 
     def _scan_libraries(self):
-        """扫描所有媒体库"""
+        """Scan all media libraries"""
         import player as pm
 
         from library_manager import LibraryManager
@@ -618,7 +618,7 @@ def run_gui():
                         if Path(track.path).name == status['current_track']:
                             app.current_index = i
                             break
-            except Exception as e:
+            except AttributeError:
                 pass
 
     # Start update thread (will be stopped when GUI closes)
