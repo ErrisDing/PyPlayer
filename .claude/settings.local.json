@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"D:/Codes/Python/PyPlayer/frontend.ps1\" -Info)",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"D:/Codes/Python/PyPlayer/frontend.ps1\" -i 2>&1)",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"D:/Codes/Python/PyPlayer/frontend.ps1\" -l 2>&1)",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -Command \"& { cd 'D:/Codes/Python/PyPlayer'; . ./frontend.ps1; Invoke-PyPlayer -Info }\" 2>&1)"
+    ]
+  }
+}
