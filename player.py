@@ -10,6 +10,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional
 import re
+import i18n
 
 
 @dataclass
@@ -41,7 +42,7 @@ class AudioPlayer:
             self.is_paused = False
             return True
         except Exception as e:
-            print(f"播放失败：{e}")
+            print(i18n.console('console.play_failed', error=str(e)))
             return False
 
     def play_queue(self, files: List[str]) -> bool:
@@ -60,7 +61,7 @@ class AudioPlayer:
             self.is_paused = False
             return True
         except Exception as e:
-            print(f"播放队列失败：{e}")
+            print(i18n.console('console.queue_failed', error=str(e)))
             return False
 
     def pause(self):
@@ -81,6 +82,14 @@ class AudioPlayer:
         self.is_playing = False
         self.is_paused = False
         self.current_track = None
+
+    def set_volume(self, level: float):
+        """设置音量，level 范围 0.0-1.0"""
+        pygame.mixer.music.set_volume(max(0.0, min(1.0, level)))
+
+    def get_volume(self) -> float:
+        """获取当前音量"""
+        return pygame.mixer.music.get_volume()
 
     def is_active(self) -> bool:
         """是否正在播放"""
@@ -114,7 +123,7 @@ class VideoPlayer:
             self.is_playing = True
             return True
         except Exception as e:
-            print(f"视频播放失败：{e}")
+            print(i18n.console('console.video_play_failed', error=str(e)))
             import traceback
             traceback.print_exc()
             return False
@@ -144,7 +153,7 @@ class VideoPlayer:
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             self.stop()
-            print("用户退出视频播放")
+            print(i18n.console('console.user_exit'))
             return False
         import time
         time.sleep(self.frame_delay)
@@ -192,7 +201,7 @@ class PlayerManager:
 
         file_type = self._check_file_type(filepath)
         if not file_type:
-            print(f"不支持的文件格式：{filepath}")
+            print(i18n.console('console.unsupported_format', path=filepath))
             return False
 
         try:
@@ -232,10 +241,10 @@ class PlayerManager:
             self.audio_player = AudioPlayer()
             result = self.audio_player.play_queue(audio_files)
             if result and len(video_files) > 0:
-                print(f"\n开始播放视频：{video_files[0]}")
+                print(i18n.console('console.start_video_play', path=video_files[0]))
                 self._is_video_playing = True
 
-        # 处理视频列表
+        # Handle video files list
         for video in video_files:
             import cv2
             self.video_player = VideoPlayer()
@@ -336,30 +345,34 @@ class PlayerManager:
         # 简单实现：重新播放当前文件（实际项目中可以使用队列）
         pass
 
+    def set_volume(self, level: float):
+        """设置音量，level 范围 0.0-1.0"""
+        self.audio_player.set_volume(level)
+
 
 def create_manager():
     """创建播放器管理器单例"""
     import pygame
     import cv2
-    # 先初始化 pygame mixer，避免后续问题
+    # Initialize pygame mixer first to avoid later issues
     try:
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
     except Exception as e:
-        print(f"音频模块初始化警告：{e}")
+        print(i18n.console('console.init_warning_audio', error=str(e)))
 
-    # 设置 OpenCV 显示后端（避免与 Pygame 冲突）
+    # Setup OpenCV display backend (to avoid conflicts with Pygame)
     try:
         cv2.namedWindow('PyPlayer Video', cv2.WINDOW_NORMAL)
         cv2.destroyWindow('PyPlayer Video')
     except Exception as e:
-        print(f"视频模块初始化警告：{e}")
+        print(i18n.console('console.init_warning_video', error=str(e)))
 
     return PlayerManager()
 
 
 def main():
     """简单测试"""
-    print("=== PyPlayer 播放器测试 ===")
+    print(i18n.get('console.test_title'))
     player = create_manager()
 
     if len(sys.argv) > 1:
@@ -368,7 +381,7 @@ def main():
         if not result:
             return 1
 
-        # 持续播放直到完成或用户退出
+        # Continue playing until complete or user exits
         while True:
             status = player.get_status()
             import time
@@ -383,13 +396,15 @@ def main():
             else:
                 break
 
-        print("播放完成或已停止")
+        print(i18n.console('console.play_complete_or_stopped'))
         return 0
     else:
-        # 显示支持的格式
+        # Display supported formats
         formats = player.get_supported_formats()
-        print(f"\n支持音频格式：{', '.join(formats['音频'])}")
-        print(f"支持视频格式：{', '.join(formats['视频'])}\n")
+        audio_fmts = ', '.join(formats['音频'])
+        video_fmts = ', '.join(formats['视频'])
+        print(f"\n{i18n.console('console.supported_formats_audio', formats=audio_fmts)}")
+        print(f"{i18n.console('console.supported_formats_video', formats=video_fmts)}\n")
 
 
 def launch_tui():

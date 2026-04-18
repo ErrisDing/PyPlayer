@@ -11,6 +11,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional
 import time
+import i18n
 
 
 @dataclass
@@ -41,10 +42,10 @@ class TerminalUI:
         self.playlist: List[Track] = []
         self.current_index = 0
         self.selected_index = 0
-        self.status_message = "PyPlayer - Press 'h' for help"
+        self.status_message = i18n.get('status.ready')
         self.running = True
 
-        # 初始化颜色
+        # Initialize colors
         curses.start_color()
         curses.use_default_colors()
         curses.init_pair(1, curses.COLOR_CYAN, -1)      # header
@@ -72,12 +73,12 @@ class TerminalUI:
         height, width = self.stdscr.getmaxyx()
 
         try:
-            title = "=== PyPlayer Music/Video Player ==="
+            title = i18n.get('main.title')
             self.stdscr.attron(self.COLORS['header'])
             self.stdscr.addstr(0, 0, f"{title:^{width}}")
             self.stdscr.attroff(self.COLORS['header'])
 
-            # 显示当前状态
+            # Show current status
             if self.player:
                 status = self.player.get_status()
                 track_info = ""
@@ -94,27 +95,36 @@ class TerminalUI:
             pass
 
     def draw_playlist(self):
-        """绘制播放列表"""
+        """绘制播放列表（支持层级展示）"""
         height, width = self.stdscr.getmaxyx()
         start_row = 3
 
         if not self.playlist:
             try:
                 self.stdscr.attron(self.COLORS['error'])
-                self.stdscr.addstr(start_row, 2, "No files in playlist. Press 'o' to open file(s)")
+                self.stdscr.addstr(start_row, 2, i18n.get('no_files_playlist', default="No files in playlist. Press 'o' to open file(s)"))
                 self.stdscr.attroff(self.COLORS['error'])
             except curses.error:
                 pass
             return
 
-        visible_lines = min(height - start_row - 3, len(self.playlist))
+        # Build hierarchical display using library_manager's _HierarchicalPlaylist
+        from library_manager import _HierarchicalPlaylist
+        hier = _HierarchicalPlaylist()
+        for track in self.playlist:
+            hier.add_track(track.path, track.title)
+
+        display_items = hier.build_display_list()
+
+        visible_lines = min(height - start_row - 3, len(display_items))
         scroll_start = max(0, self.selected_index - visible_lines // 2)
-        scroll_end = min(scroll_start + visible_lines, len(self.playlist))
+        scroll_end = min(scroll_start + visible_lines, len(display_items))
 
         for i in range(scroll_start, scroll_end):
             row = start_row + (i - scroll_start)
-            track = self.playlist[i]
+            display_text, track_info = display_items[i]
 
+            # Determine color/attr based on selection and playing state
             if i == self.current_index:
                 indicator = "[NOW PLAYING]"
                 attr = self.COLORS['highlight']
@@ -126,27 +136,30 @@ class TerminalUI:
                 attr = self.COLORS['body']
 
             try:
-                line = f"{indicator} {track.title}"[:width-5]
+                line = f"{indicator} {display_text}"[:width-5]
                 self.stdscr.attron(attr)
                 self.stdscr.addstr(row, 2, line.ljust(width-4))
                 self.stdscr.attroff(attr)
             except curses.error:
                 pass
 
+        # Store display_items for double-click handling in TUI (optional enhancement)
+        self._playlist_display_items = display_items
+
     def draw_footer(self):
         """绘制底部"""
         height, width = self.stdscr.getmaxyx()
         row = height - 2
 
-        # 状态栏
+        # Status bar
         try:
             status_text = f" {self.status_message}"[:width-4]
             self.stdscr.attron(self.COLORS['footer'])
             self.stdscr.addstr(row, 0, f"{status_text:<{width}}")
             self.stdscr.attroff(self.COLORS['footer'])
 
-            # 控制提示
-            help_text = " [SPACE]=Play/Pause | N=Next | M=Prev | S=Stop | O=Open | Q=Quit"[:width-4]
+            # Control hints
+            help_text = i18n.get('tui.help_keys', default=" [SPACE]=Play/Pause | N=Next | M=Prev | S=Stop | O=Open | L=Library | Q=Quit")[:width-4]
             self.stdscr.attron(curses.color_pair(2) | curses.A_DIM)
             self.stdscr.addstr(row+1, 0, f"{help_text:<{width}}")
             self.stdscr.attroff(curses.color_pair(2) | curses.A_DIM)
@@ -186,6 +199,11 @@ class TerminalUI:
                 self._handle_open()
             elif key == ord('h'):
                 self.show_help()
+            elif key in [ord('l'), ord('L')]:
+                self._show_library_manager_menu()
+            elif key == 10:  # Enter key - can trigger folder playback or play file
+                self._handle_double_click()
+                time.sleep(0.1)  # Small delay to avoid repeat triggers
             elif key in [curses.KEY_UP, 258]:
                 self.selected_index = max(0, self.selected_index - 1)
             elif key in [curses.KEY_DOWN, 259]:
@@ -275,11 +293,229 @@ class TerminalUI:
         except Exception as e:
             self.refresh_status(f"Error opening file: {e}")
 
+    def _handle_double_click(self):
+        """Handle double-click or Enter on playlist item for folder playback"""
+        if not hasattr(self, '_playlist_display_items') or not self._playlist_display_items:
+            return
+
+        track_info = self._playlist_display_items[self.selected_index][1]
+        if track_info and track_info.get('is_folder'):
+            folder_path = track_info.get('path')
+            folder_name = track_info.get('title', '')
+            if folder_path:
+                # Find all tracks in this folder
+                folder_tracks = [t for t in self.playlist
+                               if Path(t.path).is_relative_to(folder_path) or str(Path(t.path)).startswith(folder_path)]
+
+                if folder_tracks:
+                    folder_tracks.sort(key=lambda t: t.path)
+                    first_track = folder_tracks[0]
+                    self.current_index = self.playlist.index(first_track) if first_track in self.playlist else 0
+
+                    if self.player:
+                        result = self.player.play(str(first_track.path))
+                        if result:
+                            self.refresh_status(f"Now playing from folder: {folder_name}")
+
+    def _show_library_manager_menu(self):
+        """显示媒体库管理菜单"""
+        from config import SettingsManager
+
+        # Initialize settings manager if not already done
+        try:
+            if not hasattr(self, 'settings_manager'):
+                self.settings_manager = SettingsManager()
+            else:
+                self.settings_manager.load()  # Reload to get latest changes
+        except Exception as e:
+            self.refresh_status(f"Failed to load settings: {e}")
+            time.sleep(1)
+            return
+
+        height, width = self.stdscr.getmaxyx()
+        menu_h, menu_w = min(20, height - 4), min(60, width - 4)
+        start_y, start_x = (height - menu_h) // 2, (width - menu_w) // 2
+
+        # Create menu window
+        try:
+            menu_win = curses.newwin(menu_h, menu_w, start_y, start_x)
+            menu_win.box()
+
+            # Title
+            title = " Library Management "
+            menu_win.addstr(0, (menu_w - len(title)) // 2, title[:menu_w-2], curses.A_BOLD)
+
+            # Load libraries
+            libs = self.settings_manager.settings.media_libraries
+            lib_titles = []  # For tracking displayed titles with indices
+
+            for i, lib in enumerate(libs):
+                name = lib.name or Path(lib.path).name
+                path = lib.path[:width - len(name) - 15] if len(path) > width - len(name) - 15 else path
+                menu_win.addstr(3 + i, 2, f"[{i+1}] {name}: {path}")
+                lib_titles.append((lib, name))
+
+            # If no libraries, show message
+            if not libs:
+                menu_win.addstr(4, 2, "No libraries configured.")
+                menu_win.addstr(5, 2, "Press 'A' to add one.")
+
+            # Help text at bottom
+            help_text = i18n.get('tui.lib_menu_keys', default=" [A]Add  [D]Delete  [S]Scan  [Q]Quit")
+            menu_win.addstr(menu_h - 1, (menu_w - len(help_text)) // 2, help_text[:menu_w-4])
+
+            menu_win.refresh()
+
+            # Menu loop
+            while True:
+                key = menu_win.getch()
+
+                if key in [ord('q'), ord('Q')]:
+                    break
+                elif key == ord('\n') or key == 10:  # Enter to select
+                    pass
+                else:
+                    if key in [ord('a'), ord('A')] and libs:
+                        self._menu_add_library(menu_win, len(libs))
+                        menu_win.refresh()
+                    elif key in [ord('d'), ord('D')] and libs:
+                        idx = self._get_menu_selection_index(menu_win)
+                        if idx is not None and 0 <= idx < len(libs):
+                            lib, _ = lib_titles[idx]
+                            # For TUI, we confirm by showing the path and requiring Enter to continue
+                            try:
+                                menu_win.addstr(12, 2, f"DELETE '{lib.path}'? (Press any key to confirm)", curses.A_BOLD)
+                                menu_win.refresh()
+                                menu_win.getch()
+                                if self.settings_manager.remove_library(lib.path):
+                                    self.refresh_status(f"Deleted: {Path(lib.path).name}")
+                                    time.sleep(0.5)
+                                    break  # Redraw menu
+                            except curses.error:
+                                pass
+                    elif key in [ord('s'), ord('S')]:
+                        result = self._menu_scan_libraries(menu_win)
+                        if result:
+                            self.refresh_status(f"Scanned {result} files total")
+                            time.sleep(1)
+                            break
+
+        except curses.error as e:
+            self.refresh_status(f"Menu error: {e}")
+            time.sleep(0.5)
+
+    def _get_menu_selection_index(self, menu_win):
+        """Get user's selection index from menu"""
+        try:
+            c = menu_win.getch()
+            if 48 < c <= 57:  # Digits 1-9
+                return c - 49  # Convert to 0-based index
+        except curses.error:
+            pass
+        return None
+
+    def _menu_add_library(self, menu_win, lib_count):
+        """显示路径输入框添加媒体库"""
+        input_h, input_w = 6, 50
+        start_y, start_x = (menu_win.getmaxyx()[0] - input_h) // 2 + 2, \
+                           (menu_win.getmaxyx()[1] - input_w) // 2
+
+        input_win = curses.newwin(input_h, input_w, start_y, start_x)
+        input_win.box()
+        input_win.addstr(1, 2, "Library Path:", curses.A_BOLD)
+        input_win.addstr(2, 2, "Enter or paste path:")
+        input_win.refresh()
+
+        try:
+            curses.echo()
+            curses.curs_set(1)
+
+            # Get user input
+            path_bytes = input_win.getstr(3, 2, 45)
+            path = path_bytes.decode('utf-8').strip()
+
+            curses.noecho()
+            curses.curs_set(0)
+
+            if not path:
+                return
+
+            lib_path = Path(path).expanduser().resolve()
+            if not lib_path.exists():
+                self.refresh_status(f"Path does not exist: {path}")
+                time.sleep(1)
+                return
+
+            # Try to add library
+            try:
+                from config import SettingsManager
+                sm = SettingsManager()
+                dir_name = lib_path.name or "Library"
+                if sm.add_library(str(lib_path), dir_name):
+                    self.refresh_status(i18n.get('library_added', default=f"Added: {dir_name}"))
+                    time.sleep(0.5)
+                else:
+                    self.refresh_status("Failed to add library")
+                    time.sleep(1)
+            except Exception as e:
+                self.refresh_status(f"Error adding library: {e}")
+                time.sleep(1)
+
+        except Exception as e:
+            curses.noecho()
+            curses.curs_set(0)
+            self.refresh_status(f"Input error: {e}")
+            time.sleep(0.5)
+
+    def _menu_scan_libraries(self, menu_win):
+        """显示扫描结果"""
+        from library_manager import LibraryManager
+
+        try:
+            manager = LibraryManager()
+            result = manager.scan_all_libraries()
+            total = sum(len(files) for files in result.values())
+
+            # Show summary window
+            height, width = menu_win.getmaxyx()
+            info_h, info_w = 10, 40
+            start_y, start_x = (height - info_h) // 2 + 3, \
+                               (width - info_w) // 2
+
+            info_win = curses.newwin(info_h, info_w, start_y, start_x)
+            info_win.box()
+            info_win.addstr(1, 2, " Scan Results ", curses.A_BOLD | curses.A_UNDERLINE)
+            info_win.addstr(3, 2, f"Total files scanned: {total}")
+
+            for path, files in list(result.items())[:5]:
+                name = Path(path).name
+                info_win.addstr(4 + list(result.keys()).index(path), 2,
+                              f"{name}: {len(files)} files")
+
+            info_win.addstr(info_h - 2, 2, "Press any key to continue", curses.A_DIM)
+            info_win.refresh()
+
+            # Wait for keypress
+            while True:
+                c = info_win.getch(100)
+                if c != -1:
+                    break
+
+            return total
+
+        except Exception as e:
+            self.refresh_status(f"Scan error: {e}")
+            time.sleep(1)
+            return 0
+
     def show_help(self):
         """显示帮助信息"""
         height, width = self.stdscr.getmaxyx()
         help_msg = [
             "=== PyPlayer Controls ===",
+            "",
+            "Library Management:",
+            "  L         - Library management menu",
             "",
             "Navigation:",
             "  UP/DOWN   - Select track in playlist",

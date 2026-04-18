@@ -3,10 +3,28 @@
     "allow": [
       "Bash(pip install:*)",
       "Bash(python:*)",
-      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"D:/Codes/Python/PyPlayer/frontend.ps1\" -Info)",
-      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"D:/Codes/Python/PyPlayer/frontend.ps1\" -i 2>&1)",
-      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"D:/Codes/Python/PyPlayer/frontend.ps1\" -l 2>&1)",
-      "Bash(powershell.exe -ExecutionPolicy Bypass -Command \"& { cd 'D:/Codes/Python/PyPlayer'; . ./frontend.ps1; Invoke-PyPlayer -Info }\" 2>&1)"
+      "Bash(grep \"\.py$\")"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"D:/Codes/Python/PyPlayer/.claude/check_var_init.py\" < /dev/stdin 2>/dev/null || true",
+            "timeout": 30,
+            "statusMessage": "Checking variable initialization patterns"
+          },
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"D:/Codes/Python/PyPlayer/.claude/update_readme.py\" \"D:/Codes/Python/PyPlayer\"",
+            "timeout": 15,
+            "statusMessage": "Updating README.md file structure"
+          }
+        ]
+      }
     ]
   }
 }
