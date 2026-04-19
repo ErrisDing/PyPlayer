@@ -78,41 +78,79 @@ class TerminalUI:
             self.stdscr.addstr(0, 0, f"{title:^{width}}")
             self.stdscr.attroff(self.COLORS['header'])
 
-            # Show current status
+            # Show current status with optional queue info
             if self.player:
                 status = self.player.get_status()
                 track_info = ""
                 if status['current_track']:
-                    track_info = f" | Playing: {status['current_track']}"
-                if status['paused']:
+                    track_info = f"Playing: {status['current_track']}"
+                if status.get('paused'):
                     track_info += " [PAUSED]"
 
                 try:
-                    self.stdscr.addstr(1, 2, f"{track_info[:width-4]}")
+                    # Place main info on left side of row 1
+                    self.stdscr.addstr(1, 2, f"{track_info[:width//2-3]}")
                 except curses.error:
                     pass
+
+                # Optional enhanced queue status display (if available from player)
+                if status.get('library_queues_status'):
+                    # Show first active library's queue position info on right side of row 1
+                    lib_statuses = status['library_queues_status']
+                    for lib_id, qstatus in list(lib_statuses.items())[:1]:  # First one only
+                        try:
+                            lib_name = Path(os.path.basename(lib_id)).name if lib_id else "Library"
+                            queue_info = f"{lib_name}: {qstatus.get('current_index', -1)}/{qstatus.get('queue_length', 0)}"
+                            self.stdscr.addstr(1, width - len(queue_info) - 2, queue_info[:max(5, min(width//4, 30))])
+                        except curses.error:
+                            pass
+
         except curses.error:
             pass
 
     def draw_playlist(self):
-        """Draw playlist (supports hierarchical display)"""
+        """Draw playlist (supports hierarchical display with library awareness)"""
         height, width = self.stdscr.getmaxyx()
         start_row = 3
 
         if not self.playlist:
             try:
                 self.stdscr.attron(self.COLORS['error'])
-                self.stdscr.addstr(start_row, 2, i18n.get('no_files_playlist', default="No files in playlist. Press 'o' to open file(s)"))
+                msg = i18n.get('no_files_playlist', default="No files in playlist. Press 'o' to open file(s)")
+                self.stdscr.addstr(start_row, 2, msg)
                 self.stdscr.attroff(self.COLORS['error'])
             except curses.error:
                 pass
             return
 
-        # Build hierarchical display using library_manager's _HierarchicalPlaylist
-        from library_manager import _HierarchicalPlaylist
+        # Get library configurations for hierarchy building
+        libs = []
+        if self.settings_manager:
+            try:
+                libs = self.settings_manager.settings.media_libraries
+            except (ImportError, AttributeError):
+                pass
+
+        # Build hierarchical display with library awareness
+        from library_manager import _HierarchicalPlaylist, get_library_for_file
         hier = _HierarchicalPlaylist()
+
         for track in self.playlist:
-            hier.add_track(track.path, track.title)
+            # Find which library this file belongs to
+            lib_config = get_library_for_file(track.path, libs) if libs else None
+
+            if lib_config:
+                # Use library name from config or derive from path
+                lib_name = lib_config.name or Path(lib_config.path).name
+                hier.add_track(
+                    full_path=track.path,
+                    display_title=track.title,
+                    library_path=lib_config.path,
+                    library_name=lib_name
+                )
+            else:
+                # Fallback: no library info - use standard hierarchy with path components
+                hier.add_track(track.path, track.title)
 
         display_items = hier.build_display_list()
 

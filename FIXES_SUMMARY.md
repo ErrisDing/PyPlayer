@@ -224,3 +224,206 @@ print('配置迁移测试: 成功')
 
 *修复完成时间: 2026-04-19*
 *所有高优先级问题已解决，配置格式迁移到JSON已完成*
+
+---
+
+## 队列管理系统重构 (2026-04-19)
+
+### 问题描述
+原播放器存在以下核心问题：
+1. 只有第一个媒体库正确加载，后续库被当作普通文件夹处理
+2. 缺乏独立队列管理，所有文件共享一个扁平播放列表
+3. 无状态机支持前进/后退导航
+4. 无跨队列播放能力（"播放全部"功能缺失）
+
+### 修复内容
+
+#### 1. AudioPlayer 类结构修复
+- **文件**: `player.py`
+- **问题**: `PlaybackQueueInfo` 类被错误地插入到 `AudioPlayer` 类内部，导致 `play_file`、`stop`、`is_active` 等核心方法丢失
+- **修复**: 删除错误的 `PlaybackQueueInfo` 类，将核心播放方法恢复到 `AudioPlayer` 类中
+
+#### 2. 新增队列感知方法
+```python
+# AudioPlayer 新增方法
+def play_from_queue(self, library_id: str, position_index: Optional[int] = None) -> bool
+def next_track_in_queue(self, library_id: str, loop_mode: str = "OFF") -> bool
+def prev_track_in_queue(self, library_id: str) -> bool
+def register_library_queue(self, library_id: str, queue: 'PlaybackQueue') -> None
+def unregister_library_queue(self, library_id: str) -> bool
+```
+
+#### 3. 状态机实现 (library_manager.py)
+```python
+@dataclass
+class PlaybackState:
+    current_position: int = 0
+    history: List[int] = field(default_factory=list)
+    loop_mode: str = "OFF"  # "OFF", "ONE", "ALL"
+
+    def record_position(self, new_pos: int) -> None:
+        if self.current_position != new_pos:
+            self.history.append(self.current_position)
+            self.current_position = new_pos
+
+@dataclass
+class PlaybackQueue:
+    library_id: str
+    track_list: List[Track] = field(default_factory=list)
+    current_index: int = -1  # -1 = idle
+    state: str = "IDLE"  # IDLE, LOADING, PLAYING, PAUSED, COMPLETED
+    position_state: PlaybackState = field(init=False)  # auto-created
+```
+
+#### 4. 向后兼容性
+- `PlayerManager.get_status()` 返回值新增可选字段 `library_queues_status`
+- 现有 GUI/TUI 代码无需修改即可正常工作
+- 测试文件 `test_player.py` 验证所有 8 个核心功能
+
+### 验证测试
+```bash
+python test_player.py
+# Ran 8 tests in 0.001s
+# OK
+```
+
+### 错误修复详情
+| 错误 | 原因 | 修复 |
+|------|------|------|
+| `AttributeError: 'AudioPlayer' object has no attribute 'play_file'` | `PlaybackQueueInfo` 类定义在 `AudioPlayer` 类内部，导致方法归属错误 | 删除 `PlaybackQueueInfo` 类，将方法移回 `AudioPlayer` |
+| `AttributeError: 'AudioPlayer' object has no attribute 'stop'` | 同上 | 同上 |
+| `AttributeError: 'AudioPlayer' object has no attribute 'is_active'` | 同上 | 同上 |
+
+---
+
+*队列管理修复完成时间: 2026-04-19*
+
+---
+
+## QueueNode 队列节点架构重构 (2026-04-19)
+
+### 问题描述
+播放列表管理存在严重的索引错位问题：
+- `self.playlist` 是扁平的 `List[Track]`，只包含文件轨道
+- `_update_playlist_display()` 构建的是层级显示，包含文件夹 `[D]`、媒体库 `[ML]` 和文件 `[F]`
+- 显示索引与播放列表索引不匹配：显示有 N+M 项（含文件夹），播放列表只有 N 项
+- `_get_track_from_display_idx()` 用显示索引访问 `self.playlist[i]`，导致 `IndexError: list index out of range`
+
+### 核心设计
+
+引入 **QueueNode** 抽象，每个节点是一个可播放单元：
+
+```
+QueueNode (abstract)
+├── FileNode: 单文件节点
+└── FolderNode: 文件夹节点
+    ├── tracks: List[Track]
+    ├── current_sub_index: int
+    └── loop_mode: str
+```
+
+### 修复内容
+
+#### 1. QueueNode 数据结构 (library_manager.py)
+
+新增四个类：
+
+| 类名 | 类型 | 说明 |
+|------|------|------|
+| `QueueNode` | ABC | 可播放队列节点的抽象基类 |
+| `FileNode` | dataclass | 单文件节点，包含一个 Track |
+| `FolderNode` | dataclass | 文件夹节点，维护内部播放状态 (`current_sub_index`, `loop_mode`) |
+| `DisplayIndexMap` | dataclass | 显示索引到队列节点的映射表 |
+
+`FolderNode` 关键方法：
+- `get_current_track()` - 获取当前播放轨道
+- `advance_to_next()` - 前进到下一首（支持 OFF/ONE/ALL 循环模式）
+- `advance_to_prev()` - 后退到上一首
+- `reset()` - 重置播放状态
+- `set_sub_index()` - 设置播放位置并返回轨道
+
+`DisplayIndexMap` 关键方法：
+- `add_entry()` - 添加映射条目 (display_idx → node_idx + sub_index)
+- `get_by_display_idx()` - 根据显示索引获取映射
+- `get_by_full_path()` - 根据完整路径获取映射
+
+#### 2. 曲目结束回调 (player.py)
+
+```python
+# AudioPlayer 新增
+self._on_track_end_callback: Optional[callable] = None
+
+def set_track_end_callback(self, callback: callable) -> None
+def clear_track_end_callback(self) -> None
+
+# PlayerManager 新增
+self._was_playing = False  # 跟踪上一帧播放状态
+
+def check_track_end(self) -> bool  # 检测轨道是否播放完毕并触发回调
+```
+
+#### 3. GUI 架构重构 (gui.py)
+
+**数据结构替换**：
+```python
+# 旧
+self.playlist: List[Track] = []
+
+# 新
+self.queue_nodes: List[QueueNode] = []
+self.display_map: DisplayIndexMap = DisplayIndexMap()
+self.current_node_idx: int = -1
+self.current_sub_index: int = -1
+
+# 向后兼容 - playlist 属性
+@property
+def playlist(self):
+    """从 queue_nodes 生成扁平轨道列表"""
+```
+
+**重写的方法**：
+
+| 方法 | 旧逻辑 | 新逻辑 |
+|------|--------|--------|
+| `_update_playlist_display()` | 仅构建层级显示 | 同时构建 `display_map` 映射 |
+| `_get_track_from_display_idx()` | 重建 hierarchy 匹配，索引易错位 | 直接查表 `display_map.get_by_display_idx()` |
+| `_on_double_click()` | 混合处理，fallback 查找 | 通过映射区分文件夹/文件节点 |
+| `_next_track()` | 简单 `% len` 循环 | 文件夹内顺序播放 → 文件夹间跳转 |
+| `_prev_track()` | 简单 `% len` 循环 | 文件夹内后退 → 跨文件夹后退 |
+| `_scan_directory()` | 扁平追加到 playlist | 按父目录分组构建 FolderNode |
+
+**新增方法**：
+- `_play_folder_node(node_idx)` - 播放文件夹节点，从第一首开始
+- `_play_file_node(node_idx, sub_index)` - 播放文件节点或文件夹内特定文件
+- `_play_first_node()` - 播放队列中第一个节点
+- `_find_node_idx_by_path(path, is_folder)` - 根据路径查找节点索引
+
+**删除方法**：
+- `_get_track_info_from_display_idx()` - 被 `display_map` 替代
+- `_play_folder()` - 被 `_play_folder_node()` 替代
+
+**曲目结束自动播放**：
+`run_gui()` 中设置 `set_track_end_callback(on_track_end)`，更新循环中调用 `check_track_end()` 实现自动下一首。
+
+### 向后兼容性
+
+- `self.playlist` 通过 `@property` 保持向后兼容，返回 `queue_nodes` 的扁平轨道列表
+- `self.playlist` setter 可将 Track 列表转换为 FileNode
+- `_HierarchicalPlaylist` 显示逻辑保持不变，仅新增映射层
+- `self.current_index` 和 `self.selected_index` 保留用于显示选择状态
+
+### 验证步骤
+
+1. **语法检查**: `python -m py_compile gui.py library_manager.py player.py` ✅
+2. **手动测试**:
+   - 扫描包含多层嵌套文件夹的媒体库
+   - 双击文件夹，验证从第一首开始播放
+   - 点击下一首，验证文件夹内顺序播放
+   - 文件夹最后一首播完后，验证跳转到下一文件夹
+   - 双击单个文件，验证只播放该文件
+   - 点击上一首，验证正确回退
+   - 曲目播完自动播放下一首
+
+---
+
+*QueueNode 架构重构完成时间: 2026-04-19*

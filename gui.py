@@ -6,13 +6,14 @@ Cross-platform (Windows/Linux/macOS)
 """
 
 import os
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
 import sys
+import time
+import tkinter as tk
 from pathlib import Path
 from threading import Thread
-import time
+from tkinter import ttk, filedialog, messagebox
 from typing import Optional
+
 import i18n
 
 
@@ -56,13 +57,38 @@ class PyPlayerGUI:
             )
             self.settings_manager = None
 
-        self.playlist = []  # List of Track objects
+        # QueueNode architecture - replaces flat playlist
+        from library_manager import DisplayIndexMap
+        self.queue_nodes = []  # List of QueueNode (FileNode or FolderNode)
+        self.display_map = DisplayIndexMap()  # Maps display indices to queue nodes
+        self.current_node_idx: int = -1  # Current playing node index
+        self.current_sub_index: int = -1  # Current track index within a folder node
+
+        # Legacy compatibility - self.playlist can still be accessed but maps to queue_nodes
         self.current_index = -1
         self.selected_index = -1
         self.isPlaying = False
         self.isPaused = False
 
         self._setup_ui()
+
+    @property
+    def playlist(self):
+        """Backward-compatible access to flat track list from queue_nodes."""
+        tracks = []
+        for node in self.queue_nodes:
+            tracks.extend(node.get_tracks())
+        return tracks
+
+    @playlist.setter
+    def playlist(self, value):
+        """Setter for backward compatibility - converts to FileNodes."""
+        from library_manager import FileNode
+        import player as pm
+        self.queue_nodes = []
+        for track in value:
+            node = FileNode(track=track, display_text=track.title, path=track.path)
+            self.queue_nodes.append(node)
 
     def _setup_ui(self):
         """Setup the UI elements"""
@@ -147,9 +173,13 @@ class PyPlayerGUI:
         self.root.bind('<o>', lambda e: self._open_files())
 
     def _scan_directory(self, location):
-        """Scan directory for media files"""
+        """扫描目录并构建队列节点
+
+        Args:
+            location: "current" to scan configured libraries, or a specific path
+        """
         import player as pm
-        from library_manager import LibraryManager
+        from library_manager import LibraryManager, FolderNode, FileNode
 
         # When location is "current", scan configured media libraries
         if location == "current":
@@ -160,23 +190,42 @@ class PyPlayerGUI:
                 self.status_var.set("No media libraries configured. Open Library Manager to add one.")
                 return
 
-            # Clear existing playlist and add tracks with relative paths
-            self.playlist.clear()
+            # Build queue_nodes from scanned files, grouped by parent directory
+            self.queue_nodes = []
+
+            # Collect all scanned tracks first
+            all_tracks = []
             for lib_path, files in result.items():
                 try:
                     for media_file in files:
-                        # Store full path in Track, but use relative path as title for hierarchy
                         relative_title = str(Path(media_file.path).relative_to(lib_path))
                         track = pm.Track(path=media_file.path, title=relative_title)
-                        self.playlist.append(track)
+                        all_tracks.append((media_file.path, track))
                 except ValueError:
-                    # Path is not relative to lib_path, use filename only
                     for media_file in files:
                         track = pm.Track(path=media_file.path, title=Path(media_file.path).name)
-                        self.playlist.append(track)
+                        all_tracks.append((media_file.path, track))
+
+            # Group by parent directory
+            folder_groups: dict = {}
+            for filepath, track in all_tracks:
+                parent = str(Path(filepath).parent)
+                if parent not in folder_groups:
+                    folder_groups[parent] = []
+                folder_groups[parent].append(track)
+
+            # Create FolderNodes for each directory
+            for folder_path, tracks in sorted(folder_groups.items()):
+                tracks.sort(key=lambda t: t.path)
+                node = FolderNode(
+                    display_text=Path(folder_path).name,
+                    path=folder_path,
+                    tracks=tracks
+                )
+                self.queue_nodes.append(node)
 
             self._update_playlist_display()
-            self.status_var.set(f"Found {len(self.playlist)} media files across {len(result)} library(ies)")
+            self.status_var.set(f"Found {len(all_tracks)} media files across {len(result)} library(ies)")
         else:
             # Original behavior for other locations
             paths = {
@@ -190,6 +239,8 @@ class PyPlayerGUI:
             supported_exts = {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac',
                               '.avi', '.mp4', '.mkv', '.mov'}
 
+            # Collect tracks
+            all_tracks = []
             for root, dirs, files in os.walk(scan_path):
                 if any(skip_dir in root.lower() for skip_dir in ['node_modules', '.git', '__pycache__']):
                     continue
@@ -197,10 +248,28 @@ class PyPlayerGUI:
                     ext = Path(file).suffix.lower()
                     if ext in supported_exts:
                         track = pm.Track(path=os.path.join(root, file), title=file)
-                        self.playlist.append(track)
+                        all_tracks.append((os.path.join(root, file), track))
+
+            # Group by parent directory and build FolderNodes
+            folder_groups: dict = {}
+            for filepath, track in all_tracks:
+                parent = str(Path(filepath).parent)
+                if parent not in folder_groups:
+                    folder_groups[parent] = []
+                folder_groups[parent].append(track)
+
+            self.queue_nodes = []
+            for folder_path, tracks in sorted(folder_groups.items()):
+                tracks.sort(key=lambda t: t.path)
+                node = FolderNode(
+                    display_text=Path(folder_path).name,
+                    path=folder_path,
+                    tracks=tracks
+                )
+                self.queue_nodes.append(node)
 
             self._update_playlist_display()
-            self.status_var.set(f"Found {len(self.playlist)} media files")
+            self.status_var.set(f"Found {len(all_tracks)} media files")
 
     def _open_files(self):
         """Open files dialog"""
@@ -214,6 +283,9 @@ class PyPlayerGUI:
 
         if files:
             import player as pm
+            from library_manager import FileNode
+
+            added_count = 0
             for filepath in files:
                 # Use relative path from first library or just filename
                 title = Path(filepath).name
@@ -223,20 +295,26 @@ class PyPlayerGUI:
                         title = str(Path(filepath).relative_to(lib_path))
                     except ValueError:
                         title = Path(filepath).name
+
                 track = pm.Track(path=filepath, title=title)
-                self.playlist.append(track)
+                node = FileNode(track=track, display_text=title, path=filepath)
+                self.queue_nodes.append(node)
+                added_count += 1
+
             self._update_playlist_display()
             # Auto-play first new file
-            idx = len(self.playlist) - len(files)
-            self.current_index = idx
-            self.selected_index = idx
+            idx = len(self.queue_nodes) - added_count
+            self.current_node_idx = idx
+            self.current_sub_index = 0
             if self.player.play(filepath):
                 self.status_var.set(i18n.get('status.now_playing', title=Path(filepath).name))
 
     def _clear_playlist(self):
         """Clear the playlist"""
-        import player as pm
-        self.playlist.clear()
+        self.queue_nodes = []
+        self.display_map.clear()
+        self.current_node_idx = -1
+        self.current_sub_index = -1
         self.current_index = -1
         self.selected_index = -1
         self._update_playlist_display()
@@ -244,23 +322,112 @@ class PyPlayerGUI:
         self.status_var.set(i18n.get('status.playlist_cleared'))
 
     def _update_playlist_display(self):
-        """Update the playlist display with hierarchical structure using full paths"""
-        from library_manager import _HierarchicalPlaylist
+        """更新播放列表显示并构建索引映射
 
-        # Build hierarchy from playlist using full paths
+        Builds hierarchical display with folders and files, while maintaining
+        a mapping from display indices to queue nodes for accurate playback.
+        """
+        from library_manager import _HierarchicalPlaylist, get_library_for_file
+
+        # Clear the display map
+        self.display_map.clear()
+
+        # Get libraries for hierarchy building
+        libs = self.settings_manager.settings.media_libraries if self.settings_manager else []
+
+        # Build hierarchy with library awareness
         hier = _HierarchicalPlaylist()
-        for track in self.playlist:
-            rel_title = self._get_relative_title(track.path)
-            hier.add_track(track.path, rel_title)
+
+        # First, collect all tracks from queue_nodes
+        all_tracks = []
+        for node in self.queue_nodes:
+            all_tracks.extend(node.get_tracks())
+
+        for track in all_tracks:
+            lib_config = get_library_for_file(track.path, libs) if libs else None
+
+            if lib_config:
+                # Use library name from config or derive from path
+                lib_name = lib_config.name or Path(lib_config.path).name
+                hier.add_track(
+                    full_path=track.path,
+                    display_title=self._get_relative_title(track.path),
+                    library_path=lib_config.path,
+                    library_name=lib_name
+                )
+            else:
+                # Fallback - use standard hierarchy with relative title
+                rel_title = self._get_relative_title(track.path)
+                hier.add_track(track.path, rel_title)
 
         display_items = hier.build_display_list()
 
         self.playlist_box.delete(0, tk.END)
-        for display_text, _track_info in display_items:
+
+        # Build the display_map from display_items
+        for display_idx, (display_text, track_info) in enumerate(display_items):
             self.playlist_box.insert(tk.END, display_text)
+
+            is_folder = track_info.get('is_folder', False)
+            path = track_info.get('path', '')
+            full_path = track_info.get('full_path', '')
+
+            # Find matching node index in queue_nodes
+            matched_node_idx = self._find_node_idx_by_path(path, is_folder, full_path)
+            sub_index = -1
+
+            if not is_folder and matched_node_idx >= 0:
+                # For files, find the sub_index within the folder node
+                node = self.queue_nodes[matched_node_idx]
+                if node.is_folder():
+                    # Find track index within folder
+                    for i, t in enumerate(node.tracks):
+                        if t.path == full_path:
+                            sub_index = i
+                            break
+                else:
+                    # Single file node - sub_index is always 0
+                    sub_index = 0
+
+            self.display_map.add_entry(
+                display_idx=display_idx,
+                node_idx=matched_node_idx,
+                is_folder=is_folder,
+                path=path,
+                sub_index=sub_index,
+                full_path=full_path
+            )
 
         # Restore selection if still valid
         self.playlist_box.selection_clear(0, tk.END)
+
+    def _find_node_idx_by_path(self, path: str, is_folder: bool, full_path: str = "") -> int:
+        """Find the index of a queue node by its path.
+
+        Args:
+            path: Folder path or file parent directory
+            is_folder: Whether looking for a folder node
+            full_path: For files, the complete file path
+
+        Returns:
+            Node index in queue_nodes, or -1 if not found
+        """
+        for idx, node in enumerate(self.queue_nodes):
+            if is_folder:
+                if node.is_folder() and node.path == path:
+                    return idx
+            else:
+                if node.is_folder():
+                    # Check if file is in this folder
+                    if full_path:
+                        for t in node.tracks:
+                            if t.path == full_path:
+                                return idx
+                else:
+                    # FileNode - check if path matches
+                    if node.path == full_path:
+                        return idx
+        return -1
 
     def _get_relative_title(self, filepath):
         """Get relative title for a track path.
@@ -283,157 +450,133 @@ class PyPlayerGUI:
         if selection:
             self.selected_index = selection[0]
 
-    def _get_track_info_from_display_idx(self, display_idx: int) -> Optional[dict]:
-        """Map a display index back to track info dict containing path and type.
-
-        Args:
-            display_idx: Index in the displayed playlist
-
-        Returns:
-            Track info dict with keys: 'is_folder', 'path', 'title', or None if invalid index
-        """
-        from library_manager import _HierarchicalPlaylist
-
-        hier = _HierarchicalPlaylist()
-        for track in self.playlist:
-            rel_title = self._get_relative_title(track.path)
-            hier.add_track(track.path, rel_title)
-
-        display_items = hier.build_display_list()
-        if 0 <= display_idx < len(display_items):
-            _, track_info = display_items[display_idx]
-            return track_info
-        return None
-
     def _get_track_from_display_idx(self, display_idx: int):
-        """Get Track object from a display index.
+        """通过显示索引获取轨道对象
 
         Args:
             display_idx: Index in the displayed playlist
 
         Returns:
-            Track object or None if invalid index
+            Track object or None if invalid index or folder entry
         """
-        track_info = self._get_track_info_from_display_idx(display_idx)
-        if not track_info:
+        entry = self.display_map.get_by_display_idx(display_idx)
+        if not entry:
             return None
 
-        # For folders, return first file in that folder; for files return the actual track
-        is_folder = track_info.get('is_folder', False)
+        node_idx = entry['node_idx']
+        if node_idx < 0 or node_idx >= len(self.queue_nodes):
+            return None
 
-        # Build hierarchy once outside the loop - optimize from previous method
-        from library_manager import _HierarchicalPlaylist
-        hier = _HierarchicalPlaylist()
-        for t in self.playlist:
-            t_rel = self._get_relative_title(t.path)
-            hier.add_track(t.path, t_rel)
+        node = self.queue_nodes[node_idx]
 
-        items = hier.build_display_list()
+        if entry['is_folder']:
+            # Folders don't have a single track - return None
+            return None
 
-        # Try to match by full_path from track_info
-        if track_info.get('full_path'):
-            for i, (display_text, info) in enumerate(items):
-                if i < len(items) and info.get('full_path') == track_info.get('path'):
-                    return self.playlist[i]
-
-        # Fallback: find by matching display title
-        for track in self.playlist:
-            if str(Path(track.path).name) == track_info.get('title'):
-                return track
-
-        return None
+        if node.is_folder():
+            sub_index = entry.get('sub_index', -1)
+            if 0 <= sub_index < len(node.tracks):
+                return node.tracks[sub_index]
+            return None
+        else:
+            # FileNode - return the single track
+            return node.track
 
     def _on_double_click(self, event):
-        """Handle double-click on playlist item.
+        """双击处理：文件夹播放全部内容，文件播放单个
 
-        For folders (marked with [D]), triggers batch playback of all files in that folder.
+        For folders (marked with [D] or [ML]), triggers batch playback of all files.
         For files (marked with [F]), plays the selected file.
         """
         try:
             selection = self.playlist_box.curselection()
-            if not selection or not self.playlist:
+            if not selection or not self.queue_nodes:
                 return
 
-            idx = selection[0]
-            track_info = self._get_track_info_from_display_idx(idx)
-
-            if not track_info:
+            display_idx = selection[0]
+            entry = self.display_map.get_by_display_idx(display_idx)
+            if not entry:
                 return
 
-            display_text = self.playlist_box.get(idx)
-            is_folder = track_info.get('is_folder', False)
-            folder_path = track_info.get('path')
+            node_idx = entry['node_idx']
+            is_folder = entry['is_folder']
 
-            # Handle folder click - batch playback of all files in folder
-            if is_folder and folder_path:
-                folder_name = display_text.replace("[D] ", "").replace("  ", "").strip()
-                self._play_folder(folder_path, folder_name)
-                return
+            if is_folder:
+                self._play_folder_node(node_idx)
+            else:
+                self._play_file_node(node_idx, entry.get('sub_index', 0))
 
-            # Handle file click (or non-folder items)
-            track = self._get_track_from_display_idx(idx)
-            if track:
-                self.current_index = idx
-                result = self.player.play(track.path)
-                if result:
-                    self.status_var.set(i18n.get('status.now_playing', title=track.title))
-                else:
-                    # Try to find by matching path/name
-                    for i, t in enumerate(self.playlist):
-                        if Path(t.path).name == track_info.get('title'):
-                            self.current_index = i
-                            result = self.player.play(t.path)
-                            if result:
-                                self.status_var.set(f"Now playing: {t.title}")
-                            break
-                self._update_playlist_display()
         except (OSError, IOError, AttributeError, RuntimeError) as e:
             self.status_var.set(f"Error on double-click: {e}")
 
-    def _play_folder(self, folder_path: str, folder_name: str):
-        """Play all files in a folder starting with the first one.
+    def _play_folder_node(self, node_idx: int):
+        """播放文件夹节点，从第一首开始
 
         Args:
-            folder_path: Full path to the folder
-            folder_name: Display name of the folder (used for status message)
+            node_idx: Index of the FolderNode in queue_nodes
         """
-        # Find all tracks in this folder - normalize paths for comparison
-        folder_norm = folder_path.replace('\\', '/')
-
-        def is_in_folder(track_path):
-            track_norm = str(Path(track_path)).replace('\\', '/')
-            return track_norm.startswith(folder_norm + '/') or track_norm == folder_norm
-
-        folder_tracks = [t for t in self.playlist if is_in_folder(t.path)]
-
-        if not folder_tracks:
+        if node_idx < 0 or node_idx >= len(self.queue_nodes):
             return
 
-        # Sort by path to maintain consistent order
-        folder_tracks.sort(key=lambda t: t.path)
+        node = self.queue_nodes[node_idx]
+        if not node.is_folder() or not node.tracks:
+            return
 
-        # Play the first track
-        first_track = folder_tracks[0]
-        self.current_index = self.playlist.index(first_track) if first_track in self.playlist else -1
+        node.reset()
+        node.current_sub_index = 0
+        self.current_node_idx = node_idx
+        self.current_sub_index = 0
 
-        result = self.player.play(first_track.path)
-        if result:
-            self.status_var.set(i18n.get('status.now_playing', title=f"folder: {folder_name}"))
+        track = node.get_current_track()
+        if track:
+            self.player.play(track.path)
+            self.status_var.set(f"Playing folder: {node.display_text}")
+
+    def _play_file_node(self, node_idx: int, sub_index: int = 0):
+        """播放文件节点或文件夹内特定文件
+
+        Args:
+            node_idx: Index of the node in queue_nodes
+            sub_index: For FolderNodes, the track index within the folder
+        """
+        if node_idx < 0 or node_idx >= len(self.queue_nodes):
+            return
+
+        node = self.queue_nodes[node_idx]
+        self.current_node_idx = node_idx
+
+        if node.is_folder():
+            track = node.set_sub_index(sub_index)
+            self.current_sub_index = sub_index
+        else:
+            track = node.track
+            self.current_sub_index = 0
+
+        if track:
+            result = self.player.play(track.path)
+            if result:
+                self.status_var.set(i18n.get('status.now_playing', title=track.title))
 
     def _toggle_play_pause(self):
         """Toggle play/pause"""
-        if not self.playlist:
+        if not self.queue_nodes:
             return
 
         status = self.player.get_status()
         if not status['current_track']:
             # Start playing selected track or first track
-            idx = self.selected_index if 0 <= self.selected_index < len(self.playlist) else 0
-            self.current_index = idx
-            track = self.playlist[idx]
-            result = self.player.play(track.path)
-            if result:
-                self.status_var.set(i18n.get('status.now_playing', title=track.title))
+            if self.selected_index >= 0:
+                entry = self.display_map.get_by_display_idx(self.selected_index)
+                if entry:
+                    node_idx = entry['node_idx']
+                    if entry['is_folder']:
+                        self._play_folder_node(node_idx)
+                    else:
+                        self._play_file_node(node_idx, entry.get('sub_index', 0))
+                    return
+
+            # No selection - play first node
+            self._play_first_node()
         elif status['paused']:
             self.player.resume()
             self.isPaused = False
@@ -448,37 +591,99 @@ class PyPlayerGUI:
         self.player.stop()
         self.isPlaying = False
         self.isPaused = False
+        self.current_node_idx = -1
+        self.current_sub_index = -1
         self.current_index = -1
         self._update_playlist_display()
         self.status_var.set(i18n.get('status.stopped'))
 
     def _next_track(self):
-        """Play next track"""
-        if not self.playlist or len(self.playlist) < 2:
+        """下一首：文件夹内下一首或下一节点
+
+        Navigates to the next track:
+        - Within a folder: advance to next track in that folder
+        - At folder end: move to next node in queue_nodes
+        - At queue end: stop playback (or wrap if in loop-all mode)
+        """
+        if not self.queue_nodes:
             return
 
-        self.current_index = (self.current_index + 1) % len(self.playlist)
-        track = self.playlist[self.current_index]
-        result = self.player.play(track.path)
-        if result:
-            self.status_var.set(i18n.get('status.now_playing', title=track.title))
-        self._update_playlist_display()
+        if self.current_node_idx < 0:
+            self._play_first_node()
+            return
+
+        node = self.queue_nodes[self.current_node_idx]
+
+        if node.is_folder():
+            next_track = node.advance_to_next()
+            if next_track:
+                self.current_sub_index = node.current_sub_index
+                self.player.play(next_track.path)
+                self.status_var.set(i18n.get('status.now_playing', title=next_track.title))
+                return
+
+        # Folder finished or file node - move to next node
+        next_idx = self.current_node_idx + 1
+        if next_idx < len(self.queue_nodes):
+            next_node = self.queue_nodes[next_idx]
+            if next_node.is_folder():
+                self._play_folder_node(next_idx)
+            else:
+                self._play_file_node(next_idx)
+        else:
+            self.status_var.set("Playback complete")
 
     def _prev_track(self):
-        """Play previous track"""
-        if not self.playlist or len(self.playlist) < 2:
+        """上一首：文件夹内上一首或上一节点
+
+        Navigates to the previous track:
+        - Within a folder: go back to previous track
+        - At folder start: move to previous node
+        """
+        if not self.queue_nodes or self.current_node_idx < 0:
             return
 
-        self.current_index = (self.current_index - 1) % len(self.playlist)
-        track = self.playlist[self.current_index]
-        result = self.player.play(track.path)
-        if result:
-            self.status_var.set(i18n.get('status.now_playing', title=track.title))
-        self._update_playlist_display()
+        node = self.queue_nodes[self.current_node_idx]
+
+        if node.is_folder() and node.current_sub_index > 0:
+            prev_track = node.advance_to_prev()
+            if prev_track:
+                self.current_sub_index = node.current_sub_index
+                self.player.play(prev_track.path)
+                self.status_var.set(i18n.get('status.now_playing', title=prev_track.title))
+            return
+
+        # Move to previous node
+        prev_idx = self.current_node_idx - 1
+        if prev_idx >= 0:
+            prev_node = self.queue_nodes[prev_idx]
+            if prev_node.is_folder() and prev_node.tracks:
+                # Start from last track in previous folder
+                prev_node.current_sub_index = len(prev_node.tracks) - 1
+                self.current_node_idx = prev_idx
+                self.current_sub_index = prev_node.current_sub_index
+                track = prev_node.get_current_track()
+                if track:
+                    self.player.play(track.path)
+                    self.status_var.set(i18n.get('status.now_playing', title=track.title))
+            else:
+                self._play_file_node(prev_idx)
+        else:
+            self.status_var.set("Already at first track")
+
+    def _play_first_node(self):
+        """播放第一个节点"""
+        if not self.queue_nodes:
+            return
+
+        first_node = self.queue_nodes[0]
+        if first_node.is_folder():
+            self._play_folder_node(0)
+        else:
+            self._play_file_node(0)
 
     def _set_volume(self, value):
         """Set volume (only effective for audio files)"""
-        import player as pm
         volume = float(value) / 100.0  # Convert 0-100 to 0.0-1.0
         self.player.set_volume(volume)
 
@@ -581,7 +786,6 @@ class PyPlayerGUI:
 
     def _scan_libraries(self):
         """Scan all media libraries"""
-        import player as pm
 
         from library_manager import LibraryManager
         manager = LibraryManager()
@@ -604,6 +808,13 @@ def run_gui():
     root = tk.Tk()
     app = PyPlayerGUI(root)
 
+    # Set up track end callback
+    def on_track_end():
+        """Callback when a track finishes - auto play next"""
+        app._next_track()
+
+    app.player.audio_player.set_track_end_callback(on_track_end)
+
     # Run periodic status check in a separate thread
     def update_loop():
         while True:
@@ -611,13 +822,25 @@ def run_gui():
                 time.sleep(0.1)
                 if not hasattr(app, 'player') or app.player is None:
                     continue
+
+                # Check for track end (triggers callback if needed)
+                app.player.check_track_end()
+
                 status = app.player.get_status()
-                if status['current_track'] and app.current_index < 0:
-                    # Find the current playing track index
-                    for i, track in enumerate(app.playlist):
-                        if Path(track.path).name == status['current_track']:
-                            app.current_index = i
-                            break
+                if status['current_track'] and app.current_node_idx < 0:
+                    # Find the current playing track in queue_nodes
+                    for i, node in enumerate(app.queue_nodes):
+                        if node.is_folder():
+                            for j, track in enumerate(node.tracks):
+                                if Path(track.path).name == status['current_track']:
+                                    app.current_node_idx = i
+                                    app.current_sub_index = j
+                                    break
+                        else:
+                            if Path(node.track.path).name == status['current_track']:
+                                app.current_node_idx = i
+                                app.current_sub_index = 0
+                                break
             except AttributeError:
                 pass
 

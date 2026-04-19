@@ -3,7 +3,9 @@
     "allow": [
       "Bash(pip install:*)",
       "Bash(python:*)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(ls -la \"D:/Codes/Python/PyPlayer\"/*.py)",
+      "Bash(dir \"D:\\\\Codes\\\\Python\\\\PyPlayer\\\\*.py\")"
     ]
   },
   "hooks": {

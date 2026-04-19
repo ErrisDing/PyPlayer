@@ -3,13 +3,15 @@
 Music player core module
 Supported formats: MP3, WAV, AVI, MP4, MKV and other common audio/video formats
 """
+import sys
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional, Dict, Any
+
 import cv2
 import pygame
-import sys
-from pathlib import Path
-from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
-import re
+
 import i18n
 
 
@@ -21,7 +23,10 @@ class Track:
 
 
 class AudioPlayer:
-    """Audio player (MP3, WAV, etc.)"""
+    """Audio player (MP3, WAV, etc.)
+
+    Extended with per-library queue support for independent playback state management.
+    """
 
     def __init__(self):
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
@@ -30,6 +35,136 @@ class AudioPlayer:
         self.current_track: Optional[Track] = None
         self.queue: List[Track] = []
 
+        # Per-library queue management (new)
+        self._library_queues: Dict[str, 'PlaybackQueueInfo'] = {}  # library_id -> queue state
+
+        # Track end callback support
+        self._on_track_end_callback: Optional[callable] = None
+
+    def set_track_end_callback(self, callback: callable) -> None:
+        """设置曲目结束回调函数
+
+        Args:
+            callback: Function to call when a track finishes playing.
+                      The callback will be called with no arguments.
+        """
+        self._on_track_end_callback = callback
+
+    def clear_track_end_callback(self) -> None:
+        """清除曲目结束回调函数"""
+        self._on_track_end_callback = None
+
+    def play_from_queue(self, library_id: str, position_index: Optional[int] = None) -> bool:
+        """从指定队列播放当前轨道
+
+        Args:
+            library_id: 媒体库 ID（路径）
+            position_index: 可选，从该索引开始播放；None=从当前位置或开头播放
+
+        Returns:
+            Success status
+        """
+
+        if not self._library_queues.get(library_id):
+            print(f"No queue found for library: {library_id}")
+            return False
+
+        queue_info = self._library_queues[library_id]
+        playback_queue = queue_info['queue']
+        current_index = position_index if position_index is not None else playback_queue.current_index
+
+        # Check bounds
+        if not (0 <= current_index < len(playback_queue.track_list)):
+            print(f"Invalid position index: {current_index} for library {library_id}")
+            return False
+
+        track = playback_queue.track_list[current_index]
+        return self.play_file(track.path)
+
+    def next_track_in_queue(self, library_id: str, loop_mode: str = "OFF") -> bool:
+        """在指定队列中前进到下一首歌曲
+
+        Args:
+            library_id: 媒体库 ID（路径）
+            loop_mode: 循环模式 ("OFF", "ONE", "ALL")
+
+        Returns:
+            Success status and updates queue position
+        """
+
+        if not self._library_queues.get(library_id):
+            print(f"No queue found for library: {library_id}")
+            return False
+
+        queue_info = self._library_queues[library_id]
+        playback_queue = queue_info['queue']
+
+        # Update position in state machine history
+        old_pos = playback_queue.current_index
+        if loop_mode == "ALL" and playback_queue.current_index >= len(playback_queue.track_list) - 1:
+            playback_queue.current_index = -1  # Will wrap to first track below
+
+        new_index = playback_queue.current_index + 1
+
+        # Wrap around for ALL mode
+        if loop_mode == "ALL":
+            if not (0 <= new_index < len(playback_queue.track_list)):
+                new_index = 0
+        elif loop_mode != "ONE" and playback_queue.current_index < len(playback_queue.track_list) - 1:
+            new_index = old_pos + 1
+
+        # Update position state history if changed
+        if new_index != old_pos:
+            playback_queue.position_state.record_position(new_index)
+
+        # Play the track
+        track = playback_queue.track_list[new_index]
+        return self.play_file(track.path)
+
+    def prev_track_in_queue(self, library_id: str) -> bool:
+        """在指定队列中后退到上一首歌曲
+
+        Args:
+            library_id: 媒体库 ID（路径）
+
+        Returns:
+            Success status and updates queue position
+        """
+
+        if not self._library_queues.get(library_id):
+            print(f"No queue found for library: {library_id}")
+            return False
+
+        queue_info = self._library_queues[library_id]
+        playback_queue = queue_info['queue']
+
+        old_pos = playback_queue.current_index
+        new_index = max(0, old_pos - 1)
+
+        # Update position state history if changed
+        if new_index != old_pos:
+            playback_queue.position_state.record_position(new_index)
+
+        # Play the track
+        track = playback_queue.track_list[new_index]
+        return self.play_file(track.path)
+
+    def register_library_queue(self, library_id: str, queue: 'PlaybackQueue') -> None:
+        """注册/更新媒体库队列信息（供播放器使用）"""
+
+        self._library_queues[library_id] = {
+            'queue': queue,
+            'registered_at': datetime.now() if isinstance(self, AudioPlayer) else None
+        }
+
+    def unregister_library_queue(self, library_id: str) -> bool:
+        """注销媒体库队列"""
+        if library_id in self._library_queues:
+            del self._library_queues[library_id]
+            return True
+        return False
+
+    # Core playback methods - 核心播放方法
     def play_file(self, filepath: str) -> bool:
         """Play single file"""
         try:
@@ -102,7 +237,6 @@ class VideoPlayer:
     def __init__(self):
         self.is_playing = False
         self.current_file: Optional[str] = None
-        import cv2
         self.cap = None
         self.frame_delay = 0.033  # Approximately 30fps
 
@@ -175,6 +309,7 @@ class PlayerManager:
         self.audio_player = AudioPlayer()
         self.video_player = None
         self._is_video_playing = False
+        self._was_playing = False  # Track previous playing state for end detection
 
     def get_supported_formats(self) -> dict:
         """Get supported formats"""
@@ -219,6 +354,8 @@ class PlayerManager:
 
         if file_type == 'audio':
             result = self.audio_player.play_file(filepath)
+            if result:
+                self._was_playing = True  # Track that we started playing
         else:
             import cv2
             self._is_video_playing = True
@@ -246,7 +383,6 @@ class PlayerManager:
 
         # Handle video files list
         for video in video_files:
-            import cv2
             self.video_player = VideoPlayer()
             if not self.video_player.play_video(video):
                 return False
@@ -254,18 +390,38 @@ class PlayerManager:
         return len(audio_files) > 0 or len(video_files) > 0
 
     def get_status(self) -> Dict[str, Any]:
-        """Get current playback status"""
+        """Get current playback status
+
+        Returns dictionary with both standard playback info and per-library queue state.
+        New UI components can use 'library_queues_status' for queue-aware display.
+        """
         import pygame.mixer
         try:
             pygame.mixer.init()
         except pygame.error:
             pass
-        return {
+
+        result = {
             "audio_playing": self.audio_player.is_active(),
             "video_playing": self._is_video_playing,
             "current_track": self.audio_player.current_track.title if self.audio_player.current_track else None,
-            "paused": self.audio_player.is_paused
+            "paused": self.audio_player.is_paused,
+            # New field: per-library queue status for enhanced UI display
         }
+
+        # Add library queues status if available (backward compatible - optional)
+        if hasattr(self.audio_player, '_library_queues') and self.audio_player._library_queues:
+            result["library_queues_status"] = {
+                lib_id: {
+                    "queue_length": len(qinfo['queue'].track_list),
+                    "current_index": qinfo['queue'].current_index,
+                    "state": qinfo['queue'].state,
+                    "position_history_len": len(qinfo['queue'].position_state.history)
+                }
+                for lib_id, qinfo in self.audio_player._library_queues.items()
+            }
+
+        return result
 
     def get_playlist(self) -> List[Track]:
         """Get current playlist (audio only)"""
@@ -348,6 +504,40 @@ class PlayerManager:
     def set_volume(self, level: float) -> None:
         """Set volume, level range 0.0-1.0"""
         self.audio_player.set_volume(level)
+
+    def check_track_end(self) -> bool:
+        """检查当前轨道是否刚刚播放完毕
+
+        Returns:
+            True if a track was playing but has now stopped, False otherwise
+        """
+        import pygame.mixer
+        try:
+            pygame.mixer.init()
+        except pygame.error:
+            pass
+
+        if self._is_video_playing:
+            return False
+
+        is_currently_playing = pygame.mixer.music.get_busy() > 0
+
+        # Track just ended if it was playing but is no longer
+        if self._was_playing and not is_currently_playing and self.audio_player.current_track is not None:
+            # Clear the current track to prevent repeated triggers
+            old_track = self.audio_player.current_track
+            self.audio_player.current_track = None
+            # Trigger callback if set
+            if self.audio_player._on_track_end_callback:
+                try:
+                    self.audio_player._on_track_end_callback()
+                except Exception as e:
+                    print(f"Error in track end callback: {e}")
+            return True
+
+        # Update state tracking
+        self._was_playing = is_currently_playing and self.audio_player.is_playing
+        return False
 
 
 def create_manager() -> PlayerManager:
