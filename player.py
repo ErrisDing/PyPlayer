@@ -9,8 +9,9 @@ import threading
 import time
 import math
 from datetime import datetime
+from enum import Enum, auto
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable
 
 import cv2
 import numpy as np
@@ -19,6 +20,90 @@ import sounddevice as sd
 
 import i18n
 from library_manager import Track
+
+
+class PlayerState(Enum):
+    """播放器状态枚举"""
+    IDLE = auto()        # 空闲
+    LOADING = auto()     # 加载中
+    PLAYING = auto()     # 播放中
+    PAUSED = auto()      # 已暂停
+    STOPPING = auto()    # 停止中
+    ERROR = auto()       # 错误
+
+
+class PlayerStateMachine:
+    """线程安全的播放器状态机"""
+
+    # 合法状态转换映射
+    VALID_TRANSITIONS = {
+        PlayerState.IDLE: {PlayerState.LOADING, PlayerState.ERROR},
+        PlayerState.LOADING: {PlayerState.PLAYING, PlayerState.ERROR, PlayerState.IDLE},
+        PlayerState.PLAYING: {PlayerState.PAUSED, PlayerState.STOPPING, PlayerState.IDLE, PlayerState.ERROR},
+        PlayerState.PAUSED: {PlayerState.PLAYING, PlayerState.STOPPING, PlayerState.IDLE},
+        PlayerState.STOPPING: {PlayerState.IDLE, PlayerState.ERROR},
+        PlayerState.ERROR: {PlayerState.IDLE, PlayerState.LOADING},
+    }
+
+    def __init__(self):
+        self._state = PlayerState.IDLE
+        self._lock = threading.RLock()
+        self._callbacks: List[Callable[[PlayerState, PlayerState], None]] = []
+
+    @property
+    def state(self) -> PlayerState:
+        """获取当前状态"""
+        with self._lock:
+            return self._state
+
+    def can_transition_to(self, new_state: PlayerState) -> bool:
+        """检查是否可以转换到新状态"""
+        with self._lock:
+            return new_state in self.VALID_TRANSITIONS.get(self._state, set())
+
+    def transition_to(self, new_state: PlayerState) -> bool:
+        """尝试转换到新状态，返回是否成功"""
+        with self._lock:
+            if not self.can_transition_to(new_state):
+                return False
+            old_state = self._state
+            self._state = new_state
+            # 触发回调
+            for callback in self._callbacks:
+                try:
+                    callback(old_state, new_state)
+                except Exception as e:
+                    print(f"State change callback error: {e}")
+            return True
+
+    def force_transition(self, new_state: PlayerState) -> None:
+        """强制转换状态（用于错误恢复等特殊情况）"""
+        with self._lock:
+            old_state = self._state
+            self._state = new_state
+            for callback in self._callbacks:
+                try:
+                    callback(old_state, new_state)
+                except Exception as e:
+                    print(f"State change callback error: {e}")
+
+    def add_callback(self, callback: Callable[[PlayerState, PlayerState], None]) -> None:
+        """添加状态变化回调"""
+        self._callbacks.append(callback)
+
+    def remove_callback(self, callback: Callable[[PlayerState, PlayerState], None]) -> None:
+        """移除状态变化回调"""
+        if callback in self._callbacks:
+            self._callbacks.remove(callback)
+
+    # 向后兼容属性
+    @property
+    def is_playing(self) -> bool:
+        return self._state == PlayerState.PLAYING
+
+    @property
+    def is_paused(self) -> bool:
+        return self._state == PlayerState.PAUSED
 
 
 class AudioPlayer:
@@ -39,17 +124,11 @@ class AudioPlayer:
     LARGE_FILE_THRESHOLD_MINUTES = 30
 
     def __init__(self):
-        # Playback state
-        self.is_playing = False
-        self.is_paused = False
-        self.current_track: Optional[Track] = None
-        self.queue: List[Track] = []
-
-        # Per-library queue management
-        self._library_queues: Dict[str, 'PlaybackQueueInfo'] = {}
+        # State machine for thread-safe state management
+        self._state_machine = PlayerStateMachine()
 
         # Track end callback support
-        self._on_track_end_callback: Optional[callable] = None
+        self._on_track_end_callback: Optional[Callable] = None
 
         # Audio data (numpy array)
         self._audio_data: Optional[np.ndarray] = None
@@ -82,7 +161,43 @@ class AudioPlayer:
         self._total_chunks: int = 0
         self._filepath: Optional[str] = None
 
-    def set_track_end_callback(self, callback: callable) -> None:
+        # Current track and queue
+        self.current_track: Optional[Track] = None
+        self.queue: List[Track] = []
+
+        # Per-library queue management
+        self._library_queues: Dict[str, 'PlaybackQueueInfo'] = {}
+
+    # Backward-compatible properties using state machine
+    @property
+    def is_playing(self) -> bool:
+        return self._state_machine.is_playing
+
+    @is_playing.setter
+    def is_playing(self, value: bool) -> None:
+        # For backward compatibility, allow setting but prefer state machine
+        if value:
+            self._state_machine.transition_to(PlayerState.PLAYING)
+        elif self._state_machine.state == PlayerState.PLAYING:
+            self._state_machine.transition_to(PlayerState.IDLE)
+
+    @property
+    def is_paused(self) -> bool:
+        return self._state_machine.is_paused
+
+    @is_paused.setter
+    def is_paused(self, value: bool) -> None:
+        if value:
+            self._state_machine.transition_to(PlayerState.PAUSED)
+        elif self._state_machine.state == PlayerState.PAUSED:
+            self._state_machine.transition_to(PlayerState.PLAYING)
+
+    @property
+    def state(self) -> PlayerState:
+        """Get current player state"""
+        return self._state_machine.state
+
+    def set_track_end_callback(self, callback: Callable) -> None:
         """Set the callback function for when a track ends playing."""
         self._on_track_end_callback = callback
 
@@ -167,6 +282,49 @@ class AudioPlayer:
         return False
 
     # Core playback methods
+    def _stop_playback_sync(self) -> None:
+        """同步停止播放 - 确保在播放新文件前完全停止
+
+        This method guarantees that all playback activity is stopped
+        before returning, preventing concurrent audio playback.
+        """
+        # Signal stop to playback thread
+        self._stop_event.set()
+        self._pause_event.set()
+
+        # Transition to STOPPING state
+        self._state_machine.force_transition(PlayerState.STOPPING)
+
+        # Stop sounddevice stream
+        if self._current_stream:
+            try:
+                if self._current_stream.active:
+                    self._current_stream.stop()
+                self._current_stream.close()
+            except Exception:
+                pass
+            self._current_stream = None
+
+        # CRITICAL: Stop ALL sounddevice streams to prevent concurrent playback
+        # This ensures any orphaned streams or buffered audio is stopped
+        try:
+            sd.stop()
+        except Exception:
+            pass
+
+        # Wait for playback thread to finish with timeout
+        # IMPORTANT: Check if we're NOT the playback thread itself to avoid RuntimeError
+        if self._playback_thread and self._playback_thread.is_alive():
+            current_thread = threading.current_thread()
+            if self._playback_thread is not current_thread:
+                self._playback_thread.join(timeout=2.0)
+            # If we ARE the playback thread, just proceed - the thread will exit naturally
+
+        self._playback_thread = None
+
+        # Transition to IDLE state
+        self._state_machine.force_transition(PlayerState.IDLE)
+
     def play_file(self, filepath: str) -> bool:
         """Play a single file using soundfile + sounddevice.
 
@@ -177,8 +335,12 @@ class AudioPlayer:
             True if playback started successfully, False otherwise
         """
         try:
-            # Stop any current playback
-            self._stop_playback()
+            # Synchronously stop any current playback before loading new file
+            self._stop_playback_sync()
+
+            # Transition to LOADING state
+            if not self._state_machine.transition_to(PlayerState.LOADING):
+                print("Warning: Could not transition to LOADING state")
 
             # Load audio using soundfile
             # soundfile supports: WAV, FLAC, OGG, MP3 (with libsndfile >= 1.0.31)
@@ -227,7 +389,7 @@ class AudioPlayer:
             self._position_samples = 0
             self._pause_position_samples = 0
 
-            # Start playback
+            # Start playback (this will transition to PLAYING)
             self._start_playback(from_sample=0)
             return True
 
@@ -235,7 +397,7 @@ class AudioPlayer:
             print(i18n.console('console.play_failed', error=str(e)))
             import traceback
             traceback.print_exc()
-            self.is_playing = False
+            self._state_machine.force_transition(PlayerState.ERROR)
             return False
 
     def play_queue(self, files: List[str]) -> bool:
@@ -251,7 +413,9 @@ class AudioPlayer:
 
     def pause(self) -> None:
         """Pause playback."""
-        if not self.is_playing or self.is_paused:
+        if not self._state_machine.is_playing:
+            return
+        if self._state_machine.state == PlayerState.PAUSED:
             return
 
         with self._playback_lock:
@@ -264,14 +428,14 @@ class AudioPlayer:
                 self._pause_position_samples = self._position_samples
 
             self._pause_event.set()
-            self.is_paused = True
+            self._state_machine.transition_to(PlayerState.PAUSED)
 
     def resume(self) -> None:
         """Resume playback from paused position."""
-        if not self.is_paused:
+        if self._state_machine.state != PlayerState.PAUSED:
             return
 
-        self.is_paused = False
+        self._state_machine.transition_to(PlayerState.PLAYING)
         self._pause_event.clear()
 
         # Resume from paused position
@@ -279,7 +443,7 @@ class AudioPlayer:
 
     def stop(self) -> None:
         """Stop playback and clear state."""
-        self._stop_playback()
+        self._stop_playback_sync()
         with self._playback_lock:
             self.current_track = None
             self._audio_data = None
@@ -423,13 +587,21 @@ class AudioPlayer:
 
     def _start_playback(self, from_sample: int = 0) -> None:
         """Start playback from a given sample position in a background thread."""
+        # CRITICAL: Ensure any residual audio is stopped before starting new playback
+        try:
+            sd.stop()
+            # Small delay to allow audio system to clean up
+            time.sleep(0.05)
+        except Exception:
+            pass
+
         with self._playback_lock:
             self._position_samples = from_sample
             self._stop_event.clear()
             self._pause_event.clear()
 
-        self.is_playing = True
-        self.is_paused = False
+        # Transition to PLAYING state
+        self._state_machine.force_transition(PlayerState.PLAYING)
 
         # Choose playback strategy
         if self._use_chunked_loading:
@@ -467,8 +639,7 @@ class AudioPlayer:
             self._playback_thread.join(timeout=2.0)
 
         self._playback_thread = None
-        self.is_playing = False
-        self.is_paused = False
+        self._state_machine.force_transition(PlayerState.IDLE)
 
     def _playback_worker(self, from_sample: int = 0) -> None:
         """Playback thread worker - plays from sample position using sounddevice stream."""
@@ -540,7 +711,7 @@ class AudioPlayer:
 
             # Playback completed naturally
             if not self._stop_event.is_set() and self._on_track_end_callback:
-                self.is_playing = False
+                self._state_machine.force_transition(PlayerState.IDLE)
                 try:
                     self._on_track_end_callback()
                 except Exception as e:
@@ -550,7 +721,7 @@ class AudioPlayer:
             print(f"Playback error: {e}")
             import traceback
             traceback.print_exc()
-            self.is_playing = False
+            self._state_machine.force_transition(PlayerState.ERROR)
 
     def _playback_worker_chunked(self, from_sample: int = 0) -> None:
         """Playback thread worker for large files - uses chunked loading."""
@@ -644,7 +815,7 @@ class AudioPlayer:
 
             # Playback completed naturally
             if not self._stop_event.is_set() and self._on_track_end_callback:
-                self.is_playing = False
+                self._state_machine.force_transition(PlayerState.IDLE)
                 try:
                     self._on_track_end_callback()
                 except Exception as e:
@@ -654,7 +825,7 @@ class AudioPlayer:
             print(f"Chunked playback error: {e}")
             import traceback
             traceback.print_exc()
-            self.is_playing = False
+            self._state_machine.force_transition(PlayerState.ERROR)
 
 
 class VideoPlayer:
@@ -731,10 +902,26 @@ class PlayerManager:
     SUPPORTED_VIDEO = {'.avi', '.mp4', '.mkv', '.mov', '.wmv'}
 
     def __init__(self):
-        self.audio_player = AudioPlayer()
-        self.video_player = None
+        # Use singleton AudioPlayer instance
+        self._audio_player = AudioPlayer()
+        self._video_player: Optional[VideoPlayer] = None
         self._is_video_playing = False
         self._was_playing = False
+
+    @property
+    def audio_player(self) -> AudioPlayer:
+        """Read-only access to the singleton AudioPlayer."""
+        return self._audio_player
+
+    @property
+    def video_player(self) -> Optional[VideoPlayer]:
+        """Read-only access to the VideoPlayer."""
+        return self._video_player
+
+    @video_player.setter
+    def video_player(self, value: Optional[VideoPlayer]) -> None:
+        """Allow setting video player."""
+        self._video_player = value
 
     def get_supported_formats(self) -> dict:
         """Get supported formats"""
@@ -755,8 +942,8 @@ class PlayerManager:
 
     def play(self, filepath: str) -> bool:
         """Play file (auto-select mode)"""
-        if self._is_video_playing and self.video_player:
-            self.video_player.stop()
+        if self._is_video_playing and self._video_player:
+            self._video_player.stop()
 
         file_type = self._check_file_type(filepath)
         if not file_type:
@@ -769,18 +956,18 @@ class PlayerManager:
         except (cv2.error, RuntimeError):
             pass
 
-        self.audio_player = AudioPlayer()
-        self.video_player = VideoPlayer()
+        self._video_player = VideoPlayer()
         self._is_video_playing = False
 
         if file_type == 'audio':
-            result = self.audio_player.play_file(filepath)
+            # Use singleton audio_player - play_file will stop any current playback
+            result = self._audio_player.play_file(filepath)
             if result:
                 self._was_playing = True
         else:
             import cv2
             self._is_video_playing = True
-            result = self.video_player.play_video(filepath)
+            result = self._video_player.play_video(filepath)
 
         return result
 
@@ -793,15 +980,15 @@ class PlayerManager:
         video_files = [f for f in files if self._check_file_type(f) == 'video']
 
         if audio_files:
-            self.audio_player = AudioPlayer()
-            result = self.audio_player.play_queue(audio_files)
+            # Use singleton audio_player - play_queue will handle stopping
+            result = self._audio_player.play_queue(audio_files)
             if result and len(video_files) > 0:
                 print(i18n.console('console.start_video_play', path=video_files[0]))
                 self._is_video_playing = True
 
         for video in video_files:
-            self.video_player = VideoPlayer()
-            if not self.video_player.play_video(video):
+            self._video_player = VideoPlayer()
+            if not self._video_player.play_video(video):
                 return False
 
         return len(audio_files) > 0 or len(video_files) > 0
@@ -809,13 +996,14 @@ class PlayerManager:
     def get_status(self) -> Dict[str, Any]:
         """Get current playback status"""
         result = {
-            "audio_playing": self.audio_player.is_active(),
+            "audio_playing": self._audio_player.is_active(),
             "video_playing": self._is_video_playing,
-            "current_track": self.audio_player.current_track.title if self.audio_player.current_track else None,
-            "paused": self.audio_player.is_paused,
+            "current_track": self._audio_player.current_track.title if self._audio_player.current_track else None,
+            "paused": self._audio_player.is_paused,
+            "state": self._audio_player.state.name,  # Add state enum name
         }
 
-        if hasattr(self.audio_player, '_library_queues') and self.audio_player._library_queues:
+        if hasattr(self._audio_player, '_library_queues') and self._audio_player._library_queues:
             result["library_queues_status"] = {
                 lib_id: {
                     "queue_length": len(qinfo['queue'].track_list),
@@ -823,38 +1011,38 @@ class PlayerManager:
                     "state": qinfo['queue'].state,
                     "position_history_len": len(qinfo['queue'].position_state.history)
                 }
-                for lib_id, qinfo in self.audio_player._library_queues.items()
+                for lib_id, qinfo in self._audio_player._library_queues.items()
             }
 
         return result
 
     def get_playlist(self) -> List[Track]:
         """Get current playlist (audio only)"""
-        return self.audio_player.queue if hasattr(self.audio_player, 'queue') else []
+        return self._audio_player.queue if hasattr(self._audio_player, 'queue') else []
 
     def pause(self) -> None:
         """Pause playback"""
         if not self._is_video_playing:
-            self.audio_player.pause()
+            self._audio_player.pause()
 
     def resume(self) -> None:
         """Resume playback"""
         if not self._is_video_playing:
-            self.audio_player.resume()
+            self._audio_player.resume()
 
     def stop(self) -> None:
         """Stop playback"""
-        self.audio_player.stop()
-        if self._is_video_playing and self.video_player:
-            self.video_player.stop()
+        self._audio_player.stop()
+        if self._is_video_playing and self._video_player:
+            self._video_player.stop()
         self._is_video_playing = False
 
     def toggle_play_pause(self) -> bool:
         """Toggle play/pause state"""
-        if self._is_video_playing and self.video_player:
+        if self._is_video_playing and self._video_player:
             return False
 
-        status = self.audio_player.get_status()
+        status = self.get_status()
         if not status['current_track']:
             return False
 
@@ -871,24 +1059,24 @@ class PlayerManager:
 
     def set_volume(self, level: float) -> None:
         """Set volume, level range 0.0-1.0"""
-        self.audio_player.set_volume(level)
+        self._audio_player.set_volume(level)
 
     def check_track_end(self) -> bool:
         """Check if the current track has just finished playing."""
         if self._is_video_playing:
             return False
 
-        is_currently_playing = self.audio_player.is_playing and (
-            self.audio_player.is_paused or
-            (self.audio_player._current_stream and self.audio_player._current_stream.active)
+        is_currently_playing = self._audio_player.is_playing and (
+            self._audio_player.is_paused or
+            (self._audio_player._current_stream and self._audio_player._current_stream.active)
         )
 
-        if self._was_playing and not is_currently_playing and self.audio_player.current_track is not None:
-            old_track = self.audio_player.current_track
-            self.audio_player.current_track = None
-            if self.audio_player._on_track_end_callback:
+        if self._was_playing and not is_currently_playing and self._audio_player.current_track is not None:
+            old_track = self._audio_player.current_track
+            self._audio_player.current_track = None
+            if self._audio_player._on_track_end_callback:
                 try:
-                    self.audio_player._on_track_end_callback()
+                    self._audio_player._on_track_end_callback()
                 except Exception as e:
                     print(f"Error in track end callback: {e}")
             return True

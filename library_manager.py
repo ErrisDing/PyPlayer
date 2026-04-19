@@ -783,8 +783,9 @@ class _HierarchicalPlaylist:
 
             for i, part in enumerate(parts[:-1]):
                 if part not in current:
-                    sub_path_obj = rel_path_obj = Path(*parts[:i+1])
-                    sub_path = sub_path_obj.as_posix()
+                    # Build full absolute path for this subfolder
+                    sub_full_path = lib_path_obj / Path(*parts[:i+1])
+                    sub_path = sub_full_path.as_posix()
                     current[part] = {
                         'files': [],
                         'children': {},
@@ -795,13 +796,16 @@ class _HierarchicalPlaylist:
                 current = current[part]['children']
 
             # Add file to final level within library
+            # Calculate parent folder path for the file
+            parent_folder_path = str(Path(full_path).parent)
             current[parts[-1]] = {
                 'is_file': True,
                 'title': display_title,
                 'full_path': full_path,
                 'lib_name': library_name,
                 'rel_path': parts[-1],  # Just the filename for files at leaf level
-                'file_rel_full': rel_str  # Full relative path for display
+                'file_rel_full': rel_str,  # Full relative path for display
+                'parent_folder_path': parent_folder_path  # For matching with FolderNode
             }
 
         except ValueError:
@@ -818,7 +822,8 @@ class _HierarchicalPlaylist:
                 'is_file': True,
                 'title': display_title,
                 'full_path': full_path,
-                'rel_path': display_title
+                'rel_path': display_title,
+                'parent_folder_path': str(Path(full_path).parent)
             })
 
     def _build_standard_hierarchy(self, full_path: str, display_title: str) -> None:
@@ -843,7 +848,8 @@ class _HierarchicalPlaylist:
         current[parts[-1]] = {
             'is_file': True,
             'title': display_title,
-            'full_path': full_path
+            'full_path': full_path,
+            'parent_folder_path': str(Path(full_path).parent)
         }
 
     def build_display_list(self) -> List[Tuple[str, Dict[str, Any]]]:
@@ -870,7 +876,7 @@ class _HierarchicalPlaylist:
                     display_text = track_indent + "[F] " + file_title
                     track_info = {
                         'is_folder': False,
-                        'path': data.get('full_path'),
+                        'path': data.get('parent_folder_path', data.get('full_path')),
                         'title': data['title'],
                         'full_path': data.get('full_path')
                     }
@@ -906,7 +912,7 @@ class _HierarchicalPlaylist:
                     display_text = track_indent + "[F] " + file_item.get('rel_path', file_item['title'])
                     track_info = {
                         'is_folder': False,
-                        'path': file_item.get('full_path'),
+                        'path': file_item.get('parent_folder_path', file_item.get('full_path')),
                         'title': file_item['title'],
                         'full_path': file_item.get('full_path')
                     }
