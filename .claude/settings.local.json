@@ -5,7 +5,10 @@
       "Bash(python:*)",
       "Bash(cd:*)",
       "Bash(ls -la \"D:/Codes/Python/PyPlayer\"/*.py)",
-      "Bash(dir \"D:\\\\Codes\\\\Python\\\\PyPlayer\\\\*.py\")"
+      "Bash(dir \"D:\\\\Codes\\\\Python\\\\PyPlayer\\\\*.py\")",
+      "Bash(pip search:*)",
+      "Bash(pip index:*)",
+      "Bash(pip show:*)"
     ]
   },
   "hooks": {

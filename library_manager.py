@@ -222,6 +222,9 @@ class Track:
     """Playlist item - defined at module level for queue management"""
     path: str
     title: str
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    duration: float = 0.0
 
     def __str__(self):
         return self.title

@@ -4,7 +4,7 @@
 
 ## 特性
 
-- 🎵 **音频播放**: MP3, WAV, FLAC, OGG, M4A, AAC
+- 🎵 **音频播放**: MP3, WAV, FLAC, OGG, M4A, AAC, AIFF, AU (所有格式支持seek)
 - 🎬 **视频播放**: AVI, MP4, MKV, MOV, WMV
 - 💻 **GUI 模式**: 基于 Tkinter 的图形界面（跨平台）
 - ⌨️ **TUI 模式**: curses 终端界面 (Unix/Linux/macOS)
@@ -13,6 +13,10 @@
 - 🌐 **国际化 (i18n)**: 支持中文 (zh_CN) 和英文 (en_US)，根据系统 locale 自动切换
 - 🎯 **队列节点架构**: 文件夹作为独立播放单元，支持文件夹内顺序播放和跨文件夹队列播放
 - 🔄 **自动播放**: 曲目播放完毕自动跳转下一首
+- 🎨 **Now Playing 面板**: 显示专辑封面、歌曲标题、艺术家和专辑信息
+- ⏱️ **进度条与计时器**: 实时显示播放进度，支持拖拽跳转（所有音频格式）
+- 📝 **元数据提取**: 自动读取 ID3、FLAC、M4A、OGG 标签信息
+- 🚀 **Python 3.13 兼容**: 使用 soundfile + sounddevice 后端，无 audioop 依赖
 
 ## 媒体库管理功能
 
@@ -33,6 +37,23 @@
 - **双击文件夹**: 从第一首开始顺序播放该文件夹下所有文件
 - **跨文件夹导航**: 文件夹播放完毕自动跳转下一个文件夹
 - **曲目结束自动播放**: 无需手动点击下一首
+
+### Now Playing 面板 (v1.3 新增)
+主界面新增 Now Playing 面板，显示当前播放曲目的详细信息：
+- **专辑封面**: 100x100 像素，自动从音频文件提取嵌入封面
+- **歌曲标题**: 大号字体显示
+- **艺术家**: 次要信息显示
+- **专辑名**: 次要信息显示
+- **进度条**: 可拖拽跳转（仅 MP3/OGG 格式支持）
+- **计时器**: 左侧显示当前时间，右侧显示总时长
+
+### 元数据提取 (v1.3 新增)
+自动从音频文件提取元数据信息：
+- **MP3**: ID3v2 标签（标题、艺术家、专辑、APIC 封面）
+- **FLAC**: Vorbis 注释 + 嵌入图片
+- **M4A/MP4**: iTunes 风格标签（\xa9nam, \xa9ART, \xa9alb, covr）
+- **OGG Vorbis**: Vorbis 注释 + metadata_block_picture
+- **兜底逻辑**: 无元数据时使用文件名作为标题
 
 ### GUI 模式
 1. 点击工具栏 **"Library Mgr"** 按钮打开管理对话框
@@ -66,15 +87,19 @@
 
 ```powershell
 # Windows (推荐使用 conda)
-conda install -c anaconda pygame
-conda install -c conda-forge opencv-python
+conda install -c anaconda numpy scipy
+conda install -c conda-forge opencv-python soundfile
 
-# 或使用 pip
-pip install pygame opencv-python
+# 或使用 pip（推荐）
+pip install pygame opencv-python mutagen Pillow soundfile sounddevice numpy scipy
 ```
 
 > 注意：
 > - `opencv-python` 用于视频播放（需要图形界面支持）
+> - `mutagen` 用于音频元数据提取（MP3, FLAC, M4A, OGG 标签）
+> - `Pillow` 用于专辑封面图像处理和显示
+> - `soundfile` + `sounddevice` 用于音频播放，支持所有格式的精确seek
+> - `numpy` + `scipy` 用于音频数据处理
 > - 纯音频模式下可以使用 `opencv-python-headless`
 
 ## 快速开始
@@ -83,7 +108,7 @@ pip install pygame opencv-python
 
 ```bash
 cd PyPlayer
-pip install pygame opencv-python
+pip install -r requirements.txt
 ```
 
 ### 2. 启动播放器
@@ -96,7 +121,9 @@ python gui.py
 GUI 界面提供：
 - 📋 **层级化播放列表管理** - 自动按"媒体库 → 子文件夹 → 文件"的三层结构显示媒体文件
 - 🏷️ **媒体库命名** - 使用配置的媒体库名称作为第一级标识（如 `[ML] Music`）
-- 🎮 播放控制按钮（播放/暂停/停止/上下曲）
+- 🎨 **Now Playing 面板** - 显示专辑封面、歌曲标题、艺术家、专辑信息
+- ⏱️ **进度条与计时器** - 实时更新播放进度，支持拖拽跳转
+- 🎮 播放控制按钮（播放/暂停/上下曲）
 - 🔊 音量调节
 - 📂 文件浏览和打开
 
@@ -121,11 +148,12 @@ python player.py --tui   # 或使用 --tui 参数
 
 ```
 PyPlayer/
-├── player.py              # 核心播放器模块 (音频 + 视频)
-├── gui.py                 # Tkinter 图形界面 (含 QueueNode 架构)
+├── player.py              # 核心播放器模块 (音频 + 视频，含位置追踪和 seek)
+├── gui.py                 # Tkinter 图形界面 (含 QueueNode 架构、Now Playing 面板、进度条)
 ├── tui.py                 # curses 终端界面 (Unix only)
 ├── config.py              # 配置管理模块 (settings.json 读写，支持 XML 迁移)
-├── library_manager.py     # 媒体库扫描和管理模块 (含 QueueNode, FolderNode, FileNode)
+├── library_manager.py     # 媒体库扫描和管理模块 (含 QueueNode, FolderNode, FileNode, Track)
+├── metadata.py            # 音频元数据提取模块 (MP3/FLAC/M4A/OGG 标签和封面)
 ├── i18n.py                # 国际化核心模块
 ├── test_player.py         # 单元测试 - 队列管理系统
 ├── settings.json          # 配置文件（首次运行时自动创建，支持 XML 迁移）
@@ -210,11 +238,9 @@ button.save.button=Save
 
 ## 支持的媒体格式
 
-## 支持的媒体格式
-
 | 类型 | 扩展名 |
 |------|--------|
-| **音频** | .mp3, .wav, .flac, .ogg, .m4a, .aac |
+| **音频** | .mp3, .wav, .flac, .ogg, .m4a, .aac, .aiff, .au |
 | **视频** | .avi, .mp4, .mkv, .mov, .wmv |
 
 ## GUI 使用说明
@@ -225,22 +251,24 @@ button.save.button=Save
 
 2. **控制播放**:
    - ⏯️ **Play/Pause**: 暂停/继续播放
-   - ⏹️ **Stop**: 停止播放
    - ◀ Prev / Next ▶: 上一首/下一首
 
-3. **键盘快捷键**:
+3. **进度控制**:
+   - 📊 **进度条**: 拖动进度条跳转到指定位置（所有音频格式均支持）
+   - ⏱️ **计时器**: 左侧显示当前播放时间，右侧显示总时长
+
+4. **键盘快捷键**:
    | 按键 | 功能 |
    |------|------|
    | `空格` | 播放/暂停 |
    | `N` | 下一首 |
    | `M` | 上一首 |
-   | `S` | 停止 |
    | `O` | 打开文件 |
 
-4. **音量调节**:
+5. **音量调节**:
    - 拖动右侧的 Volume 滑块
 
-5. **媒体库管理**:
+6. **媒体库管理**:
    - 点击 **"Library Mgr"** 按钮打开管理对话框
    - 添加常用文件夹作为媒体库，方便快速扫描
    - 配置持久化存储，重启后自动加载
@@ -287,10 +315,25 @@ python player.py "test/Electric Guitar.wav"
 ## 故障排除
 
 ### NameError 或崩溃问题
-- **最新修复 (v1.2)**: QueueNode 架构重构，彻底解决播放列表索引错位问题
+- **最新修复 (v1.3)**: 新增 Now Playing 面板、进度条、元数据提取功能
+- **修复 (v1.2)**: QueueNode 架构重构，彻底解决播放列表索引错位问题
 - **修复 (v1.1)**: 已修复 `AudioPlayer` 类结构问题，`play_file`、`stop`、`is_active` 等方法现已正确归属于 `AudioPlayer` 类
 - **队列管理修复**: 独立队列系统已实现，每个媒体库维护独立的播放状态
 - 如遇其他异常，检查 Python 版本是否为 3.6+
+
+### 进度条跳转不工作
+- **v1.4 更新**: 所有音频格式现在都支持 seek 功能
+- 使用 soundfile + sounddevice 后端，通过 numpy 数组切片实现精确跳转
+- 如仍有问题，请检查 sounddevice 是否正确安装: `pip install sounddevice`
+
+### 专辑封面不显示
+- 确保安装了 Pillow: `pip install Pillow`
+- 部分音频文件可能没有嵌入封面图片
+- 无封面时显示灰色占位图
+
+### 元数据显示 "Unknown Artist"
+- 音频文件可能没有元数据标签
+- 程序会自动使用文件名作为标题
 
 ### 视频无法播放
 - 确保安装了完整版 `opencv-python` (非 headless)
@@ -311,6 +354,10 @@ python player.py "test/Electric Guitar.wav"
 ### 音频无声
 - 检查系统音量设置
 - 确认音频文件格式支持 (尝试 WAV/MP3)
+
+### Python 3.13 兼容性
+- ✅ PyPlayer 现已完全兼容 Python 3.13
+- 使用 soundfile + sounddevice 替代 pydub，避免 audioop 模块缺失问题
 
 ## License
 

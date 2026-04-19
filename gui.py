@@ -5,6 +5,7 @@ Supports common audio/video formats: MP3, WAV, AVI, MP4, MKV, etc.
 Cross-platform (Windows/Linux/macOS)
 """
 
+import io
 import os
 import sys
 import time
@@ -15,6 +16,13 @@ from tkinter import ttk, filedialog, messagebox
 from typing import Optional
 
 import i18n
+
+# Try to import PIL for album art display
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 
 class PyPlayerGUI:
@@ -90,9 +98,292 @@ class PyPlayerGUI:
             node = FileNode(track=track, display_text=track.title, path=track.path)
             self.queue_nodes.append(node)
 
+    def _configure_styles(self):
+        """Configure ttk styles for a more modern look."""
+        style = ttk.Style()
+        style.theme_use('clam')  # Use clam theme as base
+
+        # Configure colors
+        style.configure('TFrame', background=self.COLORS['background'])
+        style.configure('TLabel', background=self.COLORS['background'], foreground=self.COLORS['text'])
+        style.configure('TButton', padding=5)
+        style.configure('NowPlaying.TFrame', background=self.COLORS['panel'], relief='solid', borderwidth=1)
+        style.configure('NowPlaying.TLabel', background=self.COLORS['panel'], foreground=self.COLORS['text'])
+
+    def _create_now_playing_panel(self):
+        """Create the Now Playing panel with album art and metadata."""
+        # Now Playing container
+        now_playing_frame = ttk.Frame(self.root, padding="10", style='NowPlaying.TFrame')
+        now_playing_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # Left side: Album art
+        self.album_art_frame = ttk.Frame(now_playing_frame, padding="5")
+        self.album_art_frame.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Default placeholder image (100x100 gray square)
+        self.default_album_art = None
+        self.album_art_label = ttk.Label(self.album_art_frame, text="")
+        self.album_art_label.pack()
+        self._set_default_album_art()
+
+        # Right side: Metadata
+        metadata_frame = ttk.Frame(now_playing_frame, padding="5")
+        metadata_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Song title (large font)
+        self.song_title_var = tk.StringVar(value=i18n.get('metadata.no_track', default='No track playing'))
+        self.song_title_label = ttk.Label(
+            metadata_frame,
+            textvariable=self.song_title_var,
+            font=('Arial', 14, 'bold'),
+            style='NowPlaying.TLabel'
+        )
+        self.song_title_label.pack(anchor=tk.W, pady=(0, 5))
+
+        # Artist (secondary)
+        self.artist_var = tk.StringVar(value="")
+        self.artist_label = ttk.Label(
+            metadata_frame,
+            textvariable=self.artist_var,
+            font=('Arial', 11),
+            foreground='#666666',
+            style='NowPlaying.TLabel'
+        )
+        self.artist_label.pack(anchor=tk.W, pady=(0, 2))
+
+        # Album (secondary)
+        self.album_var = tk.StringVar(value="")
+        self.album_label = ttk.Label(
+            metadata_frame,
+            textvariable=self.album_var,
+            font=('Arial', 10),
+            foreground='#888888',
+            style='NowPlaying.TLabel'
+        )
+        self.album_label.pack(anchor=tk.W)
+
+    def _set_default_album_art(self):
+        """Set default placeholder for album art."""
+        if PIL_AVAILABLE:
+            # Create a gray placeholder image
+            img = Image.new('RGB', (100, 100), color='#cccccc')
+            self.default_album_art = ImageTk.PhotoImage(img)
+            self.album_art_label.configure(image=self.default_album_art)
+        else:
+            self.album_art_label.configure(text="[No Art]")
+
+    def _update_album_art(self, album_art_bytes: Optional[bytes]):
+        """Update album art display.
+
+        Args:
+            album_art_bytes: Raw image data from metadata, or None for default
+        """
+        if not PIL_AVAILABLE:
+            self.album_art_label.configure(text="[No PIL]")
+            return
+
+        if album_art_bytes is None:
+            self._set_default_album_art()
+            return
+
+        try:
+            # Load image from bytes
+            img = Image.open(io.BytesIO(album_art_bytes))
+
+            # Resize to 100x100 maintaining aspect ratio
+            img.thumbnail((100, 100), Image.Resampling.LANCZOS)
+
+            # Create square canvas with padding if needed
+            canvas = Image.new('RGB', (100, 100), color='#ffffff')
+            offset = ((100 - img.width) // 2, (100 - img.height) // 2)
+            canvas.paste(img, offset)
+
+            self.current_album_art = ImageTk.PhotoImage(canvas)
+            self.album_art_label.configure(image=self.current_album_art)
+        except Exception:
+            self._set_default_album_art()
+
+    def _create_progress_panel(self):
+        """Create progress bar with time displays."""
+        progress_frame = ttk.Frame(self.root, padding="10")
+        progress_frame.pack(fill=tk.X)
+
+        # Current time (left)
+        self.current_time_var = tk.StringVar(value="0:00")
+        current_time_label = ttk.Label(
+            progress_frame,
+            textvariable=self.current_time_var,
+            font=('Consolas', 10)
+        )
+        current_time_label.pack(side=tk.LEFT)
+
+        # Progress slider (middle)
+        self.progress_var = tk.DoubleVar(value=0.0)
+        self.progress_slider = ttk.Scale(
+            progress_frame,
+            from_=0.0,
+            to=100.0,
+            variable=self.progress_var,
+            orient=tk.HORIZONTAL,
+            command=self._on_progress_change
+        )
+        self.progress_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+
+        # Total duration (right)
+        self.total_time_var = tk.StringVar(value="0:00")
+        total_time_label = ttk.Label(
+            progress_frame,
+            textvariable=self.total_time_var,
+            font=('Consolas', 10)
+        )
+        total_time_label.pack(side=tk.RIGHT)
+
+        # Progress update state
+        self._progress_dragging = False
+        self._progress_update_enabled = True
+
+    def _format_time(self, seconds: float) -> str:
+        """Format seconds to M:SS or H:MM:SS format.
+
+        Args:
+            seconds: Time in seconds
+
+        Returns:
+            Formatted time string
+        """
+        if seconds < 0:
+            seconds = 0
+
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes}:{secs:02d}"
+
+    def _on_progress_change(self, value):
+        """Handle progress slider drag."""
+        self._progress_dragging = True
+
+    def _on_progress_release(self, event):
+        """Handle progress slider release to seek."""
+        if not self._progress_dragging:
+            return
+
+        self._progress_dragging = False
+
+        # Calculate target position
+        target_position = float(self.progress_var.get())
+
+        # Seek to position
+        if hasattr(self.player.audio_player, 'seek'):
+            success = self.player.audio_player.seek(target_position)
+            if not success:
+                # Seek not supported for this format
+                pass
+
+    def _update_progress(self):
+        """Update progress bar and time displays (called periodically)."""
+        if not self._progress_update_enabled:
+            self.root.after(250, self._update_progress)
+            return
+
+        try:
+            # Get current position and duration
+            if hasattr(self.player.audio_player, 'get_position'):
+                position = self.player.audio_player.get_position()
+                duration = self.player.audio_player.get_duration()
+
+                if duration > 0 and not self._progress_dragging:
+                    # Update slider range and value
+                    self.progress_slider.configure(to=duration)
+                    self.progress_var.set(position)
+
+                    # Update time displays
+                    self.current_time_var.set(self._format_time(position))
+                    self.total_time_var.set(self._format_time(duration))
+                elif duration <= 0:
+                    self.current_time_var.set("0:00")
+                    self.total_time_var.set("0:00")
+        except Exception:
+            pass
+
+        # Schedule next update
+        self.root.after(250, self._update_progress)
+
+    def _update_now_playing(self, track):
+        """Update Now Playing panel with track metadata.
+
+        Args:
+            track: Track object with metadata
+        """
+        if track is None:
+            self.song_title_var.set(i18n.get('metadata.no_track', default='No track playing'))
+            self.artist_var.set("")
+            self.album_var.set("")
+            self._update_album_art(None)
+            return
+
+        # Update title
+        title = track.title if track.title else Path(track.path).stem
+        self.song_title_var.set(title)
+
+        # Update artist
+        artist = getattr(track, 'artist', None)
+        if artist and artist != "Unknown Artist":
+            self.artist_var.set(artist)
+        else:
+            self.artist_var.set("")
+
+        # Update album
+        album = getattr(track, 'album', None)
+        if album and album != "Unknown Album":
+            self.album_var.set(album)
+        else:
+            self.album_var.set("")
+
+    def _update_now_playing_with_art(self, filepath: str):
+        """Update Now Playing panel with track metadata including album art.
+
+        Args:
+            filepath: Path to the audio file
+        """
+        try:
+            from metadata import extract_metadata
+            metadata = extract_metadata(filepath)
+
+            # Update title
+            self.song_title_var.set(metadata.title)
+
+            # Update artist
+            if metadata.artist and metadata.artist != "Unknown Artist":
+                self.artist_var.set(metadata.artist)
+            else:
+                self.artist_var.set("")
+
+            # Update album
+            if metadata.album and metadata.album != "Unknown Album":
+                self.album_var.set(metadata.album)
+            else:
+                self.album_var.set("")
+
+            # Update album art
+            self._update_album_art(metadata.album_art)
+        except Exception as e:
+            # Fallback to basic display
+            self.song_title_var.set(Path(filepath).stem)
+            self.artist_var.set("")
+            self.album_var.set("")
+            self._update_album_art(None)
+
     def _setup_ui(self):
         """Setup the UI elements"""
         self.root.configure(bg=self.COLORS['background'])
+
+        # Configure ttk styles
+        self._configure_styles()
 
         # Title bar
         title_frame = ttk.Frame(self.root, padding="10")
@@ -100,6 +391,12 @@ class PyPlayerGUI:
         title_label = ttk.Label(title_frame, text=i18n.get('main.title'),
                                 font=('Arial', 16, 'bold'))
         title_label.pack()
+
+        # Now Playing panel (album art + metadata)
+        self._create_now_playing_panel()
+
+        # Progress bar and timer
+        self._create_progress_panel()
 
         # Status bar
         self.status_var = tk.StringVar(value=i18n.get('status.ready'))
@@ -153,7 +450,6 @@ class PyPlayerGUI:
 
         ttk.Button(btn_frame, text=i18n.get('button.prev_track'), command=self._prev_track).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text=i18n.get('button.play_pause'), command=self._toggle_play_pause).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text=i18n.get('button.stop'), command=self._stop).pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text=i18n.get('button.next_track'), command=self._next_track).pack(side=tk.LEFT, padx=2)
 
         # Volume slider
@@ -165,11 +461,16 @@ class PyPlayerGUI:
                                        command=self._set_volume)
         self.volume_slider.pack(side=tk.LEFT)
 
+        # Bind progress slider release event
+        self.progress_slider.bind('<ButtonRelease-1>', self._on_progress_release)
+
+        # Start progress update loop
+        self.root.after(250, self._update_progress)
+
         # Keyboard bindings
         self.root.bind('<space>', lambda e: self._toggle_play_pause())
         self.root.bind('<n>', lambda e: self._next_track())
         self.root.bind('<m>', lambda e: self._prev_track())
-        self.root.bind('<s>', lambda e: self._stop())
         self.root.bind('<o>', lambda e: self._open_files())
 
     def _scan_directory(self, location):
@@ -307,6 +608,7 @@ class PyPlayerGUI:
             self.current_node_idx = idx
             self.current_sub_index = 0
             if self.player.play(filepath):
+                self._update_now_playing_with_art(filepath)
                 self.status_var.set(i18n.get('status.now_playing', title=Path(filepath).name))
 
     def _clear_playlist(self):
@@ -530,6 +832,7 @@ class PyPlayerGUI:
         track = node.get_current_track()
         if track:
             self.player.play(track.path)
+            self._update_now_playing_with_art(track.path)
             self.status_var.set(f"Playing folder: {node.display_text}")
 
     def _play_file_node(self, node_idx: int, sub_index: int = 0):
@@ -555,6 +858,7 @@ class PyPlayerGUI:
         if track:
             result = self.player.play(track.path)
             if result:
+                self._update_now_playing_with_art(track.path)
                 self.status_var.set(i18n.get('status.now_playing', title=track.title))
 
     def _toggle_play_pause(self):
@@ -595,6 +899,10 @@ class PyPlayerGUI:
         self.current_sub_index = -1
         self.current_index = -1
         self._update_playlist_display()
+        self._update_now_playing(None)
+        self.current_time_var.set("0:00")
+        self.total_time_var.set("0:00")
+        self.progress_var.set(0.0)
         self.status_var.set(i18n.get('status.stopped'))
 
     def _next_track(self):
@@ -619,6 +927,7 @@ class PyPlayerGUI:
             if next_track:
                 self.current_sub_index = node.current_sub_index
                 self.player.play(next_track.path)
+                self._update_now_playing_with_art(next_track.path)
                 self.status_var.set(i18n.get('status.now_playing', title=next_track.title))
                 return
 
@@ -650,6 +959,7 @@ class PyPlayerGUI:
             if prev_track:
                 self.current_sub_index = node.current_sub_index
                 self.player.play(prev_track.path)
+                self._update_now_playing_with_art(prev_track.path)
                 self.status_var.set(i18n.get('status.now_playing', title=prev_track.title))
             return
 
@@ -665,6 +975,7 @@ class PyPlayerGUI:
                 track = prev_node.get_current_track()
                 if track:
                     self.player.play(track.path)
+                    self._update_now_playing_with_art(track.path)
                     self.status_var.set(i18n.get('status.now_playing', title=track.title))
             else:
                 self._play_file_node(prev_idx)

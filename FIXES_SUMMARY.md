@@ -427,3 +427,215 @@ def playlist(self):
 ---
 
 *QueueNode 架构重构完成时间: 2026-04-19*
+
+---
+
+## 主页面重构 - Now Playing 面板 (2026-04-19)
+
+### 新增功能
+
+#### 1. 元数据提取模块 (metadata.py)
+- **新增文件**: `metadata.py`
+- **依赖**: `mutagen>=1.47.0`, `Pillow>=10.0.0`
+- **支持格式**:
+  - MP3 (ID3v2 标签, APIC 封面)
+  - FLAC (Vorbis 注释, 嵌入图片)
+  - M4A/MP4 (iTunes 风格标签, covr 封面)
+  - OGG Vorbis (Vorbis 注释, metadata_block_picture)
+- **数据结构**:
+  ```python
+  @dataclass
+  class SongMetadata:
+      title: str
+      artist: str
+      album: str
+      duration: float  # 秒
+      album_art: Optional[bytes] = None
+  ```
+- **兜底逻辑**: 无元数据时使用文件名作为标题，"Unknown Artist/Album" 作为默认值
+
+#### 2. Track 数据结构扩展 (library_manager.py)
+- **新增字段**:
+  ```python
+  @dataclass
+  class Track:
+      path: str
+      title: str
+      artist: Optional[str] = None
+      album: Optional[str] = None
+      duration: float = 0.0
+  ```
+
+#### 3. 播放器位置追踪 (player.py)
+- **新增实例变量**:
+  ```python
+  self._play_start_time: float = 0.0
+  self._pause_accumulated: float = 0.0
+  self._track_duration: float = 0.0
+  self._current_file_ext: str = ""
+  ```
+- **新增类常量**:
+  ```python
+  SEEKABLE_FORMATS = {'.mp3', '.ogg'}  # 仅 MP3/OGG 支持 seek
+  ```
+- **修改方法**:
+  - `play_file()`: 加载元数据，初始化位置追踪
+  - `pause()`: 记录累计播放时间
+  - `resume()`: 重置开始时间
+- **新增方法**:
+  ```python
+  def get_position(self) -> float  # 当前播放位置（秒）
+  def get_duration(self) -> float  # 当前曲目时长
+  def seek(self, position_seconds: float) -> bool  # 跳转（仅 MP3/OGG）
+  def is_seekable(self) -> bool  # 检查当前格式是否支持 seek
+  ```
+
+#### 4. GUI 重构 (gui.py)
+- **移除**: 停止按钮（简化控制栏）
+- **新增 Now Playing 面板**:
+  - 专辑封面 (100x100 像素，PIL 处理)
+  - 歌曲标题 (大号字体)
+  - 艺术家 (次要信息)
+  - 专辑名 (次要信息)
+- **新增进度面板**:
+  - 当前时间显示 (左侧, `0:00` 格式)
+  - 进度滑块 (中间，可拖拽跳转)
+  - 总时长显示 (右侧)
+- **新增方法**:
+  ```python
+  def _configure_styles()           # ttk 样式配置
+  def _create_now_playing_panel()   # Now Playing 面板
+  def _create_progress_panel()      # 进度条面板
+  def _format_time(seconds) -> str  # 时间格式化 (M:SS 或 H:MM:SS)
+  def _on_progress_change(value)    # 进度条拖拽
+  def _on_progress_release(event)   # 进度条释放 → seek
+  def _update_progress()            # 进度更新循环 (250ms)
+  def _update_now_playing(track)    # 更新元数据显示
+  def _update_now_playing_with_art(filepath)  # 更新显示含封面
+  def _update_album_art(bytes)      # 更新专辑封面
+  def _set_default_album_art()      # 默认占位图
+  ```
+
+#### 5. i18n 更新
+- **新增键**:
+  ```properties
+  metadata.unknown_artist=Unknown Artist
+  metadata.unknown_album=Unknown Album
+  metadata.no_track=No track playing
+  ```
+- **移除键**: `button.stop`
+
+### 限制说明
+
+| 功能 | 支持格式 | 说明 |
+|------|----------|------|
+| Seek (跳转) | MP3, OGG | pygame.mixer 限制，其他格式进度条仅显示 |
+| 元数据提取 | MP3, FLAC, M4A, OGG | WAV 无标准元数据，使用文件名 |
+| 专辑封面 | MP3, FLAC, M4A, OGG | WAV 无嵌入封面 |
+
+### 验证测试
+
+```bash
+# 测试模块导入
+python -c "import metadata; import player; import gui; print('OK')"
+
+# 测试元数据提取
+python -c "
+from metadata import extract_metadata
+meta = extract_metadata('test/song.mp3')
+print(f'Title: {meta.title}')
+print(f'Artist: {meta.artist}')
+print(f'Duration: {meta.duration:.1f}s')
+"
+```
+
+---
+
+*主页面重构完成时间: 2026-04-19*
+
+---
+
+## 音频后端重构 - soundfile + sounddevice (2026-04-19)
+
+### 问题背景
+原 pygame.mixer 后端存在以下限制：
+1. **Seek支持有限**: 仅 MP3 和 OGG 格式支持进度跳转
+2. **进度追踪不精确**: 依赖 time.time() 外部计算
+
+### 技术选型过程
+
+| 方案 | 结果 | 原因 |
+|------|------|------|
+| pydub + simpleaudio | ❌ 放弃 | Python 3.13 移除 audioop 模块 |
+| soundfile + sounddevice + numpy | ✅ 采用 | 无 audioop 依赖，兼容 Python 3.13 |
+
+### 实现详情
+
+#### 1. 依赖更新 (requirements.txt)
+```diff
+- pydub>=0.25.1
+- simpleaudio>=1.0.4
++ soundfile>=0.12.0
++ sounddevice>=0.4.0
++ numpy>=1.24.0
++ scipy>=1.10.0
+```
+
+#### 2. AudioPlayer 类重构 (player.py)
+
+**核心数据结构变更**:
+```python
+# 旧 (pygame.mixer)
+self._current_file: Optional[str] = None
+pygame.mixer.music.load(filepath)
+pygame.mixer.music.play()
+
+# 新 (soundfile + sounddevice)
+self._audio_data: Optional[np.ndarray] = None  # 音频数据为numpy数组
+self._sample_rate: int = 44100
+self._channels: int = 2
+self._total_samples: int = 0
+```
+
+**核心方法变更**:
+
+| 方法 | 旧实现 | 新实现 |
+|------|--------|--------|
+| `play_file()` | pygame.mixer.music.load() + play() | sf.read() + sd.OutputStream |
+| `seek()` | 仅MP3/OGG，停止重载播放 | numpy数组切片，所有格式支持 |
+| `pause()/resume()` | pygame.mixer.music.pause() | stream.stop()/重新启动 |
+| `get_position()` | time.time()计算 | 样本索引计算 |
+| `set_volume()` | pygame.mixer.music.set_volume() | numpy数组乘法 |
+
+**新增特性**:
+- 所有音频格式支持精确 seek（通过numpy数组切片）
+- 基于样本索引的精确位置追踪
+- 回调式音频流播放（sounddevice.OutputStream）
+- 大文件分段加载（>50MB 或 >30分钟）
+
+#### 3. 支持格式扩展
+
+```python
+SUPPORTED_AUDIO = {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac', '.aiff', '.au'}
+```
+
+### 验证测试
+
+```bash
+# 测试模块导入
+python -c "from player import AudioPlayer, VideoPlayer, PlayerManager; print('OK')"
+
+# 测试基本功能
+python -c "
+from player import AudioPlayer, PlayerManager
+player = AudioPlayer()
+print(f'is_seekable: {player.is_seekable()}')  # 应返回 True
+manager = PlayerManager()
+formats = manager.get_supported_formats()
+print(f'Audio: {formats[\"音频\"]}')  # 应包含 .aac, .aiff, .au 等
+"
+```
+
+---
+
+*音频后端重构完成时间: 2026-04-19*
