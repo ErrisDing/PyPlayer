@@ -10,6 +10,9 @@ from .library_service import LibraryService
 from .metadata_service import MetadataService
 from .config_service import ConfigService
 
+# Import tools module for direct access
+from . import tools
+
 __all__ = [
     'PlaybackService',
     'QueueService',
@@ -17,4 +20,5 @@ __all__ = [
     'LibraryService',
     'MetadataService',
     'ConfigService',
+    'tools',
 ]
