@@ -211,7 +211,7 @@ class QueueService(QObject):
         self._position.display_index = display_idx
 
         # Get the track
-        track = self._get_track_at_position(entry.node_idx, entry.sub_idx)
+        track = self._get_track_at_position(entry.node_idx, entry.sub_index)
 
         # Update highlights
         self._update_playing_highlight()
