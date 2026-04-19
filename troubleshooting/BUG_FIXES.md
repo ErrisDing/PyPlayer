@@ -1,4 +1,4 @@
-# PyPlayer 代码修复总结
+# PyPlayer Bug Fixes & Troubleshooting
 
 ## 已完成的修复（高优先级）
 
@@ -639,3 +639,52 @@ print(f'Audio: {formats[\"音频\"]}')  # 应包含 .aac, .aiff, .au 等
 ---
 
 *音频后端重构完成时间: 2026-04-19*
+
+---
+
+## 常见故障排除
+
+### NameError 或崩溃问题
+- **最新修复 (v1.3)**: 新增 Now Playing 面板、进度条、元数据提取功能
+- **修复 (v1.2)**: QueueNode 架构重构，彻底解决播放列表索引错位问题
+- **修复 (v1.1)**: 已修复 `AudioPlayer` 类结构问题，`play_file`、`stop`、`is_active` 等方法现已正确归属于 `AudioPlayer` 类
+- **队列管理修复**: 独立队列系统已实现，每个媒体库维护独立的播放状态
+- 如遇其他异常，检查 Python 版本是否为 3.6+
+
+### 进度条跳转不工作
+- **v1.4 更新**: 所有音频格式现在都支持 seek 功能
+- 使用 soundfile + sounddevice 后端，通过 numpy 数组切片实现精确跳转
+- 如仍有问题，请检查 sounddevice 是否正确安装: `pip install sounddevice`
+
+### 专辑封面不显示
+- 确保安装了 Pillow: `pip install Pillow`
+- 部分音频文件可能没有嵌入封面图片
+- 无封面时显示灰色占位图
+
+### 元数据显示 "Unknown Artist"
+- 音频文件可能没有元数据标签
+- 程序会自动使用文件名作为标题
+
+### 视频无法播放
+- 确保安装了完整版 `opencv-python` (非 headless)
+- Windows 用户可能需要安装 Visual C++ Redistributable
+
+### GUI 无法启动
+- 确保显示环境可用（服务器需要 X11 forwarding）
+- 可以使用 CLI 模式或 TUI 模式替代
+
+### TUI 不可用 (Windows)
+- Windows 默认不支持 curses，建议使用 GUI 模式 (`python gui.py`)
+- 可在 WSL/Cygwin 等环境中使用 TUI 模式
+
+### 媒体库扫描无结果
+- 确保添加的路径包含支持的媒体文件 (.mp3, .wav, .flac, .ogg, .m4a, .aac, .avi, .mp4, .mkv, .mov)
+- 检查 `settings.json` 是否正确保存了配置
+
+### 音频无声
+- 检查系统音量设置
+- 确认音频文件格式支持 (尝试 WAV/MP3)
+
+### Python 3.13 兼容性
+- ✅ PyPlayer 现已完全兼容 Python 3.13
+- 使用 soundfile + sounddevice 替代 pydub，避免 audioop 模块缺失问题

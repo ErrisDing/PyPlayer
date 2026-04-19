@@ -8,7 +8,9 @@
       "Bash(dir \"D:\\\\Codes\\\\Python\\\\PyPlayer\\\\*.py\")",
       "Bash(pip search:*)",
       "Bash(pip index:*)",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(ls -la \"D:\\\\Codes\\\\Python\\\\PyPlayer\"/*.py)",
+      "Bash(dir /B \"D:\\\\Codes\\\\Python\\\\PyPlayer\\\\*.py\")"
     ]
   },
   "hooks": {
