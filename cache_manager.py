@@ -124,10 +124,11 @@ class LibraryCacheManager:
             with open(temp_file, 'w', encoding='utf-8') as f:
                 json.dump(cache.to_dict(), f, indent=2, ensure_ascii=False)
 
-            temp_file.rename(cache_file)
+            # os.replace works on Windows to overwrite existing files
+            os.replace(temp_file, cache_file)
             return True
 
-        except (OSError, IOError, json.JSONEncodeError) as e:
+        except (OSError, IOError, TypeError) as e:
             print(f"Failed to save cache for {cache.library_path}: {e}")
             return False
 

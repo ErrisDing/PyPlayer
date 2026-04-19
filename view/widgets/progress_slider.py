@@ -7,7 +7,8 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QSlider, QLabel, QSizePolicy
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint
+from PyQt6.QtGui import QMouseEvent
 
 import sys
 from pathlib import Path
@@ -27,6 +28,34 @@ def format_time(seconds: float) -> str:
     if hours > 0:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes}:{secs:02d}"
+
+
+class ClickableSlider(QSlider):
+    """Slider that allows clicking on the track to jump to a position."""
+
+    def __init__(self, orientation: Qt.Orientation, parent: Optional[QWidget] = None):
+        super().__init__(orientation, parent)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """Handle mouse press - jump to clicked position."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Calculate the value from the click position
+            if self.orientation() == Qt.Orientation.Horizontal:
+                # Get the clickable area
+                click_pos = event.position().x()
+
+                # Map click position to slider value
+                value = self.minimum() + int(
+                    click_pos / self.width() * (self.maximum() - self.minimum())
+                )
+                value = max(self.minimum(), min(self.maximum(), value))
+                self.setValue(value)
+                # Emit sliderMoved to update time display
+                self.sliderMoved.emit(value)
+                # Also emit sliderReleased to trigger seek
+                self.sliderReleased.emit()
+                return
+        super().mousePressEvent(event)
 
 
 class ProgressSlider(QWidget):
@@ -62,7 +91,7 @@ class ProgressSlider(QWidget):
         layout.addWidget(self._current_time)
 
         # Slider
-        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider = ClickableSlider(Qt.Orientation.Horizontal)
         self._slider.setRange(0, 1000)  # Use 0-1000 for precision
         self._slider.setValue(0)
         self._slider.setEnabled(False)

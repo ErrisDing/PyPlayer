@@ -357,10 +357,7 @@ class AudioPlayer:
                 # Mix down to stereo (average channels)
                 audio_data = audio_data[:, :2]
 
-            # Apply volume
-            if self._volume != 1.0:
-                audio_data = audio_data * self._volume
-
+            # Store original audio data (volume applied dynamically in playback)
             with self._playback_lock:
                 self._audio_data = audio_data
                 self._sample_rate = sample_rate
@@ -455,27 +452,9 @@ class AudioPlayer:
     def set_volume(self, level: float) -> None:
         """Set volume, level range 0.0-1.0.
 
-        Volume is applied to audio data during playback.
+        Volume is applied dynamically during playback.
         """
         self._volume = max(0.0, min(1.0, level))
-
-        # If currently playing, apply volume by adjusting audio data
-        if self.is_playing and not self.is_paused and self._audio_data is not None:
-            current_pos = self.get_position()
-            with self._playback_lock:
-                # Reload and apply new volume
-                if self._filepath:
-                    audio_data, sample_rate = sf.read(self._filepath, dtype='float32')
-                    if audio_data.ndim == 1:
-                        audio_data = audio_data.reshape(-1, 1)
-                    if audio_data.shape[1] == 1:
-                        audio_data = np.column_stack([audio_data, audio_data])
-                    elif audio_data.shape[1] > 2:
-                        audio_data = audio_data[:, :2]
-                    self._audio_data = audio_data * self._volume
-
-            # Seek to current position with new volume
-            self._start_playback(from_sample=int(current_pos * self._sample_rate))
 
     def get_volume(self) -> float:
         """Get current volume level (0.0-1.0)."""
@@ -500,9 +479,13 @@ class AudioPlayer:
 
     def get_duration(self) -> float:
         """Get current track duration in seconds."""
+        # Prefer actual decoded duration over metadata
+        if self._sample_rate > 0 and self._total_samples > 0:
+            return self._total_samples / self._sample_rate
+        # Fallback to metadata if available
         if self.current_track and hasattr(self.current_track, 'duration'):
             return self.current_track.duration
-        return self._total_samples / self._sample_rate if self._sample_rate > 0 else 0.0
+        return 0.0
 
     def seek(self, position_seconds: float) -> bool:
         """Seek to a position in the current track.
@@ -667,13 +650,15 @@ class AudioPlayer:
                     # End of audio - pad with zeros if needed
                     remaining = total_frames - start
                     if remaining > 0:
-                        outdata[:remaining] = samples_to_play[start:total_frames]
+                        # Apply volume dynamically
+                        outdata[:remaining] = samples_to_play[start:total_frames] * self._volume
                         outdata[remaining:] = 0
                     else:
                         outdata.fill(0)
                     raise sd.CallbackStop()
 
-                outdata[:] = samples_to_play[start:end]
+                # Apply volume dynamically during playback
+                outdata[:] = samples_to_play[start:end] * self._volume
                 current_frame[0] = end
 
             # Create and start stream
@@ -763,13 +748,15 @@ class AudioPlayer:
                     if end >= total_frames:
                         remaining = total_frames - start
                         if remaining > 0:
-                            outdata[:remaining] = chunk_data[start:total_frames]
+                            # Apply volume dynamically
+                            outdata[:remaining] = chunk_data[start:total_frames] * self._volume
                             outdata[remaining:] = 0
                         else:
                             outdata.fill(0)
                         raise sd.CallbackStop()
 
-                    outdata[:] = chunk_data[start:end]
+                    # Apply volume dynamically during playback
+                    outdata[:] = chunk_data[start:end] * self._volume
                     current_frame[0] = end
 
                 sample_rate = self._sample_rate

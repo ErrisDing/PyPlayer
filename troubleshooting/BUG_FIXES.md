@@ -659,7 +659,8 @@ print(f'Audio: {formats[\"音频\"]}')  # 应包含 .aac, .aiff, .au 等
 ### 专辑封面不显示
 - 确保安装了 Pillow: `pip install Pillow`
 - 部分音频文件可能没有嵌入封面图片
-- 无封面时显示灰色占位图
+- **v1.5 更新**: 无封面时现在显示 `resource/default_cover.png` 默认封面图片
+- 如果默认封面文件缺失，回退显示灰色占位图
 
 ### 元数据显示 "Unknown Artist"
 - 音频文件可能没有元数据标签
@@ -688,3 +689,282 @@ print(f'Audio: {formats[\"音频\"]}')  # 应包含 .aac, .aiff, .au 等
 ### Python 3.13 兼容性
 - ✅ PyPlayer 现已完全兼容 Python 3.13
 - 使用 soundfile + sounddevice 替代 pydub，避免 audioop 模块缺失问题
+
+---
+
+## PyQt6 前端修复 (2026-04-19)
+
+### 1. JSONEncodeError 属性错误修复
+- **文件**: `config.py`, `cache_manager.py`
+- **问题**: `json` 模块没有 `JSONEncodeError` 属性，正确的名称是 `JSONDecodeError`
+- **修复**: 将 `json.JSONEncodeError` 改为 `TypeError`，因为 `json.dump()` 在序列化失败时抛出 `TypeError`
+- **代码示例**:
+  ```python
+  # 修复前
+  except (OSError, IOError, json.JSONEncodeError) as e:
+
+  # 修复后
+  except (OSError, IOError, TypeError) as e:
+  ```
+
+### 2. Windows 文件覆盖错误修复
+- **文件**: `config.py`, `cache_manager.py`
+- **问题**: 在 Windows 上 `Path.rename()` 无法覆盖已存在的文件，抛出 `WinError 183`
+- **修复**: 使用 `os.replace()` 替代 `Path.rename()`，支持原子性覆盖
+- **代码示例**:
+  ```python
+  # 修复前
+  temp_path.rename(self.config_file)
+
+  # 修复后
+  os.replace(temp_path, self.config_file)
+  ```
+
+### 3. 媒体库列表未同步刷新
+- **文件**: `presenter/main_presenter.py`
+- **问题**: 添加新媒体库后，UI 中的媒体库列表未更新
+- **修复**: 在 `_on_add_library` 成功后调用 `self._view.set_libraries()` 刷新列表
+- **代码示例**:
+  ```python
+  def _on_add_library(self, path: str) -> None:
+      if self._config.add_library(path):
+          self._library.load_library(path)
+          # 新增：刷新媒体库列表
+          libraries = self._config.get_libraries()
+          self._view.set_libraries(libraries)
+          self._view.set_status_message(f"Added library: {path}")
+  ```
+
+### 4. 歌曲时长显示不准确
+- **文件**: `player.py`
+- **问题**: `get_duration()` 优先返回元数据中的时长，可能为 0 或不准确
+- **修复**: 优先使用实际解码的时长 `_total_samples / _sample_rate`
+- **代码示例**:
+  ```python
+  # 修复前
+  def get_duration(self) -> float:
+      if self.current_track and hasattr(self.current_track, 'duration'):
+          return self.current_track.duration
+      return self._total_samples / self._sample_rate if self._sample_rate > 0 else 0.0
+
+  # 修复后
+  def get_duration(self) -> float:
+      # 优先使用实际解码的时长
+      if self._sample_rate > 0 and self._total_samples > 0:
+          return self._total_samples / self._sample_rate
+      # 回退到元数据
+      if self.current_track and hasattr(self.current_track, 'duration'):
+          return self.current_track.duration
+      return 0.0
+  ```
+
+### 5. 音量条拖动导致并发播放
+- **文件**: `player.py`
+- **问题**: `set_volume()` 在播放时重新加载文件并启动新播放线程，未停止旧线程，导致多个声音同时播放
+- **修复**: 移除重新加载逻辑，改为在音频回调中动态应用音量
+- **代码修改**:
+  1. 加载时不再预乘音量，存储原始音频数据
+  2. 在 `audio_callback` 中动态应用 `self._volume`
+- **代码示例**:
+  ```python
+  # 修复前 - set_volume 会重新加载文件
+  def set_volume(self, level: float) -> None:
+      self._volume = max(0.0, min(1.0, level))
+      if self.is_playing and not self.is_paused:
+          # 重新加载文件并播放 - 导致并发问题
+          audio_data, sample_rate = sf.read(self._filepath, ...)
+          self._audio_data = audio_data * self._volume
+          self._start_playback(from_sample=...)
+
+  # 修复后 - 简化为仅设置音量值
+  def set_volume(self, level: float) -> None:
+      self._volume = max(0.0, min(1.0, level))
+
+  # 在 audio_callback 中动态应用音量
+  def audio_callback(outdata, frames, time_info, status):
+      ...
+      outdata[:] = samples_to_play[start:end] * self._volume  # 动态应用音量
+  ```
+
+### 6. 进度条点击跳转功能
+- **文件**: `view/widgets/progress_slider.py`
+- **问题**: 进度条只能通过拖动滑块跳转，点击轨道无法跳转
+- **修复**: 创建自定义 `ClickableSlider` 类，重写 `mousePressEvent` 实现点击跳转
+- **代码示例**:
+  ```python
+  class ClickableSlider(QSlider):
+      """支持点击轨道跳转的滑块"""
+
+      def mousePressEvent(self, event: QMouseEvent) -> None:
+          if event.button() == Qt.MouseButton.LeftButton:
+              # 计算点击位置对应的值
+              value = self.minimum() + int(
+                  event.position().x() / self.width() * (self.maximum() - self.minimum())
+              )
+              self.setValue(value)
+              # 发射信号更新显示并触发跳转
+              self.sliderMoved.emit(value)
+              self.sliderReleased.emit()
+              return
+          super().mousePressEvent(event)
+  ```
+
+---
+
+*PyQt6 前端修复完成时间: 2026-04-19*
+
+---
+
+## 默认封面图片显示修复 (2026-04-20)
+
+### 问题描述
+当歌曲没有嵌入封面图片时：
+1. `resource/default_cover.png` 存在但未被使用
+2. UI 显示动态生成的灰色占位图，而非预设的默认封面
+3. 原因是 `album_art_loaded` 信号仅在歌曲有封面时触发，无封面时不更新显示
+
+### 修复内容
+
+#### 1. PyQt UI 默认封面加载 (view/widgets/now_playing_panel.py)
+- **问题**: `_clear_art()` 方法显示 "No Art" 文本占位符，未使用默认封面
+- **修复**:
+  1. 添加模块级常量 `DEFAULT_COVER_PATH` 指向 `resource/default_cover.png`
+  2. 添加类属性 `_default_pixmap: Optional[QPixmap]` 缓存默认封面（类级别，避免重复加载）
+  3. 添加 `@classmethod _load_default_cover()` 方法加载并缓存默认封面
+  4. 修改 `_clear_art()` 方法显示缩放后的默认封面图片
+- **代码示例**:
+  ```python
+  # 默认封面路径
+  DEFAULT_COVER_PATH = Path(__file__).parent.parent.parent / "resource" / "default_cover.png"
+
+  class NowPlayingPanel(QWidget):
+      _default_pixmap: Optional[QPixmap] = None  # 类级别缓存
+
+      @classmethod
+      def _load_default_cover(cls) -> None:
+          """Load and cache the default cover image."""
+          if cls._default_pixmap is not None:
+              return
+          if DEFAULT_COVER_PATH.exists():
+              cls._default_pixmap = QPixmap(str(DEFAULT_COVER_PATH))
+              if cls._default_pixmap.isNull():
+                  cls._default_pixmap = None
+
+      def _clear_art(self) -> None:
+          """Clear album art and show default cover or placeholder."""
+          if self._default_pixmap and not self._default_pixmap.isNull():
+              scaled = self._default_pixmap.scaled(
+                  self.ART_SIZE, self.ART_SIZE,
+                  Qt.AspectRatioMode.KeepAspectRatio,
+                  Qt.TransformationMode.SmoothTransformation
+              )
+              self._art_label.setPixmap(scaled)
+          else:
+              # Fallback to text placeholder
+              self._art_label.clear()
+              self._art_label.setText("No Art")
+  ```
+
+#### 2. Tkinter UI 默认封面加载 (gui.py)
+- **问题**: `_set_default_album_art()` 方法动态生成灰色图片，未使用默认封面
+- **修复**:
+  1. 添加 `DEFAULT_COVER_PATH` 常量
+  2. 修改 `_set_default_album_art()` 优先加载默认封面文件
+  3. 正确处理 RGBA 图像的透明度
+  4. 加载失败时回退到灰色占位图
+- **代码示例**:
+  ```python
+  DEFAULT_COVER_PATH = Path(__file__).parent / "resource" / "default_cover.png"
+
+  def _set_default_album_art(self):
+      if PIL_AVAILABLE:
+          if DEFAULT_COVER_PATH.exists():
+              try:
+                  img = Image.open(DEFAULT_COVER_PATH)
+                  img.thumbnail((100, 100), Image.Resampling.LANCZOS)
+                  canvas = Image.new('RGB', (100, 100), color='#ffffff')
+                  offset = ((100 - img.width) // 2, (100 - img.height) // 2)
+                  if img.mode == 'RGBA':
+                      canvas.paste(img, offset, mask=img.split()[3])
+                  else:
+                      canvas.paste(img, offset)
+                  self.default_album_art = ImageTk.PhotoImage(canvas)
+                  self.album_art_label.configure(image=self.default_album_art)
+                  return
+              except Exception as e:
+                  print(f"Warning: Failed to load default cover: {e}")
+          # Fallback: gray placeholder
+          img = Image.new('RGB', (100, 100), color='#cccccc')
+          self.default_album_art = ImageTk.PhotoImage(img)
+  ```
+
+#### 3. Presenter 无封面时触发更新 (presenter/main_presenter.py)
+- **问题**: 当 `metadata.album_art` 为 `None` 时，`album_art_loaded` 信号不触发，UI 不更新
+- **修复**: 在 `_on_metadata_loaded` 中检查，无封面时调用 `update_album_art(None)` 显示默认封面
+- **代码示例**:
+  ```python
+  @pyqtSlot(str, object)
+  def _on_metadata_loaded(self, filepath: str, metadata) -> None:
+      current = self._playback.current_track
+      if current and current.path == filepath:
+          self._view.update_track_info(
+              metadata.title,
+              metadata.artist,
+              metadata.album
+          )
+          # 新增：无封面时显示默认封面
+          if not metadata.album_art:
+              self._view.update_album_art(None)
+  ```
+
+### 数据流程说明
+
+```
+播放歌曲
+    │
+    ▼
+MetadataService.load_async()
+    │
+    ▼
+extract_metadata() → SongMetadata(album_art=None 或 bytes)
+    │
+    ├── 有封面 (album_art is not None)
+    │       │
+    │       ▼
+    │   album_art_loaded.emit(filepath, art_data)
+    │       │
+    │       ▼
+    │   _on_album_art_loaded() → update_album_art(art_data)
+    │
+    └── 无封面 (album_art is None)
+            │
+            ▼
+        metadata_loaded.emit(filepath, metadata)
+            │
+            ▼
+        _on_metadata_loaded()
+            │
+            ▼
+        检测 album_art is None → update_album_art(None)
+            │
+            ▼
+        _clear_art() → 显示默认封面
+```
+
+### 验证测试
+
+```bash
+# 测试默认封面存在
+python -c "from pathlib import Path; print(Path('resource/default_cover.png').exists())"
+
+# 测试 PyQt 组件
+python -c "
+from view.widgets.now_playing_panel import NowPlayingPanel, DEFAULT_COVER_PATH
+print(f'Default cover path: {DEFAULT_COVER_PATH}')
+print(f'Exists: {DEFAULT_COVER_PATH.exists()}')
+"
+```
+
+---
+
+*默认封面修复完成时间: 2026-04-20*

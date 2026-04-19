@@ -24,6 +24,9 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
+# Default cover path
+DEFAULT_COVER_PATH = Path(__file__).parent / "resource" / "default_cover.png"
+
 
 class PyPlayerGUI:
     """PyPlayer graphical interface player"""
@@ -173,7 +176,24 @@ class PyPlayerGUI:
     def _set_default_album_art(self):
         """Set default placeholder for album art."""
         if PIL_AVAILABLE:
-            # Create a gray placeholder image
+            # Try to load default cover image
+            if DEFAULT_COVER_PATH.exists():
+                try:
+                    img = Image.open(DEFAULT_COVER_PATH)
+                    img.thumbnail((100, 100), Image.Resampling.LANCZOS)
+                    # Create square canvas if needed
+                    canvas = Image.new('RGB', (100, 100), color='#ffffff')
+                    offset = ((100 - img.width) // 2, (100 - img.height) // 2)
+                    if img.mode == 'RGBA':
+                        canvas.paste(img, offset, mask=img.split()[3])
+                    else:
+                        canvas.paste(img, offset)
+                    self.default_album_art = ImageTk.PhotoImage(canvas)
+                    self.album_art_label.configure(image=self.default_album_art)
+                    return
+                except Exception as e:
+                    print(f"Warning: Failed to load default cover: {e}")
+            # Fallback: create a gray placeholder image
             img = Image.new('RGB', (100, 100), color='#cccccc')
             self.default_album_art = ImageTk.PhotoImage(img)
             self.album_art_label.configure(image=self.default_album_art)

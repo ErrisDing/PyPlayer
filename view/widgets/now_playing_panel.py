@@ -12,7 +12,12 @@ from PyQt6.QtGui import QPixmap, QImage
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+# Project root path
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+DEFAULT_COVER_PATH = _PROJECT_ROOT / "resource" / "default_cover.png"
+
+sys.path.insert(0, str(_PROJECT_ROOT))
 
 from view.widgets.library_selector import LibrarySelector
 
@@ -43,9 +48,27 @@ class NowPlayingPanel(QWidget):
     # Default art size
     ART_SIZE = 200
 
+    # Class-level cache for default cover
+    _default_pixmap: Optional[QPixmap] = None
+
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._load_default_cover()
         self._setup_ui()
+
+    @classmethod
+    def _load_default_cover(cls) -> None:
+        """Load and cache the default cover image."""
+        if cls._default_pixmap is not None:
+            return
+
+        if DEFAULT_COVER_PATH.exists():
+            cls._default_pixmap = QPixmap(str(DEFAULT_COVER_PATH))
+            if cls._default_pixmap.isNull():
+                cls._default_pixmap = None
+                print(f"Warning: Failed to load default cover from {DEFAULT_COVER_PATH}")
+        else:
+            print(f"Warning: Default cover not found at {DEFAULT_COVER_PATH}")
 
     def _setup_ui(self) -> None:
         """Set up the UI components."""
@@ -172,16 +195,26 @@ class NowPlayingPanel(QWidget):
             self._clear_art()
 
     def _clear_art(self) -> None:
-        """Clear album art and show placeholder."""
-        self._art_label.clear()
-        self._art_label.setText("No Art")
-        self._art_label.setStyleSheet("""
-            QLabel {
-                background-color: #f0f0f0;
-                border: 1px solid #ccc;
-                border-radius: 5px;
-            }
-        """)
+        """Clear album art and show default cover or placeholder."""
+        if self._default_pixmap and not self._default_pixmap.isNull():
+            # Scale the default cover to fit
+            scaled = self._default_pixmap.scaled(
+                self.ART_SIZE, self.ART_SIZE,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self._art_label.setPixmap(scaled)
+        else:
+            # Fallback to text placeholder
+            self._art_label.clear()
+            self._art_label.setText("No Art")
+            self._art_label.setStyleSheet("""
+                QLabel {
+                    background-color: #f0f0f0;
+                    border: 1px solid #ccc;
+                    border-radius: 5px;
+                }
+            """)
 
     def clear(self) -> None:
         """Clear all display."""

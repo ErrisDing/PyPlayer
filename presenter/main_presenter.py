@@ -197,6 +197,9 @@ class MainPresenter(QObject):
         """Handle add library request."""
         if self._config.add_library(path):
             self._library.load_library(path)
+            # Refresh library list in UI
+            libraries = self._config.get_libraries()
+            self._view.set_libraries(libraries)
             self._view.set_status_message(f"Added library: {path}")
 
     @pyqtSlot(str)
@@ -356,6 +359,9 @@ class MainPresenter(QObject):
                 metadata.artist,
                 metadata.album
             )
+            # If no album art, show default cover immediately
+            if not metadata.album_art:
+                self._view.update_album_art(None)
 
     @pyqtSlot(str, bytes)
     def _on_album_art_loaded(self, filepath: str, art_data: bytes) -> None:

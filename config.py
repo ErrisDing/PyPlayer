@@ -130,7 +130,7 @@ class SettingsManager:
 
             return True
 
-        except (ET.ParseError, OSError, IOError, json.JSONEncodeError) as e:
+        except (ET.ParseError, OSError, IOError, TypeError) as e:
             print(f"Migration failed: {e}")
             if 'temp_path' in locals() and temp_path.exists():
                 temp_path.unlink(missing_ok=True)
@@ -222,11 +222,11 @@ class SettingsManager:
             with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
 
-            # Replace original file
-            temp_path.rename(self.config_file)
+            # Replace original file (os.replace works on Windows to overwrite existing files)
+            os.replace(temp_path, self.config_file)
             return True
 
-        except (OSError, IOError, json.JSONEncodeError) as e:
+        except (OSError, IOError, TypeError) as e:
             print(f"Failed to save config: {e}")
             return False
 
