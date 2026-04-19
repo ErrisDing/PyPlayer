@@ -94,15 +94,45 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.pyplayer\cache\libraries\"
    ```
 
 #### 问题：专辑封面不显示 / Album Art Not Showing
-**症状**: Now Playing 面板显示 "No Art"
+**症状**: Now Playing 面板显示 "No Art" 或默认封面
 
 **可能原因**:
 - 音频文件没有嵌入封面图片
 - 文件格式不支持元数据读取
+- FLAC 文件使用非标准封面存储方式
 
 **解决方案**:
-- 使用音乐标签编辑器添加封面
-- 支持的格式：MP3 (ID3), FLAC, M4A, OGG
+
+1. 使用诊断工具检查文件：
+   ```bash
+   python -c "
+   from service.tools import diagnose_file
+   import json
+   result = diagnose_file('your_file.flac')
+   print(json.dumps(result, indent=2, default=str))
+   "
+   ```
+
+2. 检查诊断结果中的关键字段：
+   - `has_cover_art`: 是否有封面
+   - `diagnostics.has_native_pictures`: FLAC 原生 PICTURE 块
+   - `diagnostics.has_metadata_block_picture`: Vorbis 注释中的封面
+   - `errors`: 提取错误信息
+
+3. 如果文件确实没有封面，使用音乐标签编辑器添加：
+   - 支持的格式：MP3 (ID3), FLAC, M4A, OGG
+
+4. 批量检查目录中缺少封面的文件：
+   ```bash
+   python -c "
+   from service.tools.diagnostic import MetadataDiagnostic
+   diag = MetadataDiagnostic()
+   files = diag.find_files_without_cover('/path/to/music')
+   print(f'Files without cover: {len(files)}')
+   for f in files[:10]:  # 显示前10个
+       print(f'  {f}')
+   "
+   ```
 
 ---
 

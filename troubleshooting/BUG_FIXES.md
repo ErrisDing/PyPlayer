@@ -968,3 +968,140 @@ print(f'Exists: {DEFAULT_COVER_PATH.exists()}')
 ---
 
 *默认封面修复完成时间: 2026-04-20*
+
+---
+
+## FLAC 封面图片提取重构 (2026-04-20)
+
+### 问题描述
+用户反馈 FLAC 文件的专辑封面没有正确加载。原实现仅检查 `audio.pictures`，但 FLAC 文件可能使用多种封面存储方式。
+
+### 问题分析
+
+原 `metadata.py` 中 FLAC 封面提取实现：
+```python
+if audio.pictures:
+    album_art = audio.pictures[0].data
+```
+
+**可能的失败原因**：
+1. `audio.pictures` 为空列表 - FLAC 文件可能使用非标准封面存储方式
+2. 封面存储在 Vorbis 注释的 `METADATA_BLOCK_PICTURE` 标签中（base64 编码），而非 FLAC 原生 PICTURE 块
+3. 封面存储在旧版 `COVERART` 标签中
+4. 异常被静默捕获，无诊断信息
+
+### 解决方案
+
+#### 新增 `service/tools/` 模块
+
+创建可扩展的元数据提取工具模块：
+
+| 文件 | 说明 |
+|------|------|
+| `service/tools/base.py` | 基类 (`MetadataExtractor`) 和数据结构 (`ExtractionResult`, `ExtractedPicture`, `PictureType`) |
+| `service/tools/flac.py` | FLAC 提取器，支持多策略封面提取 |
+| `service/tools/mp3.py` | MP3/ID3 提取器 |
+| `service/tools/m4a.py` | M4A/MP4 提取器 |
+| `service/tools/ogg.py` | OGG Vorbis 提取器，支持多策略封面提取 |
+| `service/tools/diagnostic.py` | 诊断工具 (`MetadataDiagnostic`) |
+| `service/tools/__init__.py` | 统一导出和便捷函数 |
+
+#### FLAC 多策略封面提取
+
+`FLACExtractor` 按优先级尝试三种策略：
+
+1. **策略 1**: FLAC 原生 PICTURE 块 (`audio.pictures`)
+   - 标准 FLAC 元数据块，直接访问 `audio.pictures` 列表
+
+2. **策略 2**: Vorbis 注释 `METADATA_BLOCK_PICTURE`
+   - base64 编码的 FLAC Picture 结构
+   - 解码后使用 mutagen 的 `Picture` 类解析
+
+3. **策略 3**: 旧版 `COVERART` 标签
+   - base64 编码的原始图片数据
+   - 自动检测 MIME 类型
+
+#### 诊断工具
+
+新增 `MetadataDiagnostic` 类支持诊断：
+
+```python
+from service.tools.diagnostic import MetadataDiagnostic
+
+diag = MetadataDiagnostic()
+
+# 分析单个文件
+report = diag.analyze_file('path/to/audio.flac')
+print(report.to_summary())
+
+# 分析目录（查找无封面文件）
+reports, summary = diag.analyze_directory('/path/to/music')
+print(f"无封面文件: {summary.files_without_cover_art}/{summary.total_files}")
+```
+
+#### 向后兼容
+
+`metadata.py` 改为 facade，调用 `service.tools` 模块，API 保持不变：
+
+```python
+# 原有代码无需修改
+from metadata import extract_metadata, SongMetadata
+
+meta = extract_metadata('song.flac')
+print(f'Title: {meta.title}')
+print(f'Album art: {len(meta.album_art) if meta.album_art else 0} bytes')
+```
+
+### 验证测试
+
+```bash
+# 测试诊断功能
+python -c "
+from service.tools import diagnose_file
+import json
+result = diagnose_file('path/to/audio.flac')
+print(json.dumps(result, indent=2, default=str))
+"
+
+# 测试封面提取
+python -c "
+from service.tools import extract_metadata
+result = extract_metadata('path/to/audio.flac')
+print(f'Success: {result.success}')
+print(f'Pictures: {len(result.pictures)}')
+if result.pictures:
+    print(f'First picture size: {len(result.pictures[0].data)} bytes')
+print(f'Errors: {result.errors}')
+print(f'Warnings: {result.warnings}')
+"
+
+# 测试向后兼容
+python -c "
+from metadata import extract_metadata, SongMetadata
+meta = extract_metadata('path/to/audio.flac')
+print(f'Title: {meta.title}')
+print(f'Album art: {len(meta.album_art) if meta.album_art else 0} bytes')
+"
+
+# 批量诊断目录
+python -c "
+from service.tools.diagnostic import MetadataDiagnostic
+diag = MetadataDiagnostic()
+reports = diag.analyze_directory('/path/to/music')
+files_without = diag.find_files_without_cover('/path/to/music')
+print(f'Files without cover art: {len(files_without)}')
+"
+```
+
+### 支持格式
+
+| 格式 | 扩展名 | 封面提取方式 |
+|------|--------|--------------|
+| MP3 | `.mp3` | ID3 APIC 帧 |
+| FLAC | `.flac` | PICTURE 块 / METADATA_BLOCK_PICTURE / COVERART |
+| M4A/MP4 | `.m4a`, `.mp4`, `.m4b`, `.m4p` | covr 标签 |
+| OGG | `.ogg`, `.oga` | METADATA_BLOCK_PICTURE / COVERART |
+
+---
+
+*FLAC 封面提取重构完成时间: 2026-04-20*

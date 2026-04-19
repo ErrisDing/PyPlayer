@@ -288,8 +288,8 @@ class QueueService(QObject):
         node_idx = self._position.node_index
         sub_idx = self._position.sub_index
 
-        # First track if not started
-        if node_idx < 0:
+        # First track if not started or invalid position
+        if node_idx < 0 or node_idx >= len(self._queue_nodes):
             return self._play_first_track()
 
         node = self._queue_nodes[node_idx]
@@ -348,7 +348,8 @@ class QueueService(QObject):
         node_idx = self._position.node_index
         sub_idx = self._position.sub_index
 
-        if node_idx < 0:
+        # Invalid position - nothing to go back from
+        if node_idx < 0 or node_idx >= len(self._queue_nodes):
             return None
 
         node = self._queue_nodes[node_idx]
