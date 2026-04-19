@@ -57,6 +57,9 @@ class MainPresenter(QObject):
         self._metadata = metadata_service
         self._config = config_service
 
+        # Current library tracking
+        self._current_library_path: str = ""
+
         # Position update timer
         self._position_timer = QTimer(self)
         self._position_timer.timeout.connect(self._update_position)
@@ -86,6 +89,9 @@ class MainPresenter(QObject):
         # Library management
         self._view.add_library_requested.connect(self._on_add_library)
         self._view.scan_folder_requested.connect(self._on_scan_folder)
+        self._view.refresh_library_requested.connect(self._on_refresh_library)
+        self._view.refresh_all_requested.connect(self._on_refresh_all)
+        self._view.library_selected.connect(self._on_library_selected)
 
     def _setup_service_connections(self) -> None:
         """Connect Service signals to handler methods."""
@@ -114,6 +120,8 @@ class MainPresenter(QObject):
 
         # Load configured libraries
         libraries = self._config.get_libraries()
+        self._view.set_libraries(libraries)
+
         for lib in libraries:
             self._library.load_library(lib.path, lib.name)
 
@@ -195,6 +203,52 @@ class MainPresenter(QObject):
     def _on_scan_folder(self, folder: str) -> None:
         """Handle scan folder request."""
         self._library.load_library(folder)
+
+    @pyqtSlot(str)
+    def _on_refresh_library(self, library_path: str) -> None:
+        """Handle refresh library request."""
+        self._view.set_status_message(i18n.get('status.refreshing'))
+        files = self._library.refresh_library(library_path)
+        if files:
+            self._view.set_status_message(
+                i18n.get('status.library_refreshed').format(name=library_path)
+            )
+            # Rebuild queue with refreshed files
+            tracks = []
+            for media_file in files:
+                track = Track(
+                    path=media_file.path,
+                    title=media_file.title
+                )
+                tracks.append(track)
+            self._queue.build_from_tracks(tracks)
+
+    @pyqtSlot()
+    def _on_refresh_all(self) -> None:
+        """Handle refresh all libraries request."""
+        self._view.set_status_message(i18n.get('status.refresh_all'))
+        results = self._library.refresh_all_libraries()
+        total_files = sum(len(files) for files in results.values())
+        self._view.set_status_message(f"Refreshed {total_files} files from {len(results)} libraries")
+
+    @pyqtSlot(str)
+    def _on_library_selected(self, library_path: str) -> None:
+        """Handle library selection from UI."""
+        self._current_library_path = library_path
+        self._queue.set_current_library(library_path)
+
+        # Load files from the selected library
+        files = self._library.get_files(library_path)
+        if files:
+            tracks = []
+            for media_file in files:
+                track = Track(
+                    path=media_file.path,
+                    title=media_file.title
+                )
+                tracks.append(track)
+            self._queue.build_from_tracks(tracks)
+            self._view.set_status_message(f"Switched to library: {library_path}")
 
     # === Service Signal Handlers ===
 
@@ -316,6 +370,11 @@ class MainPresenter(QObject):
         if not files:
             return
 
+        # Set as current library if this is the first one loaded
+        if not self._current_library_path:
+            self._current_library_path = library_path
+            self._view.set_current_library(library_path)
+
         # Convert MediaFile objects to Tracks
         tracks = []
         for media_file in files:
@@ -327,6 +386,7 @@ class MainPresenter(QObject):
 
         # Build queue from tracks
         self._queue.build_from_tracks(tracks)
+        self._queue.set_current_library(library_path)
 
         # Update status
         self._view.set_status_message(f"Loaded {len(tracks)} tracks from library")

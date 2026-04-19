@@ -3,7 +3,7 @@
 Now Playing Panel - Displays current track info and album art
 """
 
-from typing import Optional
+from typing import Optional, List
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 )
@@ -13,6 +13,8 @@ from PyQt6.QtGui import QPixmap, QImage
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from view.widgets.library_selector import LibrarySelector
 
 try:
     from PIL import Image
@@ -30,11 +32,13 @@ class NowPlayingPanel(QWidget):
     Features:
     - Album art display with aspect ratio preservation
     - Track title, artist, album display
+    - Library selector for switching between libraries
     - Placeholder when no track playing
     """
 
     # Signals
     art_clicked = pyqtSignal()
+    library_selected = pyqtSignal(str)  # library path
 
     # Default art size
     ART_SIZE = 200
@@ -90,6 +94,12 @@ class NowPlayingPanel(QWidget):
         info_layout.addWidget(self._album_label)
 
         layout.addLayout(info_layout)
+
+        # Library selector
+        self._library_selector = LibrarySelector()
+        self._library_selector.library_selected.connect(self.library_selected.emit)
+        layout.addWidget(self._library_selector)
+
         layout.addStretch()
 
     def _on_art_click(self, event) -> None:
@@ -177,6 +187,24 @@ class NowPlayingPanel(QWidget):
         """Clear all display."""
         self.update_track_info("No Track Playing", "", "")
         self._clear_art()
+
+    def set_libraries(self, libraries: List) -> None:
+        """
+        Set the list of available libraries.
+
+        Args:
+            libraries: List of LibraryConfig objects
+        """
+        self._library_selector.set_libraries(libraries)
+
+    def set_current_library(self, library_path: str) -> None:
+        """
+        Set the currently selected library.
+
+        Args:
+            library_path: Path to the current library
+        """
+        self._library_selector.set_current_library(library_path)
 
     def sizeHint(self) -> QSize:
         """Return suggested size."""

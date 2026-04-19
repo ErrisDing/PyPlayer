@@ -82,7 +82,30 @@ class LibraryService(QObject):
 
     def refresh_library(self, library_path: str) -> List[MediaFile]:
         """Force refresh a library."""
-        return self._manager.refresh_library(library_path)
+        files = self._manager.refresh_library(library_path)
+        # Emit signal to notify listeners
+        self.library_loaded.emit(library_path, files)
+        return files
+
+    def refresh_all_libraries(self) -> Dict[str, List[MediaFile]]:
+        """
+        Force refresh all configured libraries.
+
+        Returns:
+            Dict mapping library_path -> list of files
+        """
+        from config import SettingsManager
+
+        sm = SettingsManager()
+        libraries = sm.settings.media_libraries
+
+        result = {}
+        for lib in libraries:
+            files = self.refresh_library(lib.path)
+            result[lib.path] = files
+
+        self.all_libraries_loaded.emit()
+        return result
 
     def get_all_files(self) -> Dict[str, List[MediaFile]]:
         """Get files from all loaded libraries."""

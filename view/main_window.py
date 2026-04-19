@@ -4,7 +4,7 @@ Main Window - Primary application window
 Assembles all UI components and provides the public View interface
 """
 
-from typing import Optional, List
+from typing import Optional, List, Any
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QMenuBar, QMenu, QToolBar, QStatusBar, QFileDialog, QMessageBox
@@ -44,13 +44,19 @@ class MainWindow(QMainWindow):
     add_library_requested = pyqtSignal(str)     # library path
     remove_library_requested = pyqtSignal(str)  # library path
     refresh_library_requested = pyqtSignal(str) # library path
+    refresh_all_requested = pyqtSignal()        # refresh all libraries
     scan_folder_requested = pyqtSignal(str)     # folder path
+    library_selected = pyqtSignal(str)          # library path selected
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
 
         # Ensure i18n is initialized
         i18n.detect_init()
+
+        # Current library tracking
+        self._current_library_path: str = ""
+        self._libraries: List[Any] = []
 
         self._setup_window()
         self._setup_menu()
@@ -84,6 +90,14 @@ class MainWindow(QMainWindow):
         add_library_action = QAction(i18n.get('menu.add_library'), self)
         add_library_action.triggered.connect(self._on_add_library)
         file_menu.addAction(add_library_action)
+
+        refresh_library_action = QAction(i18n.get('menu.refresh_library'), self)
+        refresh_library_action.triggered.connect(self._on_refresh_library)
+        file_menu.addAction(refresh_library_action)
+
+        refresh_all_action = QAction(i18n.get('menu.refresh_all'), self)
+        refresh_all_action.triggered.connect(self._on_refresh_all)
+        file_menu.addAction(refresh_all_action)
 
         file_menu.addSeparator()
 
@@ -171,6 +185,9 @@ class MainWindow(QMainWindow):
         # Playlist connections
         self._playlist_view.track_double_clicked.connect(self.track_double_clicked.emit)
 
+        # Now playing panel connections
+        self._now_playing.library_selected.connect(self._on_library_selected)
+
     # === Menu handlers ===
 
     def _on_open_file(self) -> None:
@@ -207,6 +224,21 @@ class MainWindow(QMainWindow):
         if folder:
             self.add_library_requested.emit(folder)
 
+    def _on_refresh_library(self) -> None:
+        """Handle refresh library action."""
+        # Emit signal with current library path if available
+        if self._current_library_path:
+            self.refresh_library_requested.emit(self._current_library_path)
+
+    def _on_refresh_all(self) -> None:
+        """Handle refresh all libraries action."""
+        self.refresh_all_requested.emit()
+
+    def _on_library_selected(self, library_path: str) -> None:
+        """Handle library selection from now playing panel."""
+        self._current_library_path = library_path
+        self.library_selected.emit(library_path)
+
     def _on_about(self) -> None:
         """Show about dialog."""
         QMessageBox.about(
@@ -216,6 +248,26 @@ class MainWindow(QMainWindow):
         )
 
     # === Public API for Presenter ===
+
+    def set_libraries(self, libraries: List[Any]) -> None:
+        """
+        Set the list of available libraries for the selector.
+
+        Args:
+            libraries: List of LibraryConfig objects
+        """
+        self._libraries = libraries
+        self._now_playing.set_libraries(libraries)
+
+    def set_current_library(self, library_path: str) -> None:
+        """
+        Set the current active library.
+
+        Args:
+            library_path: Path to the current library
+        """
+        self._current_library_path = library_path
+        self._now_playing.set_current_library(library_path)
 
     def update_track_info(self, title: str, artist: str = "", album: str = "") -> None:
         """Update the now playing info display."""

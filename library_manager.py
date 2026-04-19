@@ -12,6 +12,7 @@ from typing import List, Dict, Optional, Tuple, Any, Set
 from datetime import datetime
 
 from config import SettingsManager
+from cache_manager import LibraryCacheManager, CachedFile, LibraryCache
 
 
 # ============================================================================
@@ -419,6 +420,7 @@ class LibraryScanner:
 
     def __init__(self):
         self._scanned_times: Dict[str, float] = {}  # path -> scan timestamp
+        self._cache_manager = LibraryCacheManager()
 
     def _is_supported_file(self, filename: str) -> bool:
         """Check if file is a supported media file"""
@@ -439,17 +441,12 @@ class LibraryScanner:
         """
         directory = os.path.normpath(directory)
 
-        # Check cache (unless forced refresh)
-        cache_key = os.path.normpath(directory)
-        if not force_refresh and cache_key in self._scanned_times:
-            cached_time, files = self._get_cached_files(cache_key)
-            # Simple check: if directory modification time unchanged, return cache
-            try:
-                dir_stat = os.stat(directory)
-                if dir_stat.st_mtime <= cached_time:
-                    return list(files)
-            except OSError:
-                pass
+        # Check JSON cache (unless forced refresh)
+        if not force_refresh:
+            cached_files = self._cache_manager.get_cached_files(directory)
+            if cached_files:
+                # Convert CachedFile to MediaFile
+                return [self._cached_to_media_file(cf) for cf in cached_files]
 
         files = []
 
@@ -476,48 +473,51 @@ class LibraryScanner:
                     files.append(media_file)
 
         # Update cache
-        self._scanned_times[cache_key] = datetime.now().timestamp()
+        self._save_to_cache(directory, files)
+        self._scanned_times[directory] = datetime.now().timestamp()
         return files
 
+    def _cached_to_media_file(self, cached: CachedFile) -> MediaFile:
+        """Convert CachedFile to MediaFile."""
+        return MediaFile(
+            path=cached.path,
+            title=cached.title,
+            file_type=cached.file_type,
+            extension=cached.extension,
+            size_bytes=cached.size_bytes,
+            modified_time=cached.modified_time
+        )
+
+    def _media_to_cached_file(self, media: MediaFile) -> CachedFile:
+        """Convert MediaFile to CachedFile."""
+        return CachedFile(
+            path=media.path,
+            title=media.title,
+            file_type=media.file_type,
+            extension=media.extension,
+            size_bytes=media.size_bytes,
+            modified_time=media.modified_time
+        )
+
+    def _save_to_cache(self, library_path: str, files: List[MediaFile]) -> None:
+        """Save scan results to JSON cache."""
+        library_name = Path(library_path).name
+        cached_files = [self._media_to_cached_file(f) for f in files]
+        cache = self._cache_manager.create_cache(
+            library_path=library_path,
+            library_name=library_name,
+            files=cached_files
+        )
+        self._cache_manager.save_cache(cache)
+
     def _get_cached_files(self, path: str) -> Tuple[Optional[float], List[MediaFile]]:
-        """Get cached file list"""
-        cache_dir = Path.home() / '.pyplayer' / 'cache'
-        cache_file = cache_dir / f'{hash(path)}.cache'
-
-        if not cache_file.exists():
+        """Get cached file list (legacy method for backward compatibility)."""
+        cache = self._cache_manager.load_cache(path)
+        if not cache:
             return None, []
 
-        try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-                # Simple parsing: first line is timestamp, subsequent lines are file paths
-                lines = content.strip().split('\n')
-                if not lines:
-                    return None, []
-                cached_time = float(lines[0])
-                file_paths = [l for l in lines[1:] if l]
-
-                # Reconstruct MediaFile objects
-                files = []
-                for p in file_paths:
-                    try:
-                        stat_info = os.stat(p)
-                        ext = Path(p).suffix.lower()
-                        file_type = 'audio' if ext in SUPPORTED_AUDIO else 'video'
-                        files.append(MediaFile(
-                            path=p,
-                            title=Path(p).name,
-                            file_type=file_type,
-                            extension=ext,
-                            size_bytes=stat_info.st_size,
-                            modified_time=stat_info.st_mtime
-                        ))
-                    except OSError:
-                        pass
-
-                return cached_time, files
-        except (OSError, IOError, ValueError, UnicodeDecodeError):
-            return None, []
+        files = [self._cached_to_media_file(cf) for cf in cache.files]
+        return cache.scan_timestamp, files
 
 
 class LibraryManager:

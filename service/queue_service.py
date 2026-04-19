@@ -71,11 +71,18 @@ class QueueService(QObject):
         # Library ID for this queue
         self._library_id: str = ""
 
+        # Current library path for display optimization
+        self._current_library_path: str = ""
+
     # === Queue Building ===
 
     def set_library_id(self, library_id: str) -> None:
         """Set the library ID for this queue."""
         self._library_id = library_id
+
+    def set_current_library(self, library_path: str) -> None:
+        """Set the current library path for display optimization."""
+        self._current_library_path = library_path
 
     def build_from_tracks(self, tracks: List[Track]) -> None:
         """
@@ -121,27 +128,42 @@ class QueueService(QObject):
         self.queue_changed.emit()
 
     def _rebuild_display_entries(self) -> None:
-        """Rebuild display entries from queue nodes."""
+        """Rebuild display entries from queue nodes.
+
+        Skips library root nodes (marked with [ML]) when a current library is set,
+        showing only the contents within the library.
+        """
         self._display_entries.clear()
         display_idx = 0
 
         for node_idx, node in enumerate(self._queue_nodes):
+            # Check if this is a library root node that should be skipped
+            node_path = node.path
+            is_library_root = (
+                self._current_library_path and
+                node_path == self._current_library_path
+            )
+
             if node.is_folder():
-                # Folder node - add folder entry
+                # Folder node - add folder entry (unless it's library root)
                 folder_node: FolderNode = node
-                entry = DisplayEntry(
-                    display_text=f"[D] {folder_node.display_text}",
-                    node_idx=node_idx,
-                    is_folder=True,
-                    path=folder_node.path
-                )
-                self._display_entries.append(entry)
-                display_idx += 1
+
+                if not is_library_root:
+                    entry = DisplayEntry(
+                        display_text=f"[D] {folder_node.display_text}",
+                        node_idx=node_idx,
+                        is_folder=True,
+                        path=folder_node.path
+                    )
+                    self._display_entries.append(entry)
+                    display_idx += 1
 
                 # Add entries for each track in the folder
                 for sub_idx, track in enumerate(folder_node.tracks):
+                    # Calculate indentation based on whether we skipped library root
+                    indent = "    " if not is_library_root else ""
                     file_entry = DisplayEntry(
-                        display_text=f"    [F] {track.title}",
+                        display_text=f"{indent}[F] {track.title}",
                         node_idx=node_idx,
                         is_folder=False,
                         path=folder_node.path,
