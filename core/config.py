@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 PyPlayer Configuration Management Module
-Handles reading/writing settings.xml and provides persistent storage for media library configuration
+Handles reading/writing settings.json in cache directory
 """
 
 import os
 import json
+import shutil
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
-import xml.etree.ElementTree as ET
 from datetime import datetime
 
 
@@ -53,88 +53,62 @@ class Settings:
                 return lib
         return None
 
+    def reorder_library(self, old_index: int, new_index: int) -> bool:
+        """
+        Move a library from old_index to new_index.
+
+        Args:
+            old_index: Current position of the library
+            new_index: Target position
+
+        Returns:
+            True if successful, False if indices are invalid
+        """
+        if old_index < 0 or old_index >= len(self.media_libraries):
+            return False
+        if new_index < 0 or new_index >= len(self.media_libraries):
+            return False
+        if old_index == new_index:
+            return True
+
+        library = self.media_libraries.pop(old_index)
+        self.media_libraries.insert(new_index, library)
+        return True
+
 
 class SettingsManager:
     """Configuration file read/write manager"""
 
-    DEFAULT_FILE = "settings.json"
-    XML_FILE = "settings.xml"
     CONFIG_VERSION = "2.0"
 
+    @classmethod
+    def _get_default_config_path(cls) -> Path:
+        """Get the default configuration file path in cache directory."""
+        cache_dir = Path.home() / '.pyplayer' / 'cache'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir / 'settings.json'
+
     def __init__(self, config_file: Optional[str] = None):
-        self.config_file = Path(config_file or self.DEFAULT_FILE).resolve()
+        if config_file is None:
+            self.config_file = self._get_default_config_path()
+            self._migrate_from_root()
+        else:
+            self.config_file = Path(config_file).resolve()
         self._settings: Optional[Settings] = None
-        # Auto-load configuration
         _ = self.settings
-        # Check for and perform migration from XML to JSON if needed
-        self._check_and_migrate()
 
-    def _check_and_migrate(self) -> None:
-        """Check and perform configuration migration from XML to JSON if needed"""
-        json_path = self.config_file
-        xml_path = json_path.parent / self.XML_FILE
-
-        # Case 1: JSON already exists, no migration needed
-        if json_path.exists():
+    def _migrate_from_root(self) -> None:
+        """One-time migration from project root to cache directory."""
+        if self.config_file.exists():
             return
 
-        # Case 2: XML exists, JSON doesn't, perform migration
-        if xml_path.exists():
-            self._migrate_xml_to_json(xml_path, json_path)
-
-        # Case 3: Neither exists, first run (will create JSON later)
-
-    def _migrate_xml_to_json(self, xml_path: Path, json_path: Path) -> bool:
-        """Migrate configuration from XML to JSON format"""
-        try:
-            # 1. Parse XML
-            tree = ET.parse(xml_path)
-            root = tree.getroot()
-
-            # 2. Extract data
-            last_updated = root.get('last_updated', datetime.now().isoformat())
-
-            libraries = []
-            media_libs_elem = root.find("media_libraries")
-            if media_libs_elem is not None:
-                for lib_elem in media_libs_elem.findall("library"):
-                    path = lib_elem.get("path", "")
-                    if path:
-                        name = lib_elem.get("name", None)
-                        libraries.append({
-                            "path": os.path.normpath(path),
-                            "name": name
-                        })
-
-            # 3. Build JSON data
-            data = {
-                "version": self.CONFIG_VERSION,
-                "last_updated": last_updated,
-                "media_libraries": libraries
-            }
-
-            # 4. Atomic write to JSON
-            temp_path = json_path.with_suffix('.tmp')
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-
-            temp_path.rename(json_path)
-
-            # 5. Backup original XML file
-            backup_path = xml_path.with_suffix('.xml.backup')
+        old_config = Path(__file__).parent.parent / 'settings.json'
+        if old_config.exists():
             try:
-                xml_path.rename(backup_path)
-                print(f"Migrated configuration to {json_path}, backup at {backup_path}")
-            except OSError as e:
-                print(f"Migration successful but backup failed: {e}")
-
-            return True
-
-        except (ET.ParseError, OSError, IOError, TypeError) as e:
-            print(f"Migration failed: {e}")
-            if 'temp_path' in locals() and temp_path.exists():
-                temp_path.unlink(missing_ok=True)
-            return False
+                shutil.copy2(old_config, self.config_file)
+                print(f"Migrated config to {self.config_file}")
+            except (OSError, IOError) as e:
+                print(f"Failed to migrate config: {e}")
 
     @property
     def settings(self) -> Settings:
@@ -170,22 +144,13 @@ class SettingsManager:
         return Settings()
 
     def load(self) -> Settings:
-        """Load configuration file (supports JSON with XML fallback)"""
+        """Load configuration from JSON file."""
         try:
-            # Priority 1: Load JSON
             if self.config_file.exists():
                 self._settings = self._load_json()
                 return self._settings
 
-            # JSON doesn't exist, check XML (migration might have failed)
-            xml_path = self.config_file.parent / self.XML_FILE
-            if xml_path.exists():
-                print(f"JSON config missing but XML exists, attempting migration...")
-                if self._migrate_xml_to_json(xml_path, self.config_file):
-                    self._settings = self._load_json()
-                    return self._settings
-
-            # Neither exists, create new configuration
+            # Create new empty configuration
             self._settings = self._create_empty_settings()
             return self._settings
 
@@ -245,6 +210,21 @@ class SettingsManager:
             print(f"Media library not found: {path}")
             return False
 
+        return self.save()
+
+    def reorder_library(self, old_index: int, new_index: int) -> bool:
+        """
+        Move a library from old_index to new_index and save.
+
+        Args:
+            old_index: Current position of the library
+            new_index: Target position
+
+        Returns:
+            True if successful
+        """
+        if not self.settings.reorder_library(old_index, new_index):
+            return False
         return self.save()
 
     def _create_empty_config(self) -> None:

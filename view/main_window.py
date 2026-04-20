@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import i18n
+from core import i18n
 from view.widgets import NowPlayingPanel, PlaylistView, ProgressSlider, ControlPanel
 from view.models import PlaylistModel, DisplayEntry
 
@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
     refresh_all_requested = pyqtSignal()        # refresh all libraries
     scan_folder_requested = pyqtSignal(str)     # folder path
     library_selected = pyqtSignal(str)          # library path selected
+    manage_libraries_requested = pyqtSignal()   # open library management dialog
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -90,6 +91,12 @@ class MainWindow(QMainWindow):
         add_library_action = QAction(i18n.get('menu.add_library'), self)
         add_library_action.triggered.connect(self._on_add_library)
         file_menu.addAction(add_library_action)
+
+        manage_libraries_action = QAction(i18n.get('menu.manage_libraries'), self)
+        manage_libraries_action.triggered.connect(self.manage_libraries_requested.emit)
+        file_menu.addAction(manage_libraries_action)
+
+        file_menu.addSeparator()
 
         refresh_library_action = QAction(i18n.get('menu.refresh_library'), self)
         refresh_library_action.triggered.connect(self._on_refresh_library)

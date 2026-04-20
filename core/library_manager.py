@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Any, Set
 from datetime import datetime
 
-from config import SettingsManager
-from cache_manager import LibraryCacheManager, CachedFile, LibraryCache
+from .config import SettingsManager
+from .cache_manager import LibraryCacheManager, CachedFile, LibraryCache
 
 
 # ============================================================================
@@ -325,8 +325,7 @@ class LibraryRuntimeManager:
             if lib_config:
                 runtime = LibraryRuntime(
                     config=lib_config,
-                    media_files=[],
-                    playback_queue=None
+                    media_files=[]
                 )
                 # 使用标准化路径作为 key
                 normalized_key = os.path.normpath(lib_config.path)
@@ -457,7 +456,7 @@ class LibraryScanner:
             # Skip specified directories (modify dirs in-place to prevent os.walk from entering subdirectories)
             dirs[:] = [d for d in dirs if not self._is_skip_directory(os.path.join(root, d))]
 
-            for filename in sorted(filenames):
+            for filename in filenames:
                 if self._is_supported_file(filename):
                     filepath = os.path.join(root, filename)
                     ext = Path(filename).suffix.lower()
@@ -471,6 +470,9 @@ class LibraryScanner:
                         extension=ext
                     )
                     files.append(media_file)
+
+        # Sort by full path
+        files.sort(key=lambda f: f.path)
 
         # Update cache
         self._save_to_cache(directory, files)
@@ -574,8 +576,7 @@ class LibraryManager:
         # Create new runtime and scan library
         runtime = LibraryRuntime(
             config=lib_config,
-            media_files=[],
-            playback_queue=None
+            media_files=[]
         )
 
         # Scan the library files
@@ -602,7 +603,7 @@ class LibraryManager:
             lib_config = get_library_for_file(path, sm.settings.media_libraries)
             if not lib_config:
                 return []
-            runtime = LibraryRuntime(config=lib_config, media_files=[], playback_queue=None)
+            runtime = LibraryRuntime(config=lib_config, media_files=[])
 
         # Re-scan
         files = self._scanner.scan_directory(runtime.config.path, force_refresh=True)
@@ -617,7 +618,7 @@ class LibraryManager:
     @classmethod
     def load_libraries(cls) -> 'LibraryManager':
         """Load all media libraries from config and create Manager"""
-        from config import SettingsManager
+        from .config import SettingsManager
         manager = cls()
 
         try:
@@ -660,7 +661,7 @@ class LibraryManager:
 
     def scan_all_libraries(self) -> Dict[str, List[MediaFile]]:
         """Scan all media libraries"""
-        from config import SettingsManager
+        from .config import SettingsManager
         try:
             sm = SettingsManager()
             libs = sm.settings.media_libraries
@@ -741,8 +742,8 @@ class _HierarchicalPlaylist:
 
         Notes:
             When library_name is provided, builds a 2-level hierarchy:
-                [ML] LibraryName
-                    [F] relative/path/to/file.mp3
+                LibraryName
+                    relative/path/to/file.mp3
             Otherwise, builds standard recursive hierarchy.
         """
         if library_path and library_name:
@@ -755,8 +756,8 @@ class _HierarchicalPlaylist:
         """Build 2-level hierarchy with library as root.
 
         Structure:
-            [ML] LibraryName
-                [F] relative/path/to/file.mp3
+            LibraryName
+                relative/path/to/file.mp3
         """
         self._library_roots.add(library_name)
         path_obj = Path(full_path).resolve()
@@ -856,7 +857,7 @@ class _HierarchicalPlaylist:
         """Build list of (display_text, track_info) tuples with indentation.
 
         Returns:
-            List[('[D] Folder Name' or '[F] Filename', {'is_folder': bool, 'path': str or None, 'title': str})]
+            List[('Folder Name' or 'Filename', {'is_folder': bool, 'path': str or None, 'title': str})]
         """
         result = []
         self._collect_items(self.root_folders, "", result, is_library_mode=bool(self._library_roots))
@@ -873,7 +874,7 @@ class _HierarchicalPlaylist:
                     # File item - use relative path for display
                     track_indent = "  " * (len(indent.split('/')) + 1)
                     file_title = data.get('file_rel_full', data['title'])
-                    display_text = track_indent + "[F] " + file_title
+                    display_text = track_indent + file_title
                     track_info = {
                         'is_folder': False,
                         'path': data.get('parent_folder_path', data.get('full_path')),
@@ -885,11 +886,11 @@ class _HierarchicalPlaylist:
                 elif data.get('is_folder'):
                     # Determine if this is the library root or a subfolder
                     if name in self._library_roots:
-                        display_text = "[ML] " + name  # MediaLibrary marker
+                        display_text = name  # MediaLibrary marker
                         folder_indent = ""
                     else:
                         folder_indent = indent + "/ " if indent else "    "
-                        display_text = folder_indent + "[D] " + name
+                        display_text = folder_indent + name
 
                     track_info = {
                         'is_folder': True,
@@ -909,7 +910,7 @@ class _HierarchicalPlaylist:
                 # This handles files at library root level (from _build_library_hierarchy fallback)
                 for file_item in sorted(data, key=lambda x: x.get('title', '')):
                     track_indent = "    "  # Indent from ML root to files
-                    display_text = track_indent + "[F] " + file_item.get('rel_path', file_item['title'])
+                    display_text = track_indent + file_item.get('rel_path', file_item['title'])
                     track_info = {
                         'is_folder': False,
                         'path': file_item.get('parent_folder_path', file_item.get('full_path')),

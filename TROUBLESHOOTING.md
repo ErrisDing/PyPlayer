@@ -84,7 +84,8 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.pyplayer\cache\libraries\"
 **解决方案**:
 1. 确保已添加至少一个媒体库：
    - `文件` → `添加媒体库`
-2. 检查 `settings.json` 中是否有媒体库配置：
+   - 或使用 `文件` → `管理媒体库` 对话框添加
+2. 检查 `~/.pyplayer/cache/settings.json` 中是否有媒体库配置：
    ```json
    {
      "media_libraries": [
@@ -92,6 +93,22 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.pyplayer\cache\libraries\"
      ]
    }
    ```
+
+#### 问题：媒体库管理对话框操作无效 / Library Management Dialog Not Working
+**症状**: 在管理对话框中添加/删除/排序后没有生效
+
+**解决方案**:
+1. 检查文件系统权限，确保可以读写 `~/.pyplayer/cache/` 目录
+2. 删除操作会弹出确认对话框，请确认已点击"是"
+3. 排序操作后，媒体库按钮顺序会立即更新
+
+#### 问题：启动时没有自动加载播放列表 / Playlist Not Auto-Loading
+**症状**: 启动应用后播放列表为空
+
+**解决方案**:
+- 应用启动时会自动加载第一个媒体库的播放列表
+- 如果媒体库列表为空，需要先添加媒体库：
+  - `文件` → `管理媒体库` → 点击"添加"按钮
 
 #### 问题：专辑封面不显示 / Album Art Not Showing
 **症状**: Now Playing 面板显示 "No Art" 或默认封面
@@ -138,20 +155,13 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.pyplayer\cache\libraries\"
 
 ### 4. 配置问题 / Configuration Issues
 
-#### 问题：配置迁移失败 / Config Migration Failed
-**症状**: 从 XML 到 JSON 的迁移失败
+#### 问题：配置文件丢失 / Config File Missing
+**症状**: 启动后媒体库列表为空
 
 **解决方案**:
-1. 手动迁移：
-   ```bash
-   # 备份原文件
-   cp settings.xml settings.xml.backup
-
-   # 删除可能损坏的 JSON
-   rm settings.json
-
-   # 重新启动应用程序，将自动尝试迁移
-   ```
+1. 检查配置文件位置：
+   - Windows: `C:\Users\<用户名>\.pyplayer\cache\settings.json`
+   - Linux/macOS: `~/.pyplayer/cache/settings.json`
 2. 手动创建 `settings.json`：
    ```json
    {
@@ -238,7 +248,7 @@ pip install PyQt6
 ### 7. 缓存与存储 / Cache and Storage
 
 #### 缓存位置 / Cache Locations
-- **配置文件**: `./settings.json` (或程序目录)
+- **配置文件**: `~/.pyplayer/cache/settings.json`
 - **媒体库缓存**: `~/.pyplayer/cache/libraries/*.json`
 - **缓存文件命名**: SHA-256 哈希值 + `.json`
 
@@ -247,7 +257,7 @@ pip install PyQt6
 # 完整清理
 rm -rf ~/.pyplayer/cache/
 
-# 仅清理媒体库缓存
+# 仅清理媒体库缓存（保留配置）
 rm -rf ~/.pyplayer/cache/libraries/
 ```
 

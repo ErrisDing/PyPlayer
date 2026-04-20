@@ -305,7 +305,7 @@ python test_player.py
 ### 问题描述
 播放列表管理存在严重的索引错位问题：
 - `self.playlist` 是扁平的 `List[Track]`，只包含文件轨道
-- `_update_playlist_display()` 构建的是层级显示，包含文件夹 `[D]`、媒体库 `[ML]` 和文件 `[F]`
+- `_update_playlist_display()` 构建的是层级显示，包含文件夹和文件
 - 显示索引与播放列表索引不匹配：显示有 N+M 项（含文件夹），播放列表只有 N 项
 - `_get_track_from_display_idx()` 用显示索引访问 `self.playlist[i]`，导致 `IndexError: list index out of range`
 
@@ -537,11 +537,11 @@ def playlist(self):
 
 ```bash
 # 测试模块导入
-python -c "import metadata; import player; import gui; print('OK')"
+python -c "from core.metadata import extract_metadata; from core.player import AudioPlayer; print('OK')"
 
 # 测试元数据提取
 python -c "
-from metadata import extract_metadata
+from core.metadata import extract_metadata
 meta = extract_metadata('test/song.mp3')
 print(f'Title: {meta.title}')
 print(f'Artist: {meta.artist}')
@@ -675,8 +675,13 @@ print(f'Audio: {formats[\"音频\"]}')  # 应包含 .aac, .aiff, .au 等
 - 可以使用 CLI 模式或 TUI 模式替代
 
 ### TUI 不可用 (Windows)
-- Windows 默认不支持 curses，建议使用 GUI 模式 (`python gui.py`)
+- Windows 默认不支持 curses，建议使用 GUI 模式 (`python main.py`)
 - 可在 WSL/Cygwin 等环境中使用 TUI 模式
+
+### 启动后播放列表为空
+- **v1.6 修复**: 修复 `LibraryRuntime` 初始化参数错误（`playback_queue=None` 不应传入 `init=False` 字段）
+- **v1.6 修复**: 调整队列服务初始化顺序，先 `set_current_library` 再 `build_from_tracks`
+- 如仍有问题，检查 `settings.json` 中 `media_libraries` 路径是否存在且包含媒体文件
 
 ### 媒体库扫描无结果
 - 确保添加的路径包含支持的媒体文件 (.mp3, .wav, .flac, .ogg, .m4a, .aac, .avi, .mp4, .mkv, .mov)
@@ -865,7 +870,9 @@ print(f'Audio: {formats[\"音频\"]}')  # 应包含 .aac, .aiff, .au 等
               self._art_label.setText("No Art")
   ```
 
-#### 2. Tkinter UI 默认封面加载 (gui.py)
+#### 2. Tkinter UI 默认封面加载 (gui.py) [已移除]
+> **注意**: Tkinter GUI (`gui.py`) 已于 2026-04-20 移除，项目现在仅使用 PyQt6 GUI。
+
 - **问题**: `_set_default_album_art()` 方法动态生成灰色图片，未使用默认封面
 - **修复**:
   1. 添加 `DEFAULT_COVER_PATH` 常量
@@ -1105,3 +1112,329 @@ print(f'Files without cover art: {len(files_without)}')
 ---
 
 *FLAC 封面提取重构完成时间: 2026-04-20*
+
+---
+
+## 项目结构重组 (2026-04-20)
+
+### 变更概述
+
+对项目进行代码清理和文件结构调整，优化模块组织。
+
+### 删除的文件
+
+| 文件 | 原因 |
+|------|------|
+| `gui.py` | Tkinter 遗留 GUI，已被 PyQt6 替代 |
+| `check_chinese_comments.py` | 开发辅助脚本，非项目功能 |
+
+### 新增目录结构
+
+```
+PyPlayer/
+├── main.py              # 唯一入口点
+├── core/                # 核心业务逻辑 (新增)
+│   ├── __init__.py
+│   ├── player.py
+│   ├── library_manager.py
+│   ├── cache_manager.py
+│   ├── config.py
+│   ├── i18n.py
+│   └── metadata.py
+├── tui/                 # 终端 UI (新增)
+│   ├── __init__.py
+│   └── tui.py
+├── tests/               # 测试 (新增)
+│   ├── __init__.py
+│   └── test_player.py
+├── service/             # 服务层 (保持不变)
+├── presenter/           # MVP 控制层 (保持不变)
+├── view/                # PyQt6 视图层 (保持不变)
+└── ...
+```
+
+### 导入路径更新
+
+所有核心模块的导入路径已更新：
+
+```python
+# 旧
+from player import AudioPlayer
+from library_manager import LibraryManager
+from config import SettingsManager
+import i18n
+
+# 新
+from core.player import AudioPlayer
+from core.library_manager import LibraryManager
+from core.config import SettingsManager
+from core import i18n
+```
+
+### 启动命令更新
+
+```bash
+# 启动 PyQt GUI (默认)
+python main.py
+
+# 启动终端 UI
+python main.py --tui
+
+# CLI 模式播放
+python main.py song.mp3
+
+# 注意: --tkinter 选项已移除
+```
+
+---
+
+*项目结构重组完成时间: 2026-04-20*
+
+---
+
+## 启动时自动加载第一个媒体库播放列表修复 (2026-04-20)
+
+### 问题描述
+
+打开主页时，未自动加载第一个媒体库的播放列表。虽然媒体库列表正确显示，但播放列表区域为空。
+
+### 问题分析
+
+经过调试发现两个问题：
+
+#### 问题 1: LibraryRuntime 初始化参数错误
+
+**文件**: `core/library_manager.py`
+
+**问题**: `LibraryRuntime` 类的 `playback_queue` 字段定义为 `field(init=False)`，表示它不是构造函数参数。但代码中多处错误地传入了 `playback_queue=None` 参数：
+
+```python
+# 错误的调用方式
+runtime = LibraryRuntime(
+    config=lib_config,
+    media_files=[],
+    playback_queue=None  # 这个参数不应该传入！
+)
+```
+
+**错误信息**:
+```
+LibraryRuntime.__init__() got an unexpected keyword argument 'playback_queue'
+```
+
+**影响**: `LibraryService.load_library()` 在创建 `LibraryRuntime` 时抛出异常，`library_loaded` 信号未能发出，导致播放列表未加载。
+
+#### 问题 2: 队列服务初始化顺序错误
+
+**文件**: `presenter/main_presenter.py`
+
+**问题**: `_on_library_loaded` 方法中，先调用 `build_from_tracks()` 再调用 `set_current_library()`，导致 `_rebuild_display_entries()` 时 `_current_library_path` 尚未设置。
+
+```python
+# 修复前的错误顺序
+self._queue.build_from_tracks(tracks)  # 此时 _current_library_path 为空
+self._queue.set_current_library(library_path)  # 设置太晚了
+```
+
+### 修复内容
+
+#### 1. 移除错误的 playback_queue 参数 (core/library_manager.py)
+
+三处创建 `LibraryRuntime` 的代码，移除 `playback_queue=None` 参数：
+
+**修复前**:
+```python
+runtime = LibraryRuntime(
+    config=lib_config,
+    media_files=[],
+    playback_queue=None  # 错误：init=False 的字段不应传入
+)
+```
+
+**修复后**:
+```python
+runtime = LibraryRuntime(
+    config=lib_config,
+    media_files=[]
+)
+# playback_queue 在 __post_init__ 中自动创建
+```
+
+**涉及位置**:
+- 第 326-329 行: `LibraryRuntimeManager.get_runtime()`
+- 第 575-578 行: `LibraryManager.ensure_library_scanned()`
+- 第 604 行: `LibraryManager.refresh_library_from_runtime()`
+
+#### 2. 调整队列初始化顺序 (presenter/main_presenter.py)
+
+**修复前**:
+```python
+# Build queue from tracks
+self._queue.build_from_tracks(tracks)
+self._queue.set_current_library(library_path)
+```
+
+**修复后**:
+```python
+# Set current library BEFORE building queue so display optimization works
+self._queue.set_current_library(library_path)
+# Build queue from tracks
+self._queue.build_from_tracks(tracks)
+```
+
+### 验证测试
+
+```bash
+# 测试库加载信号触发
+python -c "
+from PyQt6.QtWidgets import QApplication
+import sys
+app = QApplication(sys.argv)
+
+from service.library_service import LibraryService
+from service.config_service import ConfigService
+
+library_service = LibraryService()
+config_service = ConfigService()
+
+loaded = []
+library_service.library_loaded.connect(lambda p, f: loaded.append((p, len(f))))
+
+libraries = config_service.get_libraries()
+if libraries:
+    library_service.load_library(libraries[0].path, libraries[0].name)
+
+app.processEvents()
+print(f'Loaded: {len(loaded)} libraries')
+for path, count in loaded:
+    print(f'  {path}: {count} files')
+"
+
+# 测试完整应用启动
+python -c "
+from PyQt6.QtWidgets import QApplication
+import sys
+app = QApplication(sys.argv)
+
+from view.main_window import MainWindow
+from service.playback_service import PlaybackService
+from service.queue_service import QueueService
+from service.library_service import LibraryService
+from service.metadata_service import MetadataService
+from service.config_service import ConfigService
+from presenter.main_presenter import MainPresenter
+
+playback_service = PlaybackService()
+queue_service = QueueService()
+library_service = LibraryService()
+metadata_service = MetadataService()
+config_service = ConfigService()
+
+view = MainWindow()
+presenter = MainPresenter(
+    view=view,
+    playback_service=playback_service,
+    queue_service=queue_service,
+    library_service=library_service,
+    metadata_service=metadata_service,
+    config_service=config_service
+)
+presenter.start()
+
+print(f'Queue entries: {len(queue_service.get_display_entries())}')
+print(f'Queue is empty: {queue_service.is_empty()}')
+print(f'Current library: {presenter._current_library_path}')
+"
+```
+
+### 技术说明
+
+**LibraryRuntime 正确初始化方式**:
+
+```python
+@dataclass
+class LibraryRuntime:
+    config: Any
+    media_files: List[MediaFile] = field(default_factory=list)
+    playback_queue: PlaybackQueue = field(init=False)  # init=False 表示不是构造参数
+
+    def __post_init__(self):
+        # playback_queue 在这里自动创建
+        self.playback_queue = PlaybackQueue(library_id=self.config.path, track_list=[])
+```
+
+`field(init=False)` 的含义：该字段不作为 `__init__()` 的参数，而是在 `__post_init__()` 中初始化。这是 dataclass 的标准用法，用于派生字段或需要依赖其他字段的复杂初始化。
+
+---
+
+*启动时自动加载修复完成时间: 2026-04-20*
+
+---
+
+## 播放列表显示优化 (2026-04-20)
+
+### 变更内容
+
+#### 1. 移除类型前缀标记
+
+**问题描述**：播放列表中的条目显示类型前缀标记（`[F]` 文件、`[D]` 文件夹、`[ML]` 媒体库），影响显示简洁性。
+
+**修改文件**：
+- `service/queue_service.py` - GUI 显示层前缀移除
+- `core/library_manager.py` - TUI 显示层前缀移除
+
+**修改内容**：
+| 位置 | 原代码 | 修改后 |
+|------|--------|--------|
+| `queue_service.py:153` | `f"[D] {folder_node.display_text}"` | `folder_node.display_text` |
+| `queue_service.py:166` | `f"{indent}[F] {track.title}"` | `f"{indent}{track.title}"` |
+| `queue_service.py:179` | `f"[F] {file_node.display_text}"` | `file_node.display_text` |
+| `library_manager.py:874` | `track_indent + "[F] " + file_title` | `track_indent + file_title` |
+| `library_manager.py:886` | `"[ML] " + name` | `name` |
+| `library_manager.py:890` | `folder_indent + "[D] " + name` | `folder_indent + name` |
+| `library_manager.py:913` | `track_indent + "[F] " + file_item.get(...)` | `track_indent + file_item.get(...)` |
+
+#### 2. 按完整路径字典序排序
+
+**问题描述**：播放列表仅按文件名排序，同一目录下的文件可能分散显示。
+
+**修改文件**：`core/library_manager.py`
+
+**修改内容**：
+- 第 459 行：移除 `sorted(filenames)`，改为直接遍历
+- 第 475 行：新增 `files.sort(key=lambda f: f.path)` 按完整路径排序
+
+**修改前**：
+```python
+for filename in sorted(filenames):  # 仅按文件名排序
+    ...
+# 文件按扫描顺序返回，未统一排序
+```
+
+**修改后**：
+```python
+for filename in filenames:  # 先收集，不排序
+    ...
+# 按完整路径排序
+files.sort(key=lambda f: f.path)
+```
+
+#### 3. 递归扫描
+
+**说明**：媒体库选中时递归扫描子目录的功能已存在于原有代码中。`LibraryScanner.scan_directory()` 使用 `os.walk()` 遍历所有子目录，无需修改。
+
+### 验证测试
+
+```bash
+# 启动应用
+python main.py
+
+# 验证项目：
+# 1. 播放列表不显示 [F]、[D]、[ML] 前缀
+# 2. 子目录下的文件被正确扫描
+# 3. 播放列表按完整路径字典序排列
+```
+
+---
+
+*播放列表显示优化完成时间: 2026-04-20*

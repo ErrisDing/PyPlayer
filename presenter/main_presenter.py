@@ -4,7 +4,7 @@ Main Presenter - Coordinates View and Service layers
 Implements MVP pattern for clean separation of concerns
 """
 
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 from PyQt6.QtCore import QObject, QTimer, pyqtSlot
 
 import sys
@@ -13,15 +13,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from view.main_window import MainWindow
 from view.models import DisplayEntry
+from view.dialogs import LibraryManagementDialog
 from service.playback_service import PlaybackService
+
+if TYPE_CHECKING:
+    pass
 from service.queue_service import QueueService, PlaybackPosition, DisplayEntry as QueueDisplayEntry
 from service.library_service import LibraryService
 from service.metadata_service import MetadataService
 from service.config_service import ConfigService
 
-import i18n
-from player import PlayerState
-from library_manager import Track
+from core import i18n
+from core.player import PlayerState
+from core.library_manager import Track
 
 
 class MainPresenter(QObject):
@@ -92,6 +96,7 @@ class MainPresenter(QObject):
         self._view.refresh_library_requested.connect(self._on_refresh_library)
         self._view.refresh_all_requested.connect(self._on_refresh_all)
         self._view.library_selected.connect(self._on_library_selected)
+        self._view.manage_libraries_requested.connect(self._on_manage_libraries)
 
     def _setup_service_connections(self) -> None:
         """Connect Service signals to handler methods."""
@@ -122,8 +127,10 @@ class MainPresenter(QObject):
         libraries = self._config.get_libraries()
         self._view.set_libraries(libraries)
 
-        for lib in libraries:
-            self._library.load_library(lib.path, lib.name)
+        # Auto-load first library
+        if libraries:
+            first_lib = libraries[0]
+            self._library.load_library(first_lib.path, first_lib.name)
 
     # === View Signal Handlers ===
 
@@ -252,6 +259,46 @@ class MainPresenter(QObject):
                 tracks.append(track)
             self._queue.build_from_tracks(tracks)
             self._view.set_status_message(f"Switched to library: {library_path}")
+
+    @pyqtSlot()
+    def _on_manage_libraries(self) -> None:
+        """Handle manage libraries menu action - open dialog."""
+        libraries = self._config.get_libraries()
+        dialog = LibraryManagementDialog(libraries, self._view)
+
+        # Connect dialog signals with dialog reference for refresh
+        dialog.add_library_requested.connect(lambda path: self._handle_add_library_dialog(dialog, path))
+        dialog.remove_library_requested.connect(lambda path: self._handle_remove_library_dialog(dialog, path))
+        dialog.reorder_requested.connect(lambda old, new: self._handle_reorder_library_dialog(dialog, old, new))
+
+        # Show dialog
+        dialog.exec()
+
+    def _handle_add_library_dialog(self, dialog: LibraryManagementDialog, path: str) -> None:
+        """Handle add library from dialog."""
+        if self._config.add_library(path):
+            self._library.load_library(path)
+            # Refresh both main window and dialog
+            libraries = self._config.get_libraries()
+            self._view.set_libraries(libraries)
+            dialog.set_libraries(libraries)
+
+    def _handle_remove_library_dialog(self, dialog: LibraryManagementDialog, library_path: str) -> None:
+        """Handle library removal from dialog."""
+        if self._config.remove_library(library_path):
+            # Refresh both main window and dialog
+            libraries = self._config.get_libraries()
+            self._view.set_libraries(libraries)
+            dialog.set_libraries(libraries)
+            self._view.set_status_message(i18n.get('status.library_removed', default=f"Library removed: {library_path}"))
+
+    def _handle_reorder_library_dialog(self, dialog: LibraryManagementDialog, old_index: int, new_index: int) -> None:
+        """Handle library reorder from dialog."""
+        if self._config.reorder_library(old_index, new_index):
+            # Refresh both main window and dialog
+            libraries = self._config.get_libraries()
+            self._view.set_libraries(libraries)
+            dialog.set_libraries(libraries)
 
     # === Service Signal Handlers ===
 
@@ -390,9 +437,10 @@ class MainPresenter(QObject):
             )
             tracks.append(track)
 
+        # Set current library BEFORE building queue so display optimization works
+        self._queue.set_current_library(library_path)
         # Build queue from tracks
         self._queue.build_from_tracks(tracks)
-        self._queue.set_current_library(library_path)
 
         # Update status
         self._view.set_status_message(f"Loaded {len(tracks)} tracks from library")

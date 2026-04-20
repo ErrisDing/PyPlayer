@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from library_manager import (
+from core.library_manager import (
     QueueNode, FileNode, FolderNode, Track,
     DisplayIndexMap, PlaybackQueue, PlaybackState
 )
@@ -130,7 +130,7 @@ class QueueService(QObject):
     def _rebuild_display_entries(self) -> None:
         """Rebuild display entries from queue nodes.
 
-        Skips library root nodes (marked with [ML]) when a current library is set,
+        Skips library root nodes when a current library is set,
         showing only the contents within the library.
         """
         self._display_entries.clear()
@@ -150,7 +150,7 @@ class QueueService(QObject):
 
                 if not is_library_root:
                     entry = DisplayEntry(
-                        display_text=f"[D] {folder_node.display_text}",
+                        display_text=folder_node.display_text,
                         node_idx=node_idx,
                         is_folder=True,
                         path=folder_node.path
@@ -163,7 +163,7 @@ class QueueService(QObject):
                     # Calculate indentation based on whether we skipped library root
                     indent = "    " if not is_library_root else ""
                     file_entry = DisplayEntry(
-                        display_text=f"{indent}[F] {track.title}",
+                        display_text=f"{indent}{track.title}",
                         node_idx=node_idx,
                         is_folder=False,
                         path=folder_node.path,
@@ -176,7 +176,7 @@ class QueueService(QObject):
                 # File node
                 file_node: FileNode = node
                 entry = DisplayEntry(
-                    display_text=f"[F] {file_node.display_text}",
+                    display_text=file_node.display_text,
                     node_idx=node_idx,
                     is_folder=False,
                     path=file_node.path,

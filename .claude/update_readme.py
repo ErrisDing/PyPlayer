@@ -13,7 +13,7 @@ def scan_python_files(project_dir):
         'player.py': '核心播放器模块（音频 + 视频播放功能）',
         'gui.py': 'Tkinter 图形界面模块',
         'tui.py': 'curses 终端界面模块（Unix/Linux/macOS）',
-        'config.py': '配置管理模块（settings.xml 读写）',
+        'config.py': '配置管理模块（settings.json 读写）',
         'library_manager.py': '媒体库扫描和管理模块'
     }
     
@@ -35,7 +35,7 @@ def update_readme(readme_path, project_dir):
     structure_lines = ["├── player.py      # 核心播放器模块 (音频 + 视频播放功能)",
                        "├── gui.py         # Tkinter 图形界面模块",
                        "├── tui.py         # curses 终端界面模块 (Unix/Linux/macOS)",
-                       "├── config.py      # 配置管理模块 (settings.xml 读写)",
+                       "├── config.py      # 配置管理模块 (settings.json 读写)",
                        "├── library_manager.py  # 媒体库扫描和管理模块"]
     
     file_structure_desc = '\n'.join(structure_lines)
@@ -43,7 +43,7 @@ def update_readme(readme_path, project_dir):
     # Pattern to match the File Structure section
     pattern = r'## 文件结构\s*\n```\s*\n[^`]*?PyPlayer/\s*\n(?:├──[^\n]+\n|└──[^\n]+\n)*\s*```'
     
-    replacement = f"## 文件结构\n\n```\nPyPlayer/\n{file_structure_desc}\n├── settings.xml   # 配置文件（首次运行时自动创建）\n├── test/          # 测试文件目录\n│   └── Electric Guitar.wav\n├── requirements.txt\n└── README.md      # 本文档\n```"
+    replacement = f"## 文件结构\n\n```\nPyPlayer/\n{file_structure_desc}\n├── test/          # 测试文件目录\n│   └── Electric Guitar.wav\n├── requirements.txt\n└── README.md      # 本文档\n```\n\n注：配置文件存储在 `~/.pyplayer/cache/settings.json`"
     
     new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
     

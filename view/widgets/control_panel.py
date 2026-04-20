@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import i18n
+from core import i18n
 
 
 class ControlPanel(QWidget):

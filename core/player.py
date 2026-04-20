@@ -18,8 +18,8 @@ import numpy as np
 import soundfile as sf
 import sounddevice as sd
 
-import i18n
-from library_manager import Track
+from . import i18n
+from .library_manager import Track
 
 
 class PlayerState(Enum):
@@ -371,7 +371,7 @@ class AudioPlayer:
                 self._total_chunks = int(math.ceil(self._total_samples / (self.CHUNK_DURATION_SEC * sample_rate)))
 
             # Extract metadata for track info
-            from metadata import extract_metadata
+            from .metadata import extract_metadata
             metadata = extract_metadata(filepath)
 
             self.current_track = Track(
@@ -1120,11 +1120,11 @@ def main() -> int:
 def launch_tui() -> None:
     """Launch terminal UI mode"""
     try:
-        from tui import main as tui_main
+        from tui.tui import main as tui_main
         import curses
         curses.wrapper(tui_main)
     except ImportError:
-        print("TUI module not found. Please ensure tui.py exists.")
+        print("TUI module not found. Please ensure tui/tui.py exists.")
 
 
 if __name__ == "__main__":

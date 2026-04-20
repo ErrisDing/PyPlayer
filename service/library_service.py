@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from library_manager import LibraryManager, MediaFile, LibraryRuntime, PlaybackQueue
+from core.library_manager import LibraryManager, MediaFile, LibraryRuntime, PlaybackQueue
 
 
 class LibraryService(QObject):
@@ -57,7 +57,7 @@ class LibraryService(QObject):
 
     def load_all_libraries(self) -> None:
         """Load all libraries from configuration."""
-        from config import SettingsManager
+        from core.config import SettingsManager
 
         sm = SettingsManager()
         libraries = sm.settings.media_libraries
@@ -94,7 +94,7 @@ class LibraryService(QObject):
         Returns:
             Dict mapping library_path -> list of files
         """
-        from config import SettingsManager
+        from core.config import SettingsManager
 
         sm = SettingsManager()
         libraries = sm.settings.media_libraries

@@ -14,7 +14,7 @@ class TestPlayerModule(unittest.TestCase):
 
     def test_audio_player_core_methods(self):
         """AudioPlayer must have all core playback methods."""
-        from player import AudioPlayer
+        from core.player import AudioPlayer
         ap = AudioPlayer()
 
         required_methods = [
@@ -28,7 +28,7 @@ class TestPlayerModule(unittest.TestCase):
 
     def test_player_manager_core_methods(self):
         """PlayerManager must have all core methods."""
-        from player import PlayerManager
+        from core.player import PlayerManager
         pm = PlayerManager()
 
         required_methods = [
@@ -41,7 +41,7 @@ class TestPlayerModule(unittest.TestCase):
 
     def test_get_status_structure(self):
         """get_status() must return correct structure."""
-        from player import PlayerManager
+        from core.player import PlayerManager
         pm = PlayerManager()
         status = pm.get_status()
 
@@ -51,8 +51,8 @@ class TestPlayerModule(unittest.TestCase):
 
     def test_audio_player_queue_management(self):
         """AudioPlayer queue registration should work."""
-        from player import AudioPlayer
-        from library_manager import PlaybackQueue, PlaybackState, Track
+        from core.player import AudioPlayer
+        from core.library_manager import PlaybackQueue, PlaybackState, Track
 
         ap = AudioPlayer()
 
@@ -79,7 +79,7 @@ class TestLibraryManagerModule(unittest.TestCase):
 
     def test_playback_state_class(self):
         """PlaybackState should track position history."""
-        from library_manager import PlaybackState
+        from core.library_manager import PlaybackState
 
         state = PlaybackState()
         self.assertEqual(state.current_position, 0)
@@ -97,7 +97,7 @@ class TestLibraryManagerModule(unittest.TestCase):
 
     def test_playback_queue_class(self):
         """PlaybackQueue should be constructable."""
-        from library_manager import PlaybackQueue, PlaybackState, Track
+        from core.library_manager import PlaybackQueue, PlaybackState, Track
 
         queue = PlaybackQueue(
             library_id="test",
@@ -114,8 +114,8 @@ class TestLibraryManagerModule(unittest.TestCase):
 
     def test_library_runtime_class(self):
         """LibraryRuntime should bind config with queue."""
-        from library_manager import LibraryRuntime
-        from config import LibraryConfig
+        from core.library_manager import LibraryRuntime
+        from core.config import LibraryConfig
 
         config = LibraryConfig(
             path="/test/path",
@@ -132,8 +132,8 @@ class TestIntegration(unittest.TestCase):
 
     def test_end_to_end_queue_flow(self):
         """Test complete queue flow from library to player."""
-        from player import PlayerManager
-        from library_manager import (
+        from core.player import PlayerManager
+        from core.library_manager import (
             PlaybackQueue, PlaybackState, Track,
             LibraryRuntimeManager
         )
@@ -166,7 +166,7 @@ class TestHierarchicalPlaylist(unittest.TestCase):
 
     def test_multiple_libraries_display(self):
         """Verify multiple media libraries are correctly marked as [ML]."""
-        from library_manager import _HierarchicalPlaylist
+        from core.library_manager import _HierarchicalPlaylist
 
         hier = _HierarchicalPlaylist()
 
@@ -219,7 +219,7 @@ class TestHierarchicalPlaylist(unittest.TestCase):
 
 if __name__ == '__main__':
     # Import after setting env
-    from player import AudioPlayer, PlayerManager
-    from library_manager import PlaybackState, PlaybackQueue, LibraryRuntime, LibraryRuntimeManager
+    from core.player import AudioPlayer, PlayerManager
+    from core.library_manager import PlaybackState, PlaybackQueue, LibraryRuntime, LibraryRuntimeManager
 
     unittest.main(verbosity=2)

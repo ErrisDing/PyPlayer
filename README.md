@@ -11,7 +11,7 @@
 - 📚 **媒体库管理**: 持久化配置支持，统一管理多个媒体目录
 - 🔄 **媒体库切换**: 快速在多个媒体库之间切换，无需重新扫描
 - 🔄 **智能刷新**: 手动刷新单个或全部媒体库，JSON缓存加速扫描
-- 🔧 **配置文件**: `settings.json` 自动保存媒体库清单（支持从 XML 自动迁移）
+- 🔧 **配置文件**: `~/.pyplayer/cache/settings.json` 自动保存媒体库清单
 - 🌐 **国际化 (i18n)**: 支持中文 (zh_CN) 和英文 (en_US)，根据系统 locale 自动切换
 - 🎯 **队列节点架构**: 文件夹作为独立播放单元，支持文件夹内顺序播放和跨文件夹队列播放
 - 🔄 **自动播放**: 曲目播放完毕自动跳转下一首
@@ -21,6 +21,12 @@
 - 🚀 **Python 3.13 兼容**: 使用 soundfile + sounddevice 后端，无 audioop 依赖
 
 ## 媒体库功能 / Media Library Features
+
+### 媒体库管理对话框
+- 通过菜单 `文件` → `管理媒体库` 打开管理对话框
+- 支持添加、删除媒体库
+- 支持上移/下移调整媒体库顺序
+- 启动时自动加载第一个媒体库的播放列表
 
 ### JSON 缓存系统
 - 扫描结果自动缓存至 `~/.pyplayer/cache/libraries/`
@@ -39,6 +45,8 @@
 ### 播放列表优化
 - 自动隐藏媒体库根节点，仅显示文件夹和文件
 - 更清晰的层级结构展示
+- 简洁的文件列表显示，无类型前缀标记
+- 按完整路径字典序排序，便于查找
 
 ## 依赖安装 / Dependencies
 
@@ -63,7 +71,6 @@ python main.py
 
 # 3. 或指定其他模式
 python main.py --qt        # PyQt GUI (默认)
-python main.py --tkinter   # Tkinter GUI (传统)
 python main.py --tui       # 终端界面
 python main.py song.mp3    # CLI 直接播放
 ```
@@ -73,13 +80,17 @@ python main.py song.mp3    # CLI 直接播放
 ```
 PyPlayer/
 ├── main.py                 # 主入口点
-├── player.py               # 播放器核心
-├── library_manager.py      # 媒体库管理
-├── cache_manager.py        # JSON 缓存管理器
-├── config.py               # 配置管理
-├── i18n/                   # 国际化模块
+├── core/                   # 核心业务逻辑
+│   ├── player.py           # 播放器核心
+│   ├── library_manager.py  # 媒体库管理
+│   ├── cache_manager.py    # JSON 缓存管理器
+│   ├── config.py           # 配置管理
+│   ├── i18n.py             # 国际化模块
+│   └── metadata.py         # 元数据提取
 ├── view/
 │   ├── main_window.py      # 主窗口
+│   ├── dialogs/            # 对话框
+│   │   └── library_dialog.py    # 媒体库管理对话框
 │   └── widgets/
 │       ├── now_playing_panel.py   # 正在播放面板
 │       ├── library_selector.py    # 媒体库切换器
@@ -88,11 +99,17 @@ PyPlayer/
 ├── presenter/
 │   └── main_presenter.py   # MVP 协调器
 ├── service/
+│   ├── config_service.py   # 配置服务
 │   ├── library_service.py  # 媒体库服务
 │   ├── queue_service.py    # 队列服务
 │   └── playback_service.py # 播放服务
+├── tui/
+│   └── tui.py              # 终端界面
+├── tests/
+│   └── test_player.py      # 单元测试
 └── locales/
-    └── interface/          # i18n 资源文件
+    ├── interface/          # 界面 i18n 资源
+    └── dialogs/            # 对话框 i18n 资源
 ```
 
 ## License

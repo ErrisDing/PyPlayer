@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import SettingsManager, Settings, LibraryConfig
+from core.config import SettingsManager, Settings, LibraryConfig
 
 
 class ConfigService(QObject):
@@ -22,6 +22,7 @@ class ConfigService(QObject):
     # Signals
     library_added = pyqtSignal(str)       # library_path
     library_removed = pyqtSignal(str)     # library_path
+    libraries_reordered = pyqtSignal()    # emitted when library order changes
     config_saved = pyqtSignal()
 
     def __init__(self, parent: Optional[QObject] = None):
@@ -78,3 +79,47 @@ class ConfigService(QObject):
     def get_library_by_path(self, path: str) -> Optional[LibraryConfig]:
         """Get library configuration by path."""
         return self.settings.get_library_by_path(path)
+
+    def reorder_library(self, old_index: int, new_index: int) -> bool:
+        """
+        Move a library from old_index to new_index.
+
+        Args:
+            old_index: Current position of the library
+            new_index: Target position
+
+        Returns:
+            True if successful
+        """
+        result = self._manager.reorder_library(old_index, new_index)
+        if result:
+            self.libraries_reordered.emit()
+        return result
+
+    def move_library_up(self, index: int) -> bool:
+        """
+        Move library at index up one position.
+
+        Args:
+            index: Current position of the library
+
+        Returns:
+            True if successful
+        """
+        if index <= 0:
+            return False
+        return self.reorder_library(index, index - 1)
+
+    def move_library_down(self, index: int) -> bool:
+        """
+        Move library at index down one position.
+
+        Args:
+            index: Current position of the library
+
+        Returns:
+            True if successful
+        """
+        if index < 0 or index >= len(self.settings.media_libraries) - 1:
+            return False
+        return self.reorder_library(index, index + 1)

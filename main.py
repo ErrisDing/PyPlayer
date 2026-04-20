@@ -5,7 +5,6 @@ Main entry point for the application
 
 Usage:
     python main.py              # Launch GUI
-    python main.py --tkinter    # Launch legacy Tkinter GUI
     python main.py --tui        # Launch terminal UI
     python main.py file.mp3     # Play file in CLI mode
 """
@@ -77,33 +76,21 @@ def main_qt():
     return result
 
 
-def main_tkinter():
-    """Launch the legacy Tkinter GUI."""
-    import tkinter as tk
-    from gui import PyPlayerGUI
-    import i18n
-
-    i18n.detect_init()
-    root = tk.Tk()
-    app = PyPlayerGUI(root)
-    root.mainloop()
-
-
 def main_tui():
     """Launch terminal UI."""
     try:
-        from tui import main as tui_main
+        from tui.tui import main as tui_main
         import curses
         curses.wrapper(tui_main)
     except ImportError:
-        print("TUI module not found. Please ensure tui.py exists.")
+        print("TUI module not found. Please ensure tui/tui.py exists.")
         return 1
     return 0
 
 
 def main_cli(filepath: str):
     """Play file in CLI mode."""
-    from player import create_manager
+    from core.player import create_manager
     import time
 
     player = create_manager()
@@ -137,7 +124,6 @@ PyPlayer - A Python Music Player
 Usage:
     python main.py              Launch PyQt GUI (default)
     python main.py --qt         Launch PyQt GUI
-    python main.py --tkinter    Launch Tkinter GUI (legacy)
     python main.py --tui        Launch terminal UI
     python main.py <file>       Play file in CLI mode
     python main.py --help       Show this help message
@@ -163,9 +149,6 @@ def main():
 
     if args[0] == '--qt':
         return main_qt()
-
-    if args[0] == '--tkinter':
-        return main_tkinter()
 
     if args[0] == '--tui':
         return main_tui()

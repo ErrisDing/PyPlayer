@@ -11,7 +11,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Optional
 import time
-import i18n
+from core import i18n
 
 
 @dataclass
@@ -132,7 +132,7 @@ class TerminalUI:
                 pass
 
         # Build hierarchical display with library awareness
-        from library_manager import _HierarchicalPlaylist, get_library_for_file
+        from core.library_manager import _HierarchicalPlaylist, get_library_for_file
         hier = _HierarchicalPlaylist()
 
         for track in self.playlist:
@@ -319,7 +319,7 @@ class TerminalUI:
             self.current_index = self.selected_index
 
             if not self.player:
-                import player as pm
+                from core import player as pm
                 self.player = pm.create_manager()
 
             result = self.player.play(str(path))
@@ -357,7 +357,7 @@ class TerminalUI:
 
     def _show_library_manager_menu(self):
         """Show library management menu"""
-        from config import SettingsManager
+        from core.config import SettingsManager
 
         # Initialize settings manager if not already done
         try:
@@ -486,7 +486,7 @@ class TerminalUI:
 
             # Try to add library
             try:
-                from config import SettingsManager
+                from core.config import SettingsManager
                 sm = SettingsManager()
                 dir_name = lib_path.name or "Library"
                 if sm.add_library(str(lib_path), dir_name):
@@ -507,7 +507,7 @@ class TerminalUI:
 
     def _menu_scan_libraries(self, menu_win):
         """Show scan results"""
-        from library_manager import LibraryManager
+        from core.library_manager import LibraryManager
 
         try:
             manager = LibraryManager()
@@ -618,7 +618,7 @@ def main(stdscr):
     ui = TerminalUI(stdscr)
 
     try:
-        import player as pm
+        from core import player as pm
         ui.player = pm.create_manager()
 
         # Auto-scan for media files in current directory
@@ -643,7 +643,7 @@ def main(stdscr):
 def scan_directory(ui, location):
     """Scan media files"""
     if ui.player is None:
-        import player as pm
+        from core import player as pm
         ui.player = pm.create_manager()
 
     paths = {

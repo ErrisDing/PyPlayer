@@ -4,13 +4,7 @@
       "Bash(pip install:*)",
       "Bash(python:*)",
       "Bash(cd:*)",
-      "Bash(ls -la \"D:/Codes/Python/PyPlayer\"/*.py)",
-      "Bash(dir \"D:\\\\Codes\\\\Python\\\\PyPlayer\\\\*.py\")",
-      "Bash(pip search:*)",
-      "Bash(pip index:*)",
-      "Bash(pip show:*)",
-      "Bash(ls -la \"D:\\\\Codes\\\\Python\\\\PyPlayer\"/*.py)",
-      "Bash(dir /B \"D:\\\\Codes\\\\Python\\\\PyPlayer\\\\*.py\")"
+      "Bash(pip list:*)"
     ]
   },
   "hooks": {
@@ -20,13 +14,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/python3 \"D:/Codes/Python/PyPlayer/.claude/check_var_init.py\" < /dev/stdin 2>/dev/null || true",
+            "command": "python \"D:/Codes/GitHub/PyPlayer/.claude/check_var_init.py\"",
             "timeout": 30,
             "statusMessage": "Checking variable initialization patterns"
           },
           {
             "type": "command",
-            "command": "/usr/bin/python3 \"D:/Codes/Python/PyPlayer/.claude/update_readme.py\" \"D:/Codes/Python/PyPlayer\"",
+            "command": "python \"D:/Codes/GitHub/PyPlayer/.claude/update_readme.py\" \"D:/Codes/GitHub/PyPlayer\"",
             "timeout": 15,
             "statusMessage": "Updating README.md file structure"
           }
