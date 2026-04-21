@@ -1,0 +1,27 @@
+# PyInstaller build outputs
+.target/
+build/
+dist/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+/view/widgets/__pycache__
+/core/__pycache__

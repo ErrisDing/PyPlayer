@@ -115,3 +115,83 @@ PyPlayer/
 ## License
 
 MIT License
+
+## 打包发布 / Building Distributable Package
+
+### 环境准备 / Prerequisites
+
+```powershell
+# 安装打包工具
+pip install pyinstaller
+
+# 确保所有依赖已安装
+pip install -r requirements.txt
+pip install PyQt6 opencv-python
+```
+
+### 构建步骤 / Build Steps
+
+```powershell
+# 进入项目目录
+cd PyPlayer
+
+# 方式一：目录模式打包（推荐，启动快）
+python .build/build_windows.py
+
+# 方式二：单文件打包（体积小，启动慢）
+python .build/build_windows.py --onefile
+
+# 方式三：清理后重新打包
+python .build/build_windows.py --clean
+```
+
+### 输出目录 / Output
+
+打包完成后，输出文件位于 `.target/` 目录：
+
+```
+.target/
+└── PyPlayer/
+    ├── PyPlayer.exe    # 主执行文件
+    ├── resource/       # 默认封面等资源
+    ├── locales/        # 国际化文件
+    └── ...             # 依赖库文件
+```
+
+### 分发 / Distribution
+
+将整个 `.target/PyPlayer/` 文件夹打包分发即可。用户解压后双击 `PyPlayer.exe` 运行。
+
+### 注意事项 / Notes
+
+1. **目录模式 vs 单文件模式**
+   - 目录模式：启动快，但需要分发整个文件夹
+   - 单文件模式：分发方便，但启动时需要解压，首次运行较慢
+
+2. **杀毒软件误报**
+   - PyInstaller 打包的程序可能被杀毒软件误报
+   - 可以考虑进行代码签名解决此问题
+
+3. **资源文件路径**
+   - 项目已内置 `core/resource_utils.py` 处理打包后的资源路径
+   - 确保所有资源文件通过此模块访问
+
+4. **Qt 插件**
+   - spec 文件已配置自动收集 PyQt6 插件
+   - 如遇显示问题，检查 platforms 插件是否正确打包
+
+### 故障排除 / Troubleshooting
+
+```powershell
+# 如果打包失败，尝试以下步骤：
+
+# 1. 清理缓存
+python .build/build_windows.py --clean
+
+# 2. 检查依赖完整性
+pip install --upgrade pyinstaller
+pip install --upgrade PyQt6
+
+# 3. 使用调试模式打包（显示控制台窗口）
+# 编辑 .build/pyplayer.spec，将 console=False 改为 console=True
+```

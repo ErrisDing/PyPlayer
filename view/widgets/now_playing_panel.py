@@ -13,11 +13,12 @@ from PyQt6.QtGui import QPixmap, QImage
 import sys
 from pathlib import Path
 
-# Project root path
+# Project root path (for sys.path)
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
-DEFAULT_COVER_PATH = _PROJECT_ROOT / "resource" / "default_cover.png"
-
 sys.path.insert(0, str(_PROJECT_ROOT))
+
+from core.resource_utils import get_resource_path
+DEFAULT_COVER_PATH = get_resource_path("resource/default_cover.png")
 
 from view.widgets.library_selector import LibrarySelector
 

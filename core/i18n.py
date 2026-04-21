@@ -97,7 +97,8 @@ def load_properties(filename: str) -> dict:
     if cache_key in _properties_cache:
         return _properties_cache[cache_key]
 
-    base_dir = Path(__file__).parent.parent / 'locales'
+    from core.resource_utils import get_locales_path
+    base_dir = get_locales_path()
 
     # Try current locale first (e.g., zh_CN)
     filepath = base_dir / f"{filename}.{_current_locale}.properties"
