@@ -23,5 +23,6 @@ env/
 .DS_Store
 Thumbs.db
 desktop.ini
-/view/widgets/__pycache__
-/core/__pycache__
+
+# 忽略所有 Python 缓存文件夹
+**/__pycache__/
