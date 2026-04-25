@@ -885,7 +885,7 @@ class VideoPlayer:
 class PlayerManager:
     """Player manager, automatically selects audio or video mode"""
 
-    SUPPORTED_AUDIO = {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac', '.aiff', '.au'}
+    SUPPORTED_AUDIO = {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac', '.aiff', '.au', '.ncm'}
     SUPPORTED_VIDEO = {'.avi', '.mp4', '.mkv', '.mov', '.wmv'}
 
     def __init__(self):

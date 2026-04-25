@@ -4,7 +4,7 @@ build/
 dist/
 
 # Python bytecode
-__pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 
@@ -24,5 +24,5 @@ env/
 Thumbs.db
 desktop.ini
 
-# 忽略所有 Python 缓存文件夹
-**/__pycache__/
+# Proxy
+proxy/

@@ -247,6 +247,9 @@ class MainPresenter(QObject):
         self._current_library_path = library_path
         self._queue.set_current_library(library_path)
 
+        # Set library path for NCM proxy support
+        self._playback.set_library_path(library_path)
+
         # Load files from the selected library
         files = self._library.get_files(library_path)
         if files:
@@ -422,6 +425,9 @@ class MainPresenter(QObject):
         """Handle library loaded - build queue from files."""
         if not files:
             return
+
+        # Set library path for NCM proxy support
+        self._playback.set_library_path(library_path)
 
         # Set as current library if this is the first one loaded
         if not self._current_library_path:

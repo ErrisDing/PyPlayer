@@ -236,7 +236,7 @@ LIBRARY_CONFIG_TYPE_NAME = "LibraryConfig"
 
 
 # Supported media file extensions
-SUPPORTED_AUDIO = {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac'}
+SUPPORTED_AUDIO = {'.mp3', '.wav', '.flac', '.ogg', '.m4a', '.aac', '.ncm'}
 SUPPORTED_VIDEO = {'.avi', '.mp4', '.mkv', '.mov', '.wmv'}
 ALL_SUPPORTED = SUPPORTED_AUDIO | SUPPORTED_VIDEO
 

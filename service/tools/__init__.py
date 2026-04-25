@@ -18,6 +18,7 @@ from .mp3 import MP3Extractor
 from .flac import FLACExtractor
 from .m4a import M4AExtractor
 from .ogg import OGGExtractor
+from .ncm import NCMExtractor
 from .diagnostic import MetadataDiagnostic, DiagnosticReport, DirectorySummary
 
 
@@ -27,6 +28,7 @@ EXTRACTORS: list[Type[MetadataExtractor]] = [
     FLACExtractor,
     M4AExtractor,
     OGGExtractor,
+    NCMExtractor,
 ]
 
 
@@ -116,6 +118,7 @@ __all__ = [
     'FLACExtractor',
     'M4AExtractor',
     'OGGExtractor',
+    'NCMExtractor',
     # Diagnostic tools
     'MetadataDiagnostic',
     'DiagnosticReport',

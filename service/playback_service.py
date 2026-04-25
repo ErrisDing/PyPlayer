@@ -9,12 +9,14 @@ from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot
 
 # Import from core layer
 import sys
+import os
 from pathlib import Path
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.player import AudioPlayer, PlayerState
+from core.ncm_proxy import get_ncm_proxy_manager, NCMProxyManager
 
 
 class PlaybackService(QObject):
@@ -48,6 +50,19 @@ class PlaybackService(QObject):
         self._current_position: float = 0.0
         self._current_duration: float = 0.0
 
+        # NCM proxy support
+        self._ncm_proxy: Optional[NCMProxyManager] = None
+        self._current_library_path: Optional[str] = None
+        self._original_ncm_path: Optional[str] = None  # Track original NCM path for UI
+
+    def _get_ncm_proxy(self) -> NCMProxyManager:
+        """Get or initialize the NCM proxy manager."""
+        if self._ncm_proxy is None:
+            # Determine app root from this file's location
+            app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            self._ncm_proxy = get_ncm_proxy_manager(app_root)
+        return self._ncm_proxy
+
     def _on_track_end(self) -> None:
         """Called when track ends - emit signal from main thread."""
         self.track_ended.emit()
@@ -55,6 +70,28 @@ class PlaybackService(QObject):
     def _on_state_change(self, old_state: PlayerState, new_state: PlayerState) -> None:
         """Called when player state changes."""
         self.state_changed.emit(new_state)
+
+    # === NCM Support ===
+
+    def set_library_path(self, library_path: str) -> None:
+        """
+        Set the current library path for NCM proxy creation.
+
+        This should be called when the active library changes.
+
+        Args:
+            library_path: Path to the current media library
+        """
+        self._current_library_path = library_path
+
+    def get_original_ncm_path(self) -> Optional[str]:
+        """
+        Get the original NCM path if currently playing an NCM file via proxy.
+
+        Returns:
+            Original NCM path, or None if not playing NCM
+        """
+        return self._original_ncm_path
 
     # === Public API ===
 
@@ -69,6 +106,21 @@ class PlaybackService(QObject):
             True if playback started successfully
         """
         try:
+            # Reset original NCM path
+            self._original_ncm_path = None
+
+            # Check if this is an NCM file
+            ext = Path(filepath).suffix.lower()
+            if ext == '.ncm':
+                # Handle NCM file via proxy
+                actual_path = self._handle_ncm_file(filepath)
+                if actual_path is None:
+                    self.error_occurred.emit(f"Failed to create proxy for NCM file: {filepath}")
+                    return False
+                # Remember original path for UI
+                self._original_ncm_path = filepath
+                filepath = actual_path
+
             result = self._player.play_file(filepath)
             if result and self._player.current_track:
                 self.track_changed.emit(self._player.current_track)
@@ -79,6 +131,23 @@ class PlaybackService(QObject):
         except Exception as e:
             self.error_occurred.emit(str(e))
             return False
+
+    def _handle_ncm_file(self, ncm_path: str) -> Optional[str]:
+        """
+        Handle NCM file by getting or creating proxy.
+
+        Args:
+            ncm_path: Path to the NCM file
+
+        Returns:
+            Path to proxy file, or None if failed
+        """
+        if self._current_library_path is None:
+            print("[PlaybackService] Warning: No library path set for NCM proxy creation")
+            return None
+
+        proxy = self._get_ncm_proxy()
+        return proxy.get_proxy_file(ncm_path, self._current_library_path)
 
     def pause(self) -> None:
         """Pause playback."""

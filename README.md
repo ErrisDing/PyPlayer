@@ -4,8 +4,9 @@
 
 ## 特性 / Features
 
-- 🎵 **音频播放**: MP3, WAV, FLAC, OGG, M4A, AAC, AIFF, AU (所有格式支持seek)
+- 🎵 **音频播放**: MP3, WAV, FLAC, OGG, M4A, AAC, AIFF, AU, NCM (所有格式支持seek)
 - 🎬 **视频播放**: AVI, MP4, MKV, MOV, WMV
+- 🔐 **NCM 支持**: 网易云音乐加密格式，自动解包播放（通过 ncmdump 工具）
 - 💻 **GUI 模式**: 基于 PyQt6 的现代图形界面（跨平台）
 - ⌨️ **TUI 模式**: curses 终端界面 (Unix/Linux/macOS)
 - 📚 **媒体库管理**: 持久化配置支持，统一管理多个媒体目录
@@ -17,7 +18,7 @@
 - 🔄 **自动播放**: 曲目播放完毕自动跳转下一首
 - 🎨 **Now Playing 面板**: 显示专辑封面、歌曲标题、艺术家和专辑信息
 - ⏱️ **进度条与计时器**: 实时显示播放进度，支持拖拽跳转（所有音频格式）
-- 📝 **元数据提取**: 自动读取 ID3、FLAC、M4A、OGG 标签信息
+- 📝 **元数据提取**: 自动读取 ID3、FLAC、M4A、OGG、NCM 标签信息
 - 🚀 **Python 3.13 兼容**: 使用 soundfile + sounddevice 后端，无 audioop 依赖
 
 ## 媒体库功能 / Media Library Features
@@ -47,6 +48,31 @@
 - 更清晰的层级结构展示
 - 简洁的文件列表显示，无类型前缀标记
 - 按完整路径字典序排序，便于查找
+
+## NCM 格式支持 / NCM Format Support
+
+PyPlayer 支持播放网易云音乐加密格式（.ncm）文件。
+
+### 工作原理
+1. 播放 .ncm 文件时，自动调用 ncmdump 工具解包
+2. 解包后的音频文件（MP3/FLAC）缓存在 `proxy/` 目录
+3. 后续播放同一文件直接使用缓存，无需重复解包
+4. 代理文件按曲库分类管理，30天未访问自动清理
+
+### ncmdump 工具
+- 位于 `bin/{platform}/{arch}/ncmdump`
+- 支持 Windows (amd64) 和 Linux (amd64)
+- 首次播放 NCM 文件时自动调用
+
+### 代理文件目录结构
+```
+proxy/
+├── {library_hash_1}/
+│   ├── song1.mp3      # 来自 song1.ncm
+│   └── song2.flac     # 来自 song2.ncm
+└── {library_hash_2}/
+    └── ...
+```
 
 ## 依赖安装 / Dependencies
 
@@ -86,7 +112,8 @@ PyPlayer/
 │   ├── cache_manager.py    # JSON 缓存管理器
 │   ├── config.py           # 配置管理
 │   ├── i18n.py             # 国际化模块
-│   └── metadata.py         # 元数据提取
+│   ├── metadata.py         # 元数据提取
+│   └── ncm_proxy.py        # NCM 代理管理器
 ├── view/
 │   ├── main_window.py      # 主窗口
 │   ├── dialogs/            # 对话框
@@ -102,7 +129,19 @@ PyPlayer/
 │   ├── config_service.py   # 配置服务
 │   ├── library_service.py  # 媒体库服务
 │   ├── queue_service.py    # 队列服务
-│   └── playback_service.py # 播放服务
+│   ├── playback_service.py # 播放服务
+│   └── tools/              # 元数据提取工具
+│       ├── base.py         # 基类定义
+│       ├── mp3.py          # MP3 提取器
+│       ├── flac.py         # FLAC 提取器
+│       ├── m4a.py          # M4A 提取器
+│       ├── ogg.py          # OGG 提取器
+│       └── ncm.py          # NCM 提取器
+├── bin/                    # 外部工具
+│   ├── windows/amd64/      # Windows 工具
+│   │   └── ncmdump.exe     # NCM 解包工具
+│   └── linux/amd64/        # Linux 工具
+│       └── ncmdump         # NCM 解包工具
 ├── tui/
 │   └── tui.py              # 终端界面
 ├── tests/
