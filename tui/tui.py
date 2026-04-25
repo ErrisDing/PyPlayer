@@ -8,21 +8,10 @@ import curses
 import sys
 import os
 from pathlib import Path
-from dataclasses import dataclass
 from typing import List, Optional
 import time
 from core import i18n
-
-
-@dataclass
-class Track:
-    """Playlist item"""
-    path: str
-    title: str
-    duration: float = 0.0
-
-    def __str__(self):
-        return self.title
+from core.library_manager import Track
 
 
 class TerminalUI:

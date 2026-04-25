@@ -78,8 +78,11 @@ class NowPlayingPanel(QWidget):
         self.setStyleSheet("background-color: transparent;")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(15, 15, 15, 15)
         layout.setSpacing(10)
+
+        # Add top spacing to balance with left/right margins
+        layout.addSpacing(15)
 
         # Album art label
         self._art_label = QLabel()

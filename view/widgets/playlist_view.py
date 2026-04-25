@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from view.models.playlist_model import PlaylistModel
 from view.delegates.playlist_delegate import PlaylistItemDelegate
+from core.constants import AppearanceDefaults
 
 
 class PlaylistView(QWidget):
@@ -35,6 +36,9 @@ class PlaylistView(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._bg_alpha = AppearanceDefaults.PLAYLIST_BG_ALPHA
+        self._selected_alpha = AppearanceDefaults.PLAYLIST_SELECTED_ALPHA
+        self._hover_alpha = AppearanceDefaults.PLAYLIST_HOVER_ALPHA
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -74,24 +78,7 @@ class PlaylistView(QWidget):
         self._list_view.setHorizontalScrollMode(QListView.ScrollMode.ScrollPerPixel)
 
         # Styling with transparency
-        self._list_view.setStyleSheet("""
-            QListView {
-                background-color: rgba(250, 250, 250, 0.75);
-                border: 1px solid rgba(200, 200, 200, 0.5);
-                outline: none;
-            }
-            QListView::item {
-                padding: 5px;
-                border-bottom: 1px solid rgba(230, 230, 230, 0.5);
-            }
-            QListView::item:selected {
-                background-color: rgba(227, 242, 253, 0.85);
-                color: #333;
-            }
-            QListView::item:hover {
-                background-color: rgba(245, 245, 245, 0.85);
-            }
-        """)
+        self._update_stylesheet()
 
         # Connect signals
         self._list_view.doubleClicked.connect(self._on_double_click)
@@ -106,6 +93,32 @@ class PlaylistView(QWidget):
     def _on_click(self, index: QModelIndex) -> None:
         """Handle click on item."""
         self.track_selected.emit(index.row())
+
+    def _update_stylesheet(self) -> None:
+        """Update the stylesheet based on current alpha values."""
+        self._list_view.setStyleSheet(f"""
+            QListView {{
+                background-color: rgba(250, 250, 250, {self._bg_alpha});
+                border: 1px solid rgba(200, 200, 200, 0.5);
+                outline: none;
+            }}
+            QListView::item {{
+                padding: 5px;
+                border-bottom: 1px solid rgba(230, 230, 230, 0.5);
+            }}
+            QListView::item:selected {{
+                background-color: rgba(227, 242, 253, {self._selected_alpha});
+                color: #333;
+            }}
+            QListView::item:hover {{
+                background-color: rgba(245, 245, 245, {self._hover_alpha});
+            }}
+        """)
+
+    def set_bg_alpha(self, alpha: float) -> None:
+        """Set playlist background transparency."""
+        self._bg_alpha = alpha
+        self._update_stylesheet()
 
     def set_entries(self, entries: list) -> None:
         """

@@ -161,6 +161,14 @@ class AudioPlayer:
         self._total_chunks: int = 0
         self._filepath: Optional[str] = None
 
+        # Double buffering for seamless chunk transitions
+        self._chunk_buffer_lock = threading.Lock()
+        self._next_chunk_data: Optional[np.ndarray] = None
+        self._next_chunk_index: int = -1  # Index of the preloaded chunk (-1 = none)
+        self._current_chunk_data: Optional[np.ndarray] = None  # Currently playing chunk
+        self._current_chunk_index: int = -1  # Index of current chunk
+        self._chunk_offset: int = 0  # Offset within the current chunk (for position tracking)
+
         # Current track and queue
         self.current_track: Optional[Track] = None
         self.queue: List[Track] = []
@@ -468,7 +476,12 @@ class AudioPlayer:
         if self.is_paused:
             return self._pause_position_samples / self._sample_rate
 
-        # Calculate position from playback start time
+        # For chunked playback, use directly updated position
+        if self._use_chunked_loading:
+            with self._playback_lock:
+                return self._position_samples / self._sample_rate
+
+        # For normal playback, calculate position from playback start time
         with self._playback_lock:
             if self._current_stream and self._current_stream.active:
                 elapsed_samples = int((time.time() - self._play_start_time) * self._sample_rate)
@@ -607,6 +620,13 @@ class AudioPlayer:
         self._stop_event.set()
         self._pause_event.set()
 
+        # Clear chunk buffers
+        with self._chunk_buffer_lock:
+            self._next_chunk_data = None
+            self._next_chunk_index = -1
+        self._current_chunk_data = None
+        self._current_chunk_index = -1
+
         # Stop sounddevice stream
         if self._current_stream:
             try:
@@ -708,99 +728,199 @@ class AudioPlayer:
             traceback.print_exc()
             self._state_machine.force_transition(PlayerState.ERROR)
 
+    def _preload_next_chunk(self, chunk_index: int, samples_per_chunk: int) -> None:
+        """Preload the next chunk into buffer for seamless transition."""
+        chunk_start = chunk_index * samples_per_chunk
+        chunk_end = min(chunk_start + samples_per_chunk, self._total_samples)
+
+        if chunk_start >= self._total_samples:
+            with self._chunk_buffer_lock:
+                self._next_chunk_data = None
+                self._next_chunk_index = -1
+            return
+
+        with self._playback_lock:
+            if self._audio_data is None:
+                return
+            chunk_data = self._audio_data[chunk_start:chunk_end].copy()
+
+        with self._chunk_buffer_lock:
+            self._next_chunk_data = chunk_data
+            self._next_chunk_index = chunk_index
+
+    def _get_chunk_data(self, chunk_index: int, samples_per_chunk: int) -> Optional[np.ndarray]:
+        """Get chunk data from preload buffer or load directly."""
+        with self._chunk_buffer_lock:
+            if self._next_chunk_index == chunk_index and self._next_chunk_data is not None:
+                # Use preloaded data
+                chunk_data = self._next_chunk_data
+                self._next_chunk_data = None
+                self._next_chunk_index = -1
+                return chunk_data
+
+        # Load directly if not preloaded
+        chunk_start = chunk_index * samples_per_chunk
+        chunk_end = min(chunk_start + samples_per_chunk, self._total_samples)
+
+        if chunk_start >= self._total_samples:
+            return None
+
+        with self._playback_lock:
+            if self._audio_data is None:
+                return None
+            return self._audio_data[chunk_start:chunk_end].copy()
+
+    def _switch_to_next_chunk(self, samples_per_chunk: int) -> bool:
+        """Switch to the next chunk from preload buffer. Returns True if successful."""
+        with self._chunk_buffer_lock:
+            if self._next_chunk_data is not None:
+                self._current_chunk_data = self._next_chunk_data
+                self._current_chunk_index = self._next_chunk_index
+                self._next_chunk_data = None
+                self._next_chunk_index = -1
+                return True
+
+        # Fallback: load directly (should rarely happen)
+        next_idx = self._current_chunk_index + 1
+        data = self._get_chunk_data(next_idx, samples_per_chunk)
+        if data is not None:
+            self._current_chunk_data = data
+            self._current_chunk_index = next_idx
+            return True
+        return False
+
     def _playback_worker_chunked(self, from_sample: int = 0) -> None:
-        """Playback thread worker for large files - uses chunked loading."""
+        """Playback thread worker for large files - uses chunked loading with double buffering."""
         try:
             samples_per_chunk = int(self.CHUNK_DURATION_SEC * self._sample_rate)
             current_chunk = from_sample // samples_per_chunk
             offset_in_chunk = from_sample % samples_per_chunk
 
-            while not self._stop_event.is_set():
-                # Check if we've played all chunks
-                chunk_start = current_chunk * samples_per_chunk
-                chunk_end = min(chunk_start + samples_per_chunk, self._total_samples)
+            # Initialize current chunk
+            self._current_chunk_data = self._get_chunk_data(current_chunk, samples_per_chunk)
+            self._current_chunk_index = current_chunk
+            self._chunk_offset = offset_in_chunk  # Store offset for position tracking
+            if self._current_chunk_data is None:
+                return
 
-                if chunk_start >= self._total_samples:
-                    break
+            # Apply offset for first chunk
+            if offset_in_chunk > 0:
+                self._current_chunk_data = self._current_chunk_data[offset_in_chunk:]
+                offset_in_chunk = 0
 
-                # Load current chunk
-                with self._playback_lock:
-                    if self._audio_data is None:
-                        return
-                    chunk_data = self._audio_data[chunk_start:chunk_end]
+            # Start preloading next chunk immediately
+            preload_thread = threading.Thread(
+                target=self._preload_next_chunk,
+                args=(current_chunk + 1, samples_per_chunk),
+                daemon=True
+            )
+            preload_thread.start()
 
-                # Apply offset for first chunk
-                if offset_in_chunk > 0:
-                    chunk_data = chunk_data[offset_in_chunk:]
-                    offset_in_chunk = 0
+            # Playback state (no locks needed in callback)
+            current_frame = [0]
+            need_new_chunk = [False]
+            chunk_exhausted = [False]
 
-                # Play this chunk
-                current_frame = [0]
-                total_frames = len(chunk_data)
-
-                def audio_callback(outdata, frames, time_info, status):
-                    if self._stop_event.is_set():
-                        raise sd.CallbackStop()
-
-                    start = current_frame[0]
-                    end = start + frames
-
-                    if end >= total_frames:
-                        remaining = total_frames - start
-                        if remaining > 0:
-                            # Apply volume dynamically
-                            outdata[:remaining] = chunk_data[start:total_frames] * self._volume
-                            outdata[remaining:] = 0
-                        else:
-                            outdata.fill(0)
-                        raise sd.CallbackStop()
-
-                    # Apply volume dynamically during playback
-                    outdata[:] = chunk_data[start:end] * self._volume
-                    current_frame[0] = end
-
-                sample_rate = self._sample_rate
-                channels = self._channels
-
-                self._current_stream = sd.OutputStream(
-                    samplerate=sample_rate,
-                    channels=channels,
-                    dtype='float32',
-                    callback=audio_callback
-                )
-
-                self._play_start_time = time.time()
-                self._current_stream.start()
-
-                # Wait for chunk to finish
-                while not self._stop_event.is_set():
-                    if self._current_stream is None or not self._current_stream.active:
-                        break
-
-                    if self._pause_event.is_set():
-                        elapsed_samples = int((time.time() - self._play_start_time) * sample_rate)
-                        self._pause_position_samples = chunk_start + offset_in_chunk + elapsed_samples
-                        if self._current_stream and self._current_stream.active:
-                            self._current_stream.stop()
-
-                        while self._pause_event.is_set() and not self._stop_event.is_set():
-                            time.sleep(0.05)
-
-                        if not self._stop_event.is_set():
-                            return
-                        break
-
-                    time.sleep(0.05)
-
+            def audio_callback(outdata, frames, time_info, status):
                 if self._stop_event.is_set():
+                    raise sd.CallbackStop()
+
+                written = 0
+                while written < frames:
+                    chunk_data = self._current_chunk_data
+                    if chunk_data is None:
+                        outdata[written:] = 0
+                        raise sd.CallbackStop()
+
+                    remaining_in_chunk = len(chunk_data) - current_frame[0]
+
+                    if remaining_in_chunk <= 0:
+                        # Chunk exhausted, try to get next from preload buffer
+                        if need_new_chunk[0]:
+                            # Already requested but not ready, output silence briefly
+                            outdata[written:written + 1] = 0
+                            written += 1
+                            continue
+
+                        need_new_chunk[0] = True
+                        # Try non-blocking switch
+                        if self._switch_to_next_chunk(samples_per_chunk):
+                            current_frame[0] = 0
+                            self._chunk_offset = 0  # Reset offset when switching to new chunk
+                            need_new_chunk[0] = False
+                            # Trigger next preload
+                            threading.Thread(
+                                target=self._preload_next_chunk,
+                                args=(self._current_chunk_index + 1, samples_per_chunk),
+                                daemon=True
+                            ).start()
+                            continue
+                        else:
+                            # No more data
+                            chunk_exhausted[0] = True
+                            outdata[written:] = 0
+                            raise sd.CallbackStop()
+
+                    # Write audio data
+                    to_write = min(frames - written, remaining_in_chunk)
+                    start = current_frame[0]
+                    end = start + to_write
+
+                    outdata[written:written + to_write] = chunk_data[start:end] * self._volume
+                    current_frame[0] = end
+                    written += to_write
+
+            sample_rate = self._sample_rate
+            channels = self._channels
+
+            # Create single stream for entire playback
+            self._current_stream = sd.OutputStream(
+                samplerate=sample_rate,
+                channels=channels,
+                dtype='float32',
+                callback=audio_callback,
+                blocksize=4096
+            )
+
+            self._play_start_time = time.time()
+            self._current_stream.start()
+
+            # Monitor thread: preload chunks and update position
+            last_preloaded_chunk = current_chunk
+            while not self._stop_event.is_set():
+                if self._current_stream is None or not self._current_stream.active:
                     break
 
-                # Move to next chunk
-                with self._playback_lock:
-                    self._position_samples = min((current_chunk + 1) * samples_per_chunk, self._total_samples)
-                current_chunk += 1
+                if self._pause_event.is_set():
+                    if self._current_stream and self._current_stream.active:
+                        self._current_stream.stop()
 
-            # Playback completed naturally
+                    while self._pause_event.is_set() and not self._stop_event.is_set():
+                        time.sleep(0.05)
+
+                    if not self._stop_event.is_set():
+                        return
+                    break
+
+                # Preload next chunk if current chunk changed
+                if self._current_chunk_index > last_preloaded_chunk:
+                    threading.Thread(
+                        target=self._preload_next_chunk,
+                        args=(self._current_chunk_index + 1, samples_per_chunk),
+                        daemon=True
+                    ).start()
+                    last_preloaded_chunk = self._current_chunk_index
+
+                # Update position tracking (chunk_start + offset_in_chunk + current_frame)
+                with self._playback_lock:
+                    self._position_samples = min(
+                        self._current_chunk_index * samples_per_chunk + self._chunk_offset + current_frame[0],
+                        self._total_samples
+                    )
+
+                time.sleep(0.02)
+
+            # Playback ended
             if not self._stop_event.is_set() and self._on_track_end_callback:
                 self._state_machine.force_transition(PlayerState.IDLE)
                 try:

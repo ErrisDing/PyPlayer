@@ -12,6 +12,8 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 from datetime import datetime
 
+from core.constants import AppearanceDefaults
+
 
 @dataclass
 class LibraryConfig:
@@ -29,6 +31,11 @@ class Settings:
     """Represents the complete system configuration"""
     media_libraries: List[LibraryConfig] = field(default_factory=list)
     background_image: Optional[str] = None  # 自定义背景图片路径
+
+    # Appearance settings (transparency values 0.0-1.0)
+    overlay_alpha: float = field(default_factory=lambda: AppearanceDefaults.BACKGROUND_OVERLAY_ALPHA)
+    playlist_alpha: float = field(default_factory=lambda: AppearanceDefaults.PLAYLIST_BG_ALPHA)
+    controls_alpha: float = field(default_factory=lambda: AppearanceDefaults.BOTTOM_PANEL_BG_ALPHA)
 
     def add_library(self, path: str, name: Optional[str] = None) -> LibraryConfig:
         """Add a media library and return the configuration object"""
@@ -141,7 +148,18 @@ class SettingsManager:
         # Parse background image path
         background_image = data.get('background_image', None)
 
-        return Settings(media_libraries=libraries, background_image=background_image)
+        # Parse appearance settings with defaults
+        overlay_alpha = data.get('overlay_alpha', AppearanceDefaults.BACKGROUND_OVERLAY_ALPHA)
+        playlist_alpha = data.get('playlist_alpha', AppearanceDefaults.PLAYLIST_BG_ALPHA)
+        controls_alpha = data.get('controls_alpha', AppearanceDefaults.BOTTOM_PANEL_BG_ALPHA)
+
+        return Settings(
+            media_libraries=libraries,
+            background_image=background_image,
+            overlay_alpha=overlay_alpha,
+            playlist_alpha=playlist_alpha,
+            controls_alpha=controls_alpha
+        )
 
     def _create_empty_settings(self) -> Settings:
         """Create empty settings object"""
@@ -181,7 +199,11 @@ class SettingsManager:
                 "version": self.CONFIG_VERSION,
                 "last_updated": datetime.now().isoformat(),
                 "media_libraries": libraries,
-                "background_image": self._settings.background_image
+                "background_image": self._settings.background_image,
+                # Appearance settings
+                "overlay_alpha": self._settings.overlay_alpha,
+                "playlist_alpha": self._settings.playlist_alpha,
+                "controls_alpha": self._settings.controls_alpha
             }
 
             # Atomic write
@@ -247,6 +269,35 @@ class SettingsManager:
             True if saved successfully.
         """
         self.settings.background_image = path
+        return self.save()
+
+    # === Appearance Settings Methods ===
+
+    def get_overlay_alpha(self) -> float:
+        """Get background overlay transparency (0.0-1.0)."""
+        return self.settings.overlay_alpha
+
+    def set_overlay_alpha(self, alpha: float) -> bool:
+        """Set background overlay transparency and save."""
+        self.settings.overlay_alpha = max(0.0, min(1.0, alpha))
+        return self.save()
+
+    def get_playlist_alpha(self) -> float:
+        """Get playlist background transparency (0.0-1.0)."""
+        return self.settings.playlist_alpha
+
+    def set_playlist_alpha(self, alpha: float) -> bool:
+        """Set playlist background transparency and save."""
+        self.settings.playlist_alpha = max(0.0, min(1.0, alpha))
+        return self.save()
+
+    def get_controls_alpha(self) -> float:
+        """Get playback controls transparency (0.0-1.0)."""
+        return self.settings.controls_alpha
+
+    def set_controls_alpha(self, alpha: float) -> bool:
+        """Set playback controls transparency and save."""
+        self.settings.controls_alpha = max(0.0, min(1.0, alpha))
         return self.save()
 
     def _create_empty_config(self) -> None:

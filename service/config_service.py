@@ -24,6 +24,7 @@ class ConfigService(QObject):
     library_removed = pyqtSignal(str)     # library_path
     libraries_reordered = pyqtSignal()    # emitted when library order changes
     config_saved = pyqtSignal()
+    appearance_changed = pyqtSignal()     # emitted when appearance settings change
 
     def __init__(self, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -141,4 +142,39 @@ class ConfigService(QObject):
         result = self._manager.set_background_image(path)
         if result:
             self.config_saved.emit()
+        return result
+
+    # === Appearance Settings Methods ===
+
+    def get_overlay_alpha(self) -> float:
+        """Get background overlay transparency."""
+        return self._manager.get_overlay_alpha()
+
+    def set_overlay_alpha(self, alpha: float) -> bool:
+        """Set background overlay transparency."""
+        result = self._manager.set_overlay_alpha(alpha)
+        if result:
+            self.appearance_changed.emit()
+        return result
+
+    def get_playlist_alpha(self) -> float:
+        """Get playlist background transparency."""
+        return self._manager.get_playlist_alpha()
+
+    def set_playlist_alpha(self, alpha: float) -> bool:
+        """Set playlist background transparency."""
+        result = self._manager.set_playlist_alpha(alpha)
+        if result:
+            self.appearance_changed.emit()
+        return result
+
+    def get_controls_alpha(self) -> float:
+        """Get playback controls transparency."""
+        return self._manager.get_controls_alpha()
+
+    def set_controls_alpha(self, alpha: float) -> bool:
+        """Set playback controls transparency."""
+        result = self._manager.set_controls_alpha(alpha)
+        if result:
+            self.appearance_changed.emit()
         return result

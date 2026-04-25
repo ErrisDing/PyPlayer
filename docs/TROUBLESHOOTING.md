@@ -71,8 +71,15 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.pyplayer\cache\libraries\"
 **症状**: 点击进度条无法跳转
 
 **解决方案**:
-- 确保文件格式支持 seek（所有支持的音频格式都支持）
+- 所有支持的音频格式都支持 seek（使用 soundfile + sounddevice 后端）
 - 视频文件的 seek 功能依赖于视频编码
+
+#### 问题：大文件播放中断 / Large File Playback Interruption
+**症状**: 大音频文件（>50MB或>30分钟）每分钟出现音频中断
+
+**解决方案**:
+- **v2.0 已修复**: 实现了双缓冲预加载机制，chunk切换时无缝播放
+- 如仍有问题，请确保 `sounddevice` 正确安装: `pip install sounddevice`
 
 ---
 
@@ -83,8 +90,7 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.pyplayer\cache\libraries\"
 
 **解决方案**:
 1. 确保已添加至少一个媒体库：
-   - `文件` → `添加媒体库`
-   - 或使用 `文件` → `管理媒体库` 对话框添加
+   - `文件` → `管理媒体库` → 点击"添加"按钮
 2. 检查 `~/.pyplayer/cache/settings.json` 中是否有媒体库配置：
    ```json
    {
@@ -151,6 +157,23 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.pyplayer\cache\libraries\"
    "
    ```
 
+#### 问题：外观设置不生效 / Appearance Settings Not Working
+**症状**: 调整透明度后界面没有变化
+
+**解决方案**:
+1. 确保点击了滑块进行调整，而不是只点击了滑块轨道
+2. 检查配置文件是否正确保存：
+   - 查看 `~/.pyplayer/cache/settings.json` 中的透明度设置
+3. 尝试点击"恢复默认"后再重新调整
+
+#### 问题：背景图片不显示 / Background Image Not Showing
+**症状**: 设置了背景图片但界面没有显示
+
+**解决方案**:
+1. 确认图片文件存在且可访问
+2. 检查图片格式是否支持（JPG、PNG、BMP、GIF、WebP）
+3. 如果图片文件被移动或删除，启动时会弹出警告，需要重新选择背景图片
+
 ---
 
 ### 4. 配置问题 / Configuration Issues
@@ -169,7 +192,10 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.pyplayer\cache\libraries\"
      "last_updated": "2024-01-01T00:00:00",
      "media_libraries": [
        {"path": "D:\\Music"}
-     ]
+     ],
+     "overlay_alpha": 0.47,
+     "playlist_alpha": 0.75,
+     "controls_alpha": 0.85
    }
    ```
 
@@ -283,3 +309,55 @@ logging.basicConfig(level=logging.DEBUG)
    - Python 版本 (`python --version`)
    - 错误信息完整输出
    - 重现步骤
+
+---
+
+## 常见故障排除快速参考
+
+### NameError 或崩溃问题
+- **最新修复 (v2.0)**: 大文件分块播放无缝切换，双缓冲预加载机制
+- **修复 (v1.5)**: 默认封面图片显示修复
+- **修复 (v1.4)**: FLAC 封面多策略提取
+- 检查 Python 版本是否为 3.6+
+
+### 进度条跳转不工作
+- 所有音频格式现在都支持 seek 功能
+- 使用 soundfile + sounddevice 后端，通过 numpy 数组切片实现精确跳转
+- 如仍有问题，请检查 sounddevice 是否正确安装: `pip install sounddevice`
+
+### 专辑封面不显示
+- 确保安装了 Pillow: `pip install Pillow`
+- 部分音频文件可能没有嵌入封面图片
+- 无封面时现在显示 `resource/default_cover.png` 默认封面图片
+- 如果默认封面文件缺失，回退显示灰色占位图
+
+### 元数据显示 "Unknown Artist"
+- 音频文件可能没有元数据标签
+- 程序会自动使用文件名作为标题
+
+### 视频无法播放
+- 确保安装了完整版 `opencv-python` (非 headless)
+- Windows 用户可能需要安装 Visual C++ Redistributable
+
+### GUI 无法启动
+- 确保显示环境可用（服务器需要 X11 forwarding）
+- 可以使用 CLI 模式或 TUI 模式替代
+
+### TUI 不可用 (Windows)
+- Windows 默认不支持 curses，建议使用 GUI 模式 (`python main.py`)
+- 可在 WSL/Cygwin 等环境中使用 TUI 模式
+
+### 启动后播放列表为空
+- 检查 `settings.json` 中 `media_libraries` 路径是否存在且包含媒体文件
+
+### 媒体库扫描无结果
+- 确保添加的路径包含支持的媒体文件 (.mp3, .wav, .flac, .ogg, .m4a, .aac, .avi, .mp4, .mkv, .mov)
+- 检查 `settings.json` 是否正确保存了配置
+
+### 音频无声
+- 检查系统音量设置
+- 确认音频文件格式支持 (尝试 WAV/MP3)
+
+### Python 3.13 兼容性
+- ✅ PyPlayer 现已完全兼容 Python 3.13
+- 使用 soundfile + sounddevice 替代 pydub，避免 audioop 模块缺失问题

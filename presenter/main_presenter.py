@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from view.main_window import MainWindow
 from view.models import DisplayEntry
-from view.dialogs import LibraryManagementDialog
+from view.dialogs import LibraryManagementDialog, AppearanceDialog
 from service.playback_service import PlaybackService
 
 if TYPE_CHECKING:
@@ -101,6 +101,9 @@ class MainPresenter(QObject):
         # Background image
         self._view.background_image_changed.connect(self._on_background_image_changed)
 
+        # Appearance settings
+        self._view.manage_appearance_requested.connect(self._on_manage_appearance)
+
     def _setup_service_connections(self) -> None:
         """Connect Service signals to handler methods."""
         # Playback state changes
@@ -144,6 +147,11 @@ class MainPresenter(QObject):
             else:
                 # Show warning and clear invalid config
                 self._view._check_background_image(self._config._manager)
+
+        # Load appearance settings
+        self._view.set_overlay_alpha(self._config.get_overlay_alpha())
+        self._view.set_playlist_alpha(self._config.get_playlist_alpha())
+        self._view.set_controls_alpha(self._config.get_controls_alpha())
 
     # === View Signal Handlers ===
 
@@ -325,6 +333,59 @@ class MainPresenter(QObject):
         else:
             self._config.set_background_image(None)
             self._view.set_status_message(i18n.get('status.background_cleared', default='背景图片已清除'))
+
+    @pyqtSlot()
+    def _on_manage_appearance(self) -> None:
+        """Handle manage appearance menu action - open dialog."""
+        dialog = AppearanceDialog(
+            background_image=self._config.get_background_image(),
+            overlay_alpha=self._config.get_overlay_alpha(),
+            playlist_alpha=self._config.get_playlist_alpha(),
+            controls_alpha=self._config.get_controls_alpha(),
+            parent=self._view
+        )
+
+        # Connect dialog signals
+        dialog.background_image_changed.connect(
+            lambda path: self._handle_background_change(dialog, path)
+        )
+        dialog.overlay_alpha_changed.connect(
+            lambda alpha: self._handle_overlay_change(dialog, alpha)
+        )
+        dialog.playlist_alpha_changed.connect(
+            lambda alpha: self._handle_playlist_alpha_change(dialog, alpha)
+        )
+        dialog.controls_alpha_changed.connect(
+            lambda alpha: self._handle_controls_alpha_change(dialog, alpha)
+        )
+
+        dialog.exec()
+
+    def _handle_background_change(self, dialog: AppearanceDialog, path: str) -> None:
+        """Handle background image change from dialog."""
+        if path:
+            self._config.set_background_image(path)
+            self._view.set_background_image(path)
+            self._view.set_status_message(i18n.get('status.background_set', default='背景图片已设置'))
+        else:
+            self._config.set_background_image(None)
+            self._view.set_background_image(None)
+            self._view.set_status_message(i18n.get('status.background_cleared', default='背景图片已清除'))
+
+    def _handle_overlay_change(self, dialog: AppearanceDialog, alpha: float) -> None:
+        """Handle overlay alpha change from dialog."""
+        self._config.set_overlay_alpha(alpha)
+        self._view.set_overlay_alpha(alpha)
+
+    def _handle_playlist_alpha_change(self, dialog: AppearanceDialog, alpha: float) -> None:
+        """Handle playlist alpha change from dialog."""
+        self._config.set_playlist_alpha(alpha)
+        self._view.set_playlist_alpha(alpha)
+
+    def _handle_controls_alpha_change(self, dialog: AppearanceDialog, alpha: float) -> None:
+        """Handle controls alpha change from dialog."""
+        self._config.set_controls_alpha(alpha)
+        self._view.set_controls_alpha(alpha)
 
     # === Service Signal Handlers ===
 

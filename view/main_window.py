@@ -7,7 +7,8 @@ Assembles all UI components and provides the public View interface
 from typing import Optional, List, Any
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QMenuBar, QMenu, QToolBar, QStatusBar, QFileDialog, QMessageBox
+    QMenuBar, QMenu, QToolBar, QStatusBar, QFileDialog, QMessageBox,
+    QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect
 from PyQt6.QtGui import QAction, QKeySequence, QCloseEvent, QPixmap, QPainter, QColor
@@ -20,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core import i18n
 from view.widgets import NowPlayingPanel, PlaylistView, BottomPanel
 from view.models import PlaylistModel, DisplayEntry
+from core.constants import AppearanceDefaults
 
 
 class MainWindow(QMainWindow):
@@ -49,6 +51,7 @@ class MainWindow(QMainWindow):
     scan_folder_requested = pyqtSignal(str)     # folder path
     library_selected = pyqtSignal(str)          # library path selected
     manage_libraries_requested = pyqtSignal()   # open library management dialog
+    manage_appearance_requested = pyqtSignal()  # open appearance settings dialog
     background_image_changed = pyqtSignal(str)  # background image path
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -63,6 +66,7 @@ class MainWindow(QMainWindow):
 
         # Background image for custom painting
         self._background_pixmap: Optional[QPixmap] = None
+        self._overlay_alpha: float = AppearanceDefaults.BACKGROUND_OVERLAY_ALPHA
 
         self._setup_window()
         self._setup_menu()
@@ -93,10 +97,6 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        add_library_action = QAction(i18n.get('menu.add_library'), self)
-        add_library_action.triggered.connect(self._on_add_library)
-        file_menu.addAction(add_library_action)
-
         manage_libraries_action = QAction(i18n.get('menu.manage_libraries'), self)
         manage_libraries_action.triggered.connect(self.manage_libraries_requested.emit)
         file_menu.addAction(manage_libraries_action)
@@ -113,13 +113,9 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        set_background_action = QAction(i18n.get('menu.set_background', default='设置背景图片...'), self)
-        set_background_action.triggered.connect(self._on_set_background)
-        file_menu.addAction(set_background_action)
-
-        clear_background_action = QAction(i18n.get('menu.clear_background', default='清除背景图片'), self)
-        clear_background_action.triggered.connect(self._on_clear_background)
-        file_menu.addAction(clear_background_action)
+        appearance_action = QAction(i18n.get('menu.appearance', default='外观设置'), self)
+        appearance_action.triggered.connect(self.manage_appearance_requested.emit)
+        file_menu.addAction(appearance_action)
 
         file_menu.addSeparator()
 
@@ -149,9 +145,12 @@ class MainWindow(QMainWindow):
         # Horizontal splitter for now playing and playlist
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Left panel - Now Playing
+        # Left panel - Now Playing (fixed size)
         self._now_playing = NowPlayingPanel()
         self._now_playing.setMinimumWidth(250)
+        self._now_playing.setSizePolicy(
+            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
+        )
         splitter.addWidget(self._now_playing)
 
         # Right panel - Playlist
@@ -167,6 +166,10 @@ class MainWindow(QMainWindow):
 
         # Set initial sizes (30% now playing, 70% playlist)
         splitter.setSizes([300, 700])
+
+        # Make splitter handle resizable but keep now playing fixed
+        splitter.setStretchFactor(0, 0)  # Now playing doesn't stretch
+        splitter.setStretchFactor(1, 1)  # Playlist stretches
 
         main_layout.addWidget(splitter, stretch=1)
 
@@ -305,6 +308,11 @@ class MainWindow(QMainWindow):
             self._background_pixmap = None
             self.update()
 
+    def set_overlay_alpha(self, alpha: float) -> None:
+        """Set the background overlay transparency."""
+        self._overlay_alpha = alpha
+        self.update()  # Trigger repaint
+
     def paintEvent(self, event) -> None:
         """Override paint event to draw scaled background image with semi-transparent overlay."""
         super().paintEvent(event)
@@ -334,8 +342,10 @@ class MainWindow(QMainWindow):
             target_rect = QRect(x, y, scaled_width, scaled_height)
             painter.drawPixmap(target_rect, self._background_pixmap)
 
-            # Draw semi-transparent overlay for better text readability
-            painter.fillRect(window_rect, QColor(255, 255, 255, 120))
+            # Draw semi-transparent overlay using configured alpha
+            # Convert 0.0-1.0 to 0-255
+            alpha_int = int(self._overlay_alpha * 255)
+            painter.fillRect(window_rect, QColor(255, 255, 255, alpha_int))
 
     # === Public API for Presenter ===
 
@@ -406,6 +416,14 @@ class MainWindow(QMainWindow):
     def reset_progress(self) -> None:
         """Reset the progress slider."""
         self._bottom_panel.reset_progress()
+
+    def set_playlist_alpha(self, alpha: float) -> None:
+        """Set playlist background transparency."""
+        self._playlist_view.set_bg_alpha(alpha)
+
+    def set_controls_alpha(self, alpha: float) -> None:
+        """Set bottom panel background transparency."""
+        self._bottom_panel.set_bg_alpha(alpha)
 
     def show_error(self, title: str, message: str) -> None:
         """Show an error dialog."""
