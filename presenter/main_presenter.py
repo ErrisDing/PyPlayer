@@ -98,6 +98,9 @@ class MainPresenter(QObject):
         self._view.library_selected.connect(self._on_library_selected)
         self._view.manage_libraries_requested.connect(self._on_manage_libraries)
 
+        # Background image
+        self._view.background_image_changed.connect(self._on_background_image_changed)
+
     def _setup_service_connections(self) -> None:
         """Connect Service signals to handler methods."""
         # Playback state changes
@@ -131,6 +134,16 @@ class MainPresenter(QObject):
         if libraries:
             first_lib = libraries[0]
             self._library.load_library(first_lib.path, first_lib.name)
+
+        # Load and check background image
+        bg_path = self._config.get_background_image()
+        if bg_path:
+            import os
+            if os.path.exists(bg_path):
+                self._view.set_background_image(bg_path)
+            else:
+                # Show warning and clear invalid config
+                self._view._check_background_image(self._config._manager)
 
     # === View Signal Handlers ===
 
@@ -302,6 +315,16 @@ class MainPresenter(QObject):
             libraries = self._config.get_libraries()
             self._view.set_libraries(libraries)
             dialog.set_libraries(libraries)
+
+    @pyqtSlot(str)
+    def _on_background_image_changed(self, path: str) -> None:
+        """Handle background image change from UI."""
+        if path:
+            self._config.set_background_image(path)
+            self._view.set_status_message(i18n.get('status.background_set', default='背景图片已设置'))
+        else:
+            self._config.set_background_image(None)
+            self._view.set_status_message(i18n.get('status.background_cleared', default='背景图片已清除'))
 
     # === Service Signal Handlers ===
 

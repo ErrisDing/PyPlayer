@@ -28,6 +28,7 @@ class LibraryConfig:
 class Settings:
     """Represents the complete system configuration"""
     media_libraries: List[LibraryConfig] = field(default_factory=list)
+    background_image: Optional[str] = None  # 自定义背景图片路径
 
     def add_library(self, path: str, name: Optional[str] = None) -> LibraryConfig:
         """Add a media library and return the configuration object"""
@@ -137,7 +138,10 @@ class SettingsManager:
                     name=lib_data.get('name', None)
                 ))
 
-        return Settings(media_libraries=libraries)
+        # Parse background image path
+        background_image = data.get('background_image', None)
+
+        return Settings(media_libraries=libraries, background_image=background_image)
 
     def _create_empty_settings(self) -> Settings:
         """Create empty settings object"""
@@ -176,7 +180,8 @@ class SettingsManager:
             data = {
                 "version": self.CONFIG_VERSION,
                 "last_updated": datetime.now().isoformat(),
-                "media_libraries": libraries
+                "media_libraries": libraries,
+                "background_image": self._settings.background_image
             }
 
             # Atomic write
@@ -225,6 +230,23 @@ class SettingsManager:
         """
         if not self.settings.reorder_library(old_index, new_index):
             return False
+        return self.save()
+
+    def get_background_image(self) -> Optional[str]:
+        """Get the background image path from settings."""
+        return self.settings.background_image
+
+    def set_background_image(self, path: Optional[str]) -> bool:
+        """
+        Set the background image path and save to file immediately.
+
+        Args:
+            path: Path to the background image, or None to clear.
+
+        Returns:
+            True if saved successfully.
+        """
+        self.settings.background_image = path
         return self.save()
 
     def _create_empty_config(self) -> None:

@@ -123,3 +123,22 @@ class ConfigService(QObject):
         if index < 0 or index >= len(self.settings.media_libraries) - 1:
             return False
         return self.reorder_library(index, index + 1)
+
+    def get_background_image(self) -> Optional[str]:
+        """Get the background image path from settings."""
+        return self._manager.get_background_image()
+
+    def set_background_image(self, path: Optional[str]) -> bool:
+        """
+        Set the background image path.
+
+        Args:
+            path: Path to the background image, or None to clear.
+
+        Returns:
+            True if saved successfully.
+        """
+        result = self._manager.set_background_image(path)
+        if result:
+            self.config_saved.emit()
+        return result

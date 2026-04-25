@@ -47,7 +47,7 @@ class PlaylistView(QWidget):
         header = QLabel("Playlist")
         header.setStyleSheet("""
             QLabel {
-                background-color: #3a3a3a;
+                background-color: rgba(58, 58, 58, 0.85);
                 color: white;
                 padding: 8px;
                 font-weight: bold;
@@ -73,23 +73,23 @@ class PlaylistView(QWidget):
         self._list_view.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
         self._list_view.setHorizontalScrollMode(QListView.ScrollMode.ScrollPerPixel)
 
-        # Styling
+        # Styling with transparency
         self._list_view.setStyleSheet("""
             QListView {
-                background-color: #fafafa;
-                border: 1px solid #ddd;
+                background-color: rgba(250, 250, 250, 0.75);
+                border: 1px solid rgba(200, 200, 200, 0.5);
                 outline: none;
             }
             QListView::item {
                 padding: 5px;
-                border-bottom: 1px solid #eee;
+                border-bottom: 1px solid rgba(230, 230, 230, 0.5);
             }
             QListView::item:selected {
-                background-color: #e3f2fd;
+                background-color: rgba(227, 242, 253, 0.85);
                 color: #333;
             }
             QListView::item:hover {
-                background-color: #f5f5f5;
+                background-color: rgba(245, 245, 245, 0.85);
             }
         """)
 

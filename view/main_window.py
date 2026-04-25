@@ -9,15 +9,16 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QMenuBar, QMenu, QToolBar, QStatusBar, QFileDialog, QMessageBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QAction, QKeySequence, QCloseEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect
+from PyQt6.QtGui import QAction, QKeySequence, QCloseEvent, QPixmap, QPainter, QColor
 
 import sys
+import os
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import i18n
-from view.widgets import NowPlayingPanel, PlaylistView, ProgressSlider, ControlPanel
+from view.widgets import NowPlayingPanel, PlaylistView, BottomPanel
 from view.models import PlaylistModel, DisplayEntry
 
 
@@ -48,6 +49,7 @@ class MainWindow(QMainWindow):
     scan_folder_requested = pyqtSignal(str)     # folder path
     library_selected = pyqtSignal(str)          # library path selected
     manage_libraries_requested = pyqtSignal()   # open library management dialog
+    background_image_changed = pyqtSignal(str)  # background image path
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -58,6 +60,9 @@ class MainWindow(QMainWindow):
         # Current library tracking
         self._current_library_path: str = ""
         self._libraries: List[Any] = []
+
+        # Background image for custom painting
+        self._background_pixmap: Optional[QPixmap] = None
 
         self._setup_window()
         self._setup_menu()
@@ -108,6 +113,16 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        set_background_action = QAction(i18n.get('menu.set_background', default='设置背景图片...'), self)
+        set_background_action.triggered.connect(self._on_set_background)
+        file_menu.addAction(set_background_action)
+
+        clear_background_action = QAction(i18n.get('menu.clear_background', default='清除背景图片'), self)
+        clear_background_action.triggered.connect(self._on_clear_background)
+        file_menu.addAction(clear_background_action)
+
+        file_menu.addSeparator()
+
         exit_action = QAction(i18n.get('menu.exit'), self)
         exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         exit_action.triggered.connect(self.close)
@@ -155,21 +170,9 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(splitter, stretch=1)
 
-        # Bottom panel - Progress and Controls
-        bottom_panel = QWidget()
-        bottom_layout = QVBoxLayout(bottom_panel)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.setSpacing(0)
-
-        # Progress slider
-        self._progress_slider = ProgressSlider()
-        bottom_layout.addWidget(self._progress_slider)
-
-        # Control panel
-        self._control_panel = ControlPanel()
-        bottom_layout.addWidget(self._control_panel)
-
-        main_layout.addWidget(bottom_panel)
+        # Bottom panel - Combined progress and controls
+        self._bottom_panel = BottomPanel()
+        main_layout.addWidget(self._bottom_panel)
 
         # Status bar
         self._status_bar = QStatusBar()
@@ -178,16 +181,14 @@ class MainWindow(QMainWindow):
 
     def _setup_connections(self) -> None:
         """Connect internal widget signals to main window signals."""
-        # Control panel connections
-        self._control_panel.play_pause_clicked.connect(self.play_pause_requested.emit)
-        self._control_panel.stop_clicked.connect(self.stop_requested.emit)
-        self._control_panel.next_clicked.connect(self.next_track_requested.emit)
-        self._control_panel.prev_clicked.connect(self.prev_track_requested.emit)
-        self._control_panel.volume_changed.connect(self.volume_changed.emit)
-        self._control_panel.loop_mode_changed.connect(self.loop_mode_changed.emit)
-
-        # Progress slider connections
-        self._progress_slider.seek_requested.connect(self.seek_requested.emit)
+        # Bottom panel connections
+        self._bottom_panel.play_pause_clicked.connect(self.play_pause_requested.emit)
+        self._bottom_panel.stop_clicked.connect(self.stop_requested.emit)
+        self._bottom_panel.next_clicked.connect(self.next_track_requested.emit)
+        self._bottom_panel.prev_clicked.connect(self.prev_track_requested.emit)
+        self._bottom_panel.volume_changed.connect(self.volume_changed.emit)
+        self._bottom_panel.loop_mode_changed.connect(self.loop_mode_changed.emit)
+        self._bottom_panel.seek_requested.connect(self.seek_requested.emit)
 
         # Playlist connections
         self._playlist_view.track_double_clicked.connect(self.track_double_clicked.emit)
@@ -254,6 +255,88 @@ class MainWindow(QMainWindow):
             i18n.get('dialog.about.text')
         )
 
+    def _on_set_background(self) -> None:
+        """Handle set background image action."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            i18n.get('dialog.select_background', default='选择背景图片'),
+            "",
+            i18n.get('dialog.image_files', default='图片文件') + " (*.jpg *.jpeg *.png *.bmp *.gif *.webp)"
+        )
+        if file_path:
+            self.set_background_image(file_path)
+            self.background_image_changed.emit(file_path)
+
+    def _on_clear_background(self) -> None:
+        """Handle clear background image action."""
+        self.set_background_image(None)
+        self.background_image_changed.emit("")
+
+    def _check_background_image(self, config) -> None:
+        """
+        Check if configured background image exists.
+        Show warning and clear config if file not found.
+
+        Args:
+            config: SettingsManager instance
+        """
+        bg_path = config.get_background_image()
+        if bg_path and not os.path.exists(bg_path):
+            QMessageBox.warning(
+                self,
+                i18n.get('dialog.title.warning', default='警告'),
+                i18n.get('warning.background_not_found', default='背景图片文件不存在，已恢复默认背景')
+            )
+            config.set_background_image(None)
+
+    def set_background_image(self, path: Optional[str]) -> None:
+        """
+        Set the background image for the main window.
+        Uses aspect ratio preserving scale, fitting the shorter edge.
+
+        Args:
+            path: Path to the background image, or None to clear.
+        """
+        if path and os.path.exists(path):
+            self._background_pixmap = QPixmap(path)
+            self.update()  # Trigger repaint
+        else:
+            # Clear background, restore default
+            self._background_pixmap = None
+            self.update()
+
+    def paintEvent(self, event) -> None:
+        """Override paint event to draw scaled background image with semi-transparent overlay."""
+        super().paintEvent(event)
+
+        if self._background_pixmap and not self._background_pixmap.isNull():
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+
+            # Calculate scaled size - fit to window while preserving aspect ratio
+            window_rect = self.rect()
+            pixmap_size = self._background_pixmap.size()
+
+            # Calculate scale factor to fit the shorter edge
+            scale_x = window_rect.width() / pixmap_size.width()
+            scale_y = window_rect.height() / pixmap_size.height()
+            scale = max(scale_x, scale_y)  # Use larger scale to cover window
+
+            # Calculate scaled dimensions
+            scaled_width = int(pixmap_size.width() * scale)
+            scaled_height = int(pixmap_size.height() * scale)
+
+            # Center the image
+            x = (window_rect.width() - scaled_width) // 2
+            y = (window_rect.height() - scaled_height) // 2
+
+            # Draw scaled pixmap centered
+            target_rect = QRect(x, y, scaled_width, scaled_height)
+            painter.drawPixmap(target_rect, self._background_pixmap)
+
+            # Draw semi-transparent overlay for better text readability
+            painter.fillRect(window_rect, QColor(255, 255, 255, 120))
+
     # === Public API for Presenter ===
 
     def set_libraries(self, libraries: List[Any]) -> None:
@@ -286,19 +369,19 @@ class MainWindow(QMainWindow):
 
     def update_progress(self, position: float, duration: float) -> None:
         """Update the progress slider."""
-        self._progress_slider.update_progress(position, duration)
+        self._bottom_panel.update_progress(position, duration)
 
     def set_playing_state(self, is_playing: bool, is_paused: bool = False) -> None:
         """Update the play/pause button state."""
-        self._control_panel.set_playing_state(is_playing, is_paused)
+        self._bottom_panel.set_playing_state(is_playing, is_paused)
 
     def set_volume(self, volume: float) -> None:
         """Set the volume slider."""
-        self._control_panel.set_volume(volume)
+        self._bottom_panel.set_volume(volume)
 
     def set_loop_mode(self, mode: str) -> None:
         """Set the loop mode button."""
-        self._control_panel.set_loop_mode(mode)
+        self._bottom_panel.set_loop_mode(mode)
 
     def highlight_current_track(self, display_idx: int) -> None:
         """Highlight the currently playing track in the playlist."""
@@ -322,7 +405,7 @@ class MainWindow(QMainWindow):
 
     def reset_progress(self) -> None:
         """Reset the progress slider."""
-        self._progress_slider.reset()
+        self._bottom_panel.reset_progress()
 
     def show_error(self, title: str, message: str) -> None:
         """Show an error dialog."""

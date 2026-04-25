@@ -73,6 +73,10 @@ class NowPlayingPanel(QWidget):
 
     def _setup_ui(self) -> None:
         """Set up the UI components."""
+        # Enable transparency
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("background-color: transparent;")
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
@@ -83,8 +87,8 @@ class NowPlayingPanel(QWidget):
         self._art_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._art_label.setStyleSheet("""
             QLabel {
-                background-color: #f0f0f0;
-                border: 1px solid #ccc;
+                background-color: rgba(240, 240, 240, 0.85);
+                border: 1px solid rgba(200, 200, 200, 0.5);
                 border-radius: 5px;
             }
         """)
@@ -98,21 +102,21 @@ class NowPlayingPanel(QWidget):
 
         # Title
         self._title_label = QLabel("No Track Playing")
-        self._title_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        self._title_label.setStyleSheet("font-size: 14px; font-weight: bold; background-color: transparent;")
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._title_label.setWordWrap(True)
         info_layout.addWidget(self._title_label)
 
         # Artist
         self._artist_label = QLabel("")
-        self._artist_label.setStyleSheet("font-size: 12px; color: #666;")
+        self._artist_label.setStyleSheet("font-size: 12px; color: #666; background-color: transparent;")
         self._artist_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._artist_label.setWordWrap(True)
         info_layout.addWidget(self._artist_label)
 
         # Album
         self._album_label = QLabel("")
-        self._album_label.setStyleSheet("font-size: 11px; color: #888;")
+        self._album_label.setStyleSheet("font-size: 11px; color: #888; background-color: transparent;")
         self._album_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._album_label.setWordWrap(True)
         info_layout.addWidget(self._album_label)
@@ -211,8 +215,8 @@ class NowPlayingPanel(QWidget):
             self._art_label.setText("No Art")
             self._art_label.setStyleSheet("""
                 QLabel {
-                    background-color: #f0f0f0;
-                    border: 1px solid #ccc;
+                    background-color: rgba(240, 240, 240, 0.85);
+                    border: 1px solid rgba(200, 200, 200, 0.5);
                     border-radius: 5px;
                 }
             """)

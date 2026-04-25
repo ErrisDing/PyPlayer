@@ -9,6 +9,7 @@ from .playlist_view import PlaylistView
 from .progress_slider import ProgressSlider
 from .control_panel import ControlPanel
 from .library_selector import LibrarySelector
+from .bottom_panel import BottomPanel
 
 __all__ = [
     'NowPlayingPanel',
@@ -16,4 +17,5 @@ __all__ = [
     'ProgressSlider',
     'ControlPanel',
     'LibrarySelector',
+    'BottomPanel',
 ]

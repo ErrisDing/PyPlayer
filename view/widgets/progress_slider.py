@@ -80,6 +80,10 @@ class ProgressSlider(QWidget):
 
     def _setup_ui(self) -> None:
         """Set up the UI components."""
+        # Enable transparency
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("background-color: transparent;")
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 5, 10, 5)
         layout.setSpacing(10)
@@ -90,11 +94,28 @@ class ProgressSlider(QWidget):
         self._current_time.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self._current_time)
 
-        # Slider
+        # Slider with transparent styling
         self._slider = ClickableSlider(Qt.Orientation.Horizontal)
         self._slider.setRange(0, 1000)  # Use 0-1000 for precision
         self._slider.setValue(0)
         self._slider.setEnabled(False)
+        self._slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                background: rgba(200, 200, 200, 0.5);
+                height: 6px;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: rgba(33, 150, 243, 0.9);
+                width: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
+            }
+            QSlider::sub-page:horizontal {
+                background: rgba(33, 150, 243, 0.7);
+                border-radius: 3px;
+            }
+        """)
         self._slider.sliderPressed.connect(self._on_slider_pressed)
         self._slider.sliderReleased.connect(self._on_slider_released)
         self._slider.sliderMoved.connect(self._on_slider_moved)

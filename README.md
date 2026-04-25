@@ -19,6 +19,8 @@
 - 🎨 **Now Playing 面板**: 显示专辑封面、歌曲标题、艺术家和专辑信息
 - ⏱️ **进度条与计时器**: 实时显示播放进度，支持拖拽跳转（所有音频格式）
 - 📝 **元数据提取**: 自动读取 ID3、FLAC、M4A、OGG、NCM 标签信息
+- 🖼️ **自定义背景**: 支持设置背景图片，等比缩放适配窗口，半透明遮罩保证文字可读
+- ✨ **透明界面**: 播放列表、控制面板等组件使用半透明效果，视觉效果更佳
 - 🚀 **Python 3.13 兼容**: 使用 soundfile + sounddevice 后端，无 audioop 依赖
 
 ## 媒体库功能 / Media Library Features
@@ -52,6 +54,22 @@
   - 根目录文件显示 `[root]`
   - 子目录文件显示相对路径如 `[Rock/Albums]`
   - 半透明灰色字体，文件名遮盖相对位置
+
+## 自定义背景 / Custom Background
+
+PyPlayer 支持设置自定义背景图片，打造个性化播放界面。
+
+### 功能特点
+- 通过菜单 `文件` → `设置背景图片` 选择图片
+- 支持 JPG、PNG、BMP、GIF、WebP 等常见图片格式
+- 背景图片等比缩放，适配窗口短边，确保完整覆盖
+- 半透明白色遮罩层确保文字清晰可读
+- 播放列表、控制面板等组件使用半透明效果
+- 背景图片路径保存到配置文件，重启后自动恢复
+- 如果背景文件被移动或删除，启动时弹窗提示
+
+### 清除背景
+- 通过菜单 `文件` → `清除背景图片` 恢复默认背景
 
 ## NCM 格式支持 / NCM Format Support
 
@@ -126,7 +144,9 @@ PyPlayer/
 │       ├── now_playing_panel.py   # 正在播放面板
 │       ├── library_selector.py    # 媒体库切换器
 │       ├── playlist_view.py       # 播放列表视图
-│       └── control_panel.py       # 控制面板
+│       ├── bottom_panel.py        # 底部面板（进度条+控制按钮）
+│       ├── progress_slider.py     # 进度条组件
+│       └── control_panel.py       # 控制面板组件
 ├── presenter/
 │   └── main_presenter.py   # MVP 协调器
 ├── service/

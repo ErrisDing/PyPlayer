@@ -45,9 +45,44 @@ class ControlPanel(QWidget):
 
     def _setup_ui(self) -> None:
         """Set up the UI components."""
+        # Enable transparency for the widget
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 5, 10, 5)
         layout.setSpacing(10)
+
+        # Set semi-transparent background
+        self.setStyleSheet("""
+            ControlPanel {
+                background-color: rgba(245, 245, 245, 0.85);
+            }
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.7);
+                border: 1px solid rgba(200, 200, 200, 0.5);
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: rgba(230, 230, 230, 0.85);
+            }
+            QPushButton:pressed {
+                background-color: rgba(200, 200, 200, 0.85);
+            }
+            QSlider::groove:horizontal {
+                background: rgba(200, 200, 200, 0.5);
+                height: 6px;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: rgba(100, 100, 100, 0.85);
+                width: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
+            }
+            QLabel {
+                background-color: transparent;
+            }
+        """)
 
         # Previous button
         self._prev_btn = QPushButton("◀◀")
@@ -59,7 +94,21 @@ class ControlPanel(QWidget):
         # Play/Pause button
         self._play_btn = QPushButton("▶")
         self._play_btn.setFixedSize(50, 50)
-        self._play_btn.setStyleSheet("font-size: 18px;")
+        self._play_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 18px;
+                background-color: rgba(33, 150, 243, 0.85);
+                color: white;
+                border: none;
+                border-radius: 25px;
+            }
+            QPushButton:hover {
+                background-color: rgba(25, 118, 210, 0.95);
+            }
+            QPushButton:pressed {
+                background-color: rgba(21, 101, 192, 0.95);
+            }
+        """)
         self._play_btn.clicked.connect(self._on_play_clicked)
         layout.addWidget(self._play_btn)
 
@@ -138,13 +187,13 @@ class ControlPanel(QWidget):
     def _update_loop_button(self) -> None:
         """Update loop button appearance based on mode."""
         if self._loop_mode == "OFF":
-            self._loop_btn.setStyleSheet("QPushButton { color: #999; }")
+            self._loop_btn.setStyleSheet("QPushButton { color: #999; background-color: rgba(255, 255, 255, 0.7); }")
             self._loop_btn.setToolTip("Loop: OFF")
         elif self._loop_mode == "ONE":
-            self._loop_btn.setStyleSheet("QPushButton { color: #2196F3; }")
+            self._loop_btn.setStyleSheet("QPushButton { color: #2196F3; background-color: rgba(227, 242, 253, 0.85); }")
             self._loop_btn.setToolTip("Loop: ONE")
         else:  # ALL
-            self._loop_btn.setStyleSheet("QPushButton { color: #4CAF50; }")
+            self._loop_btn.setStyleSheet("QPushButton { color: #4CAF50; background-color: rgba(232, 245, 233, 0.85); }")
             self._loop_btn.setToolTip("Loop: ALL")
 
     def set_playing_state(self, is_playing: bool, is_paused: bool = False) -> None:
