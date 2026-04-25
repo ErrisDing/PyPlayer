@@ -36,6 +36,7 @@ class DisplayEntry:
     sub_index: int = -1
     full_path: str = ""
     is_playing: bool = False  # True if this is the currently playing entry
+    relative_position: str = ""  # Relative position to library root (e.g., "root", "Rock/Albums")
 
 
 class QueueService(QObject):
@@ -83,6 +84,45 @@ class QueueService(QObject):
     def set_current_library(self, library_path: str) -> None:
         """Set the current library path for display optimization."""
         self._current_library_path = library_path
+
+    def _calculate_relative_position(self, file_path: str) -> str:
+        """
+        Calculate the relative position of a file to the library root.
+
+        Args:
+            file_path: Full path to the media file
+
+        Returns:
+            "root" if file is in library root directory,
+            relative path (e.g., "Rock/Albums") if in subdirectory,
+            empty string if not under library or on error
+        """
+        import os
+
+        if not self._current_library_path or not file_path:
+            return ""
+
+        try:
+            file_path = os.path.normpath(file_path)
+            library_path = os.path.normpath(self._current_library_path)
+
+            # Get parent directory of the file
+            parent_dir = os.path.dirname(file_path)
+
+            # Check if file is directly in library root
+            if parent_dir == library_path:
+                return "root"
+
+            # Calculate relative path from library to parent directory
+            rel_path = os.path.relpath(parent_dir, library_path)
+            if rel_path == ".":
+                return "root"
+
+            return rel_path
+        except (ValueError, OSError):
+            # ValueError: different drives on Windows
+            # OSError: other path-related errors
+            return ""
 
     def build_from_tracks(self, tracks: List[Track]) -> None:
         """
@@ -132,6 +172,7 @@ class QueueService(QObject):
 
         Skips library root nodes when a current library is set,
         showing only the contents within the library.
+        Calculates relative position for each file entry.
         """
         self._display_entries.clear()
         display_idx = 0
@@ -162,25 +203,29 @@ class QueueService(QObject):
                 for sub_idx, track in enumerate(folder_node.tracks):
                     # Calculate indentation based on whether we skipped library root
                     indent = "    " if not is_library_root else ""
+                    relative_pos = self._calculate_relative_position(track.path)
                     file_entry = DisplayEntry(
                         display_text=f"{indent}{track.title}",
                         node_idx=node_idx,
                         is_folder=False,
                         path=folder_node.path,
                         sub_index=sub_idx,
-                        full_path=track.path
+                        full_path=track.path,
+                        relative_position=relative_pos
                     )
                     self._display_entries.append(file_entry)
                     display_idx += 1
             else:
                 # File node
                 file_node: FileNode = node
+                relative_pos = self._calculate_relative_position(file_node.path)
                 entry = DisplayEntry(
                     display_text=file_node.display_text,
                     node_idx=node_idx,
                     is_folder=False,
                     path=file_node.path,
-                    full_path=file_node.path
+                    full_path=file_node.path,
+                    relative_position=relative_pos
                 )
                 self._display_entries.append(entry)
                 display_idx += 1

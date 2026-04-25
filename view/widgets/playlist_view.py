@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from view.models.playlist_model import PlaylistModel
+from view.delegates.playlist_delegate import PlaylistItemDelegate
 
 
 class PlaylistView(QWidget):
@@ -58,6 +59,9 @@ class PlaylistView(QWidget):
         self._list_view = QListView()
         self._model = PlaylistModel(self)
         self._list_view.setModel(self._model)
+
+        # Set custom delegate for rendering relative position
+        self._list_view.setItemDelegate(PlaylistItemDelegate(self._list_view))
 
         # Configure list view
         self._list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)

@@ -1438,3 +1438,75 @@ python main.py
 ---
 
 *播放列表显示优化完成时间: 2026-04-20*
+
+---
+
+## 播放列表相对位置显示 (2026-04-25)
+
+### 变更内容
+
+#### 1. 新增相对位置计算功能
+
+**功能描述**：播放列表中显示每个文件相对于媒体库根目录的位置，用于标识媒体分组。
+
+**修改文件**：
+- `service/queue_service.py` - 添加相对位置计算逻辑
+- `view/models/playlist_model.py` - 添加 `RelativePositionRole` 角色
+- `view/delegates/playlist_delegate.py` - 新建自定义绘制委托
+- `view/widgets/playlist_view.py` - 应用自定义委托
+- `presenter/main_presenter.py` - 传递 `relative_position` 字段
+
+**实现细节**：
+
+| 文件 | 修改内容 |
+|------|----------|
+| `queue_service.py:30-39` | `DisplayEntry` 添加 `relative_position` 字段 |
+| `queue_service.py:88-125` | 新增 `_calculate_relative_position()` 方法 |
+| `queue_service.py:170-232` | `_rebuild_display_entries()` 计算并填充相对位置 |
+| `playlist_model.py:22-32` | `DisplayEntry` 添加字段同步 |
+| `playlist_model.py:45-50` | 新增 `RelativePositionRole` |
+| `playlist_model.py:111-115` | `data()` 方法返回相对位置 |
+| `playlist_delegate.py` | 新建，实现自定义绘制 |
+| `playlist_view.py:17-18` | 导入并应用委托 |
+| `main_presenter.py:395` | 转换时传递 `relative_position` |
+
+#### 2. 相对位置计算逻辑
+
+```python
+def _calculate_relative_position(self, file_path: str) -> str:
+    """计算文件相对于媒体库根的位置"""
+    # 根目录下 → "root"
+    # 子目录下 → 相对路径如 "Rock/Albums"
+    # 不在媒体库内 → 空字符串
+```
+
+#### 3. 自定义绘制委托
+
+**文件**：`view/delegates/playlist_delegate.py`
+
+**绘制逻辑**：
+1. 先绘制相对位置（半透明灰色，右侧）
+2. 后绘制文件名（正常颜色，左侧）
+3. 空间不足时，文件名直接遮盖相对位置（不截断相对位置）
+
+**样式参数**：
+- 相对位置颜色：`QColor(136, 136, 136, 160)`（半透明灰色）
+- 括号格式：中括号 `[]`，如 `[root]`、`[Rock/Albums]`
+
+### 验证测试
+
+```bash
+# 启动应用
+python main.py
+
+# 验证项目：
+# 1. 选择媒体库，播放列表显示相对位置
+# 2. 根目录文件显示 [root]
+# 3. 子目录文件显示相对路径如 [Rock/Albums]
+# 4. 相对位置为半透明灰色字体
+# 5. 文件名过长时，文件名遮盖相对位置
+```
+
+---
+
+*播放列表相对位置显示完成时间: 2026-04-25*

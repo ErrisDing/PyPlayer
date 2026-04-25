@@ -392,7 +392,8 @@ class MainPresenter(QObject):
                 path=entry.path,
                 sub_index=entry.sub_index,
                 full_path=entry.full_path,
-                is_playing=entry.is_playing
+                is_playing=entry.is_playing,
+                relative_position=entry.relative_position
             )
             view_entries.append(view_entry)
 

@@ -29,6 +29,7 @@ class DisplayEntry:
     sub_index: int = -1
     full_path: str = ""
     is_playing: bool = False
+    relative_position: str = ""
 
 
 class PlaylistModel(QAbstractListModel):
@@ -47,6 +48,7 @@ class PlaylistModel(QAbstractListModel):
     NodeIndexRole = Qt.ItemDataRole.UserRole + 3
     SubIndexRole = Qt.ItemDataRole.UserRole + 4
     FullPathRole = Qt.ItemDataRole.UserRole + 5
+    RelativePositionRole = Qt.ItemDataRole.UserRole + 6
 
     # Colors
     PLAYING_BG_COLOR = QColor(200, 230, 255)  # Light blue for playing track
@@ -108,6 +110,9 @@ class PlaylistModel(QAbstractListModel):
 
         elif role == self.FullPathRole:
             return entry.full_path
+
+        elif role == self.RelativePositionRole:
+            return entry.relative_position
 
         return QVariant()
 
