@@ -28,8 +28,6 @@ def main_qt():
 
     # Create application
     app = QApplication(sys.argv)
-    app.setApplicationName("PyPlayer")
-    app.setApplicationDisplayName("PyPlayer")
     app.setStyle("Fusion")
 
     # Import and create MVP components

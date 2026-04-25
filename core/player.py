@@ -423,6 +423,9 @@ class AudioPlayer:
         if self._state_machine.state == PlayerState.PAUSED:
             return
 
+        # Set pause event FIRST to prevent race condition with playback worker
+        self._pause_event.set()
+
         with self._playback_lock:
             # Record current position before pausing
             if self._current_stream and self._current_stream.active:
@@ -432,7 +435,6 @@ class AudioPlayer:
             else:
                 self._pause_position_samples = self._position_samples
 
-            self._pause_event.set()
             self._state_machine.transition_to(PlayerState.PAUSED)
 
     def resume(self) -> None:
@@ -694,9 +696,7 @@ class AudioPlayer:
 
             # Monitor playback state
             while not self._stop_event.is_set():
-                if self._current_stream is None or not self._current_stream.active:
-                    break
-
+                # Check pause event FIRST before checking stream activity
                 if self._pause_event.is_set():
                     # Pause: record position and stop stream
                     elapsed_samples = int((time.time() - self._play_start_time) * sample_rate)
@@ -709,7 +709,13 @@ class AudioPlayer:
                         time.sleep(0.05)
 
                     if not self._stop_event.is_set() and not self._pause_event.is_set():
+                        # Resume: exit this thread, resume() will start a new one
                         return
+                    # Stop event was set, exit normally
+                    break
+
+                # Now check if stream stopped (only after checking pause)
+                if self._current_stream is None or not self._current_stream.active:
                     break
 
                 time.sleep(0.05)
@@ -888,9 +894,7 @@ class AudioPlayer:
             # Monitor thread: preload chunks and update position
             last_preloaded_chunk = current_chunk
             while not self._stop_event.is_set():
-                if self._current_stream is None or not self._current_stream.active:
-                    break
-
+                # Check pause event FIRST before checking stream activity
                 if self._pause_event.is_set():
                     if self._current_stream and self._current_stream.active:
                         self._current_stream.stop()
@@ -899,7 +903,13 @@ class AudioPlayer:
                         time.sleep(0.05)
 
                     if not self._stop_event.is_set():
+                        # Resume: exit this thread, resume() will start a new one
                         return
+                    # Stop event was set, exit normally
+                    break
+
+                # Now check if stream stopped (only after checking pause)
+                if self._current_stream is None or not self._current_stream.active:
                     break
 
                 # Preload next chunk if current chunk changed

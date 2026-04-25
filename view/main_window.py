@@ -7,7 +7,7 @@ Assembles all UI components and provides the public View interface
 from typing import Optional, List, Any
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QMenuBar, QMenu, QToolBar, QStatusBar, QFileDialog, QMessageBox,
+    QMenuBar, QMenu, QToolBar, QFileDialog, QMessageBox,
     QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect
@@ -177,10 +177,9 @@ class MainWindow(QMainWindow):
         self._bottom_panel = BottomPanel()
         main_layout.addWidget(self._bottom_panel)
 
-        # Status bar
-        self._status_bar = QStatusBar()
-        self.setStatusBar(self._status_bar)
-        self._status_bar.showMessage(i18n.get('status.ready'))
+        # Store base window title for status updates
+        self._base_title = i18n.get('window.title')
+        self.setWindowTitle(self._base_title)
 
     def _setup_connections(self) -> None:
         """Connect internal widget signals to main window signals."""
@@ -410,8 +409,11 @@ class MainWindow(QMainWindow):
         self._now_playing.clear()
 
     def set_status_message(self, message: str) -> None:
-        """Set the status bar message."""
-        self._status_bar.showMessage(message)
+        """Update window title with status message."""
+        if message:
+            self.setWindowTitle(f"{self._base_title} - {message}")
+        else:
+            self.setWindowTitle(self._base_title)
 
     def reset_progress(self) -> None:
         """Reset the progress slider."""
