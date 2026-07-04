@@ -20,6 +20,7 @@ def main_qt():
     """Launch the PyQt-based GUI."""
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QPalette, QColor
 
     # Enable high DPI scaling
     QApplication.setHighDpiScaleFactorRoundingPolicy(
@@ -29,6 +30,55 @@ def main_qt():
     # Create application
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # Set base font for consistent cross-platform readability
+    font = app.font()
+    font.setPointSize(11)
+    app.setFont(font)
+
+    # macOS-specific setup
+    if sys.platform == "darwin":
+        # Show proper app name in macOS menu bar (avoid "python")
+        app.setApplicationName("PyPlayer")
+
+        # Detect and apply dark mode palette
+        if app.styleHints().colorScheme() == Qt.ColorScheme.Dark:
+            dark_palette = QPalette()
+            dark_palette.setColor(QPalette.ColorRole.Window, QColor(45, 45, 45))
+            dark_palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))
+            dark_palette.setColor(QPalette.ColorRole.Base, QColor(35, 35, 35))
+            dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(45, 45, 45))
+            dark_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(60, 60, 60))
+            dark_palette.setColor(QPalette.ColorRole.ToolTipText, QColor(220, 220, 220))
+            dark_palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))
+            dark_palette.setColor(QPalette.ColorRole.Button, QColor(55, 55, 55))
+            dark_palette.setColor(QPalette.ColorRole.ButtonText, QColor(220, 220, 220))
+            dark_palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
+            dark_palette.setColor(QPalette.ColorRole.Link, QColor(100, 180, 255))
+            dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(80, 140, 220))
+            dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+            app.setPalette(dark_palette)
+
+    # Load global stylesheet
+    from core.resource_utils import get_resource_path
+    qss_path = get_resource_path("view/resources/styles.qss")
+    if qss_path.exists():
+        try:
+            with open(qss_path, 'r', encoding='utf-8') as f:
+                qss_content = f.read()
+
+            # On macOS, ensure native window chrome areas don't get covered
+            if sys.platform == "darwin":
+                qss_content += """
+                /* macOS-specific: let native title bar show through */
+                QMenuBar {
+                    background-color: transparent;
+                }
+                """
+
+            app.setStyleSheet(qss_content)
+        except (OSError, IOError) as e:
+            print(f"Warning: Failed to load styles.qss: {e}")
 
     # Import and create MVP components
     from view.main_window import MainWindow

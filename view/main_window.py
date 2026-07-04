@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QMenuBar, QMenu, QToolBar, QFileDialog, QMessageBox,
     QSizePolicy
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint, QRect
 from PyQt6.QtGui import QAction, QKeySequence, QCloseEvent, QPixmap, QPainter, QColor
 
 import sys
@@ -76,7 +76,19 @@ class MainWindow(QMainWindow):
     def _setup_window(self) -> None:
         """Set up window properties."""
         self.setWindowTitle(i18n.get('window.title'))
-        self.setGeometry(100, 100, 1000, 700)
+
+        # Size window relative to available screen space
+        app = QApplication.instance()
+        if app and app.primaryScreen():
+            screen_geom = app.primaryScreen().availableGeometry()
+            target_w = min(max(int(screen_geom.width() * 0.8), 800), 1400)
+            target_h = min(max(int(screen_geom.height() * 0.75), 500), 900)
+            target_x = screen_geom.x() + (screen_geom.width() - target_w) // 2
+            target_y = screen_geom.y() + (screen_geom.height() - target_h) // 2
+            self.setGeometry(target_x, target_y, target_w, target_h)
+        else:
+            self.setGeometry(100, 100, 1000, 700)
+
         self.setMinimumSize(800, 500)
 
     def _setup_menu(self) -> None:
@@ -319,23 +331,29 @@ class MainWindow(QMainWindow):
         if self._background_pixmap and not self._background_pixmap.isNull():
             painter = QPainter(self)
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-            # Calculate scaled size - fit to window while preserving aspect ratio
-            window_rect = self.rect()
+            # Restrict painting to the content area (central widget), avoiding the
+            # native title bar on macOS and window frame area on all platforms.
+            cw = self.centralWidget()
+            if cw:
+                content_rect = QRect(cw.mapTo(self, cw.rect().topLeft()), cw.size())
+            else:
+                content_rect = self.rect()
             pixmap_size = self._background_pixmap.size()
 
             # Calculate scale factor to fit the shorter edge
-            scale_x = window_rect.width() / pixmap_size.width()
-            scale_y = window_rect.height() / pixmap_size.height()
+            scale_x = content_rect.width() / pixmap_size.width()
+            scale_y = content_rect.height() / pixmap_size.height()
             scale = max(scale_x, scale_y)  # Use larger scale to cover window
 
             # Calculate scaled dimensions
             scaled_width = int(pixmap_size.width() * scale)
             scaled_height = int(pixmap_size.height() * scale)
 
-            # Center the image
-            x = (window_rect.width() - scaled_width) // 2
-            y = (window_rect.height() - scaled_height) // 2
+            # Center the image within the content area
+            x = content_rect.x() + (content_rect.width() - scaled_width) // 2
+            y = content_rect.y() + (content_rect.height() - scaled_height) // 2
 
             # Draw scaled pixmap centered
             target_rect = QRect(x, y, scaled_width, scaled_height)
@@ -344,7 +362,7 @@ class MainWindow(QMainWindow):
             # Draw semi-transparent overlay using configured alpha
             # Convert 0.0-1.0 to 0-255
             alpha_int = int(self._overlay_alpha * 255)
-            painter.fillRect(window_rect, QColor(255, 255, 255, alpha_int))
+            painter.fillRect(content_rect, QColor(255, 255, 255, alpha_int))
 
     # === Public API for Presenter ===
 

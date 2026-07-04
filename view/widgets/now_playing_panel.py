@@ -105,21 +105,21 @@ class NowPlayingPanel(QWidget):
 
         # Title
         self._title_label = QLabel("No Track Playing")
-        self._title_label.setStyleSheet("font-size: 14px; font-weight: bold; background-color: transparent;")
+        self._title_label.setStyleSheet("font-weight: bold; background-color: transparent;")
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._title_label.setWordWrap(True)
         info_layout.addWidget(self._title_label)
 
         # Artist
         self._artist_label = QLabel("")
-        self._artist_label.setStyleSheet("font-size: 12px; color: #666; background-color: transparent;")
+        self._artist_label.setStyleSheet("color: #666; background-color: transparent;")
         self._artist_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._artist_label.setWordWrap(True)
         info_layout.addWidget(self._artist_label)
 
         # Album
         self._album_label = QLabel("")
-        self._album_label.setStyleSheet("font-size: 11px; color: #888; background-color: transparent;")
+        self._album_label.setStyleSheet("color: #888; background-color: transparent;")
         self._album_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._album_label.setWordWrap(True)
         info_layout.addWidget(self._album_label)

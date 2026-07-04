@@ -151,10 +151,18 @@ def draw_next_icon(painter: QPainter, rect) -> None:
     painter.drawRect(int(bar_x), int(cy - bar_h/2), int(bar_w), int(bar_h))
 
 
-def create_vector_icon(draw_func, color: QColor, size: int = 32) -> QIcon:
-    """Create a vector icon using a draw function for smooth scaling."""
-    # Use 2x size for high DPI, then scale down
-    pixmap = QPixmap(size * 2, size * 2)
+def create_vector_icon(draw_func, color: QColor, size: int = 32, dpr: float = 2.0) -> QIcon:
+    """Create a vector icon using a draw function for smooth scaling.
+
+    Args:
+        draw_func: Function that draws the icon shape given (painter, rect).
+        color: Fill color for the icon.
+        size: Logical pixel size of the icon.
+        dpr: Device pixel ratio for the target display (default 2.0 for backward compat).
+    """
+    render_size = int(size * dpr)
+    pixmap = QPixmap(render_size, render_size)
+    pixmap.setDevicePixelRatio(dpr)
     pixmap.fill(Qt.GlobalColor.transparent)
 
     painter = QPainter(pixmap)
@@ -166,7 +174,7 @@ def create_vector_icon(draw_func, color: QColor, size: int = 32) -> QIcon:
     painter.setBrush(QBrush(color))
     painter.setPen(QPen(Qt.PenStyle.NoPen))
 
-    rect = QRectF(0, 0, size * 2, size * 2)
+    rect = QRectF(0, 0, render_size, render_size)
     draw_func(painter, rect)
 
     painter.end()
@@ -293,11 +301,12 @@ class BottomPanel(QWidget):
         # Icon colors
         icon_color = QColor(80, 80, 80)  # Gray for normal buttons
         play_icon_color = QColor(255, 255, 255)  # White for play button
+        dpr = self.devicePixelRatioF()
 
         # Previous button
         self._prev_btn = QPushButton()
         self._prev_btn.setFixedSize(40, 40)
-        self._prev_btn.setIcon(create_vector_icon(draw_prev_icon, icon_color, 20))
+        self._prev_btn.setIcon(create_vector_icon(draw_prev_icon, icon_color, 20, dpr))
         self._prev_btn.setIconSize(QSize(20, 20))
         self._prev_btn.setToolTip(i18n.get('button.prev') if hasattr(i18n, 'get') else "Previous")
         self._prev_btn.clicked.connect(self.prev_clicked.emit)
@@ -319,7 +328,7 @@ class BottomPanel(QWidget):
                 background-color: rgba(21, 101, 192, 0.95);
             }
         """)
-        self._play_btn.setIcon(create_vector_icon(draw_play_icon, play_icon_color, 24))
+        self._play_btn.setIcon(create_vector_icon(draw_play_icon, play_icon_color, 24, dpr))
         self._play_btn.setIconSize(QSize(24, 24))
         self._play_btn.clicked.connect(self.play_pause_clicked.emit)
         controls_layout.addWidget(self._play_btn)
@@ -327,7 +336,7 @@ class BottomPanel(QWidget):
         # Stop button
         self._stop_btn = QPushButton()
         self._stop_btn.setFixedSize(40, 40)
-        self._stop_btn.setIcon(create_vector_icon(draw_stop_icon, icon_color, 20))
+        self._stop_btn.setIcon(create_vector_icon(draw_stop_icon, icon_color, 20, dpr))
         self._stop_btn.setIconSize(QSize(20, 20))
         self._stop_btn.clicked.connect(self.stop_clicked.emit)
         controls_layout.addWidget(self._stop_btn)
@@ -335,7 +344,7 @@ class BottomPanel(QWidget):
         # Next button
         self._next_btn = QPushButton()
         self._next_btn.setFixedSize(40, 40)
-        self._next_btn.setIcon(create_vector_icon(draw_next_icon, icon_color, 20))
+        self._next_btn.setIcon(create_vector_icon(draw_next_icon, icon_color, 20, dpr))
         self._next_btn.setIconSize(QSize(20, 20))
         self._next_btn.clicked.connect(self.next_clicked.emit)
         controls_layout.addWidget(self._next_btn)
@@ -354,8 +363,8 @@ class BottomPanel(QWidget):
         # Spacer
         controls_layout.addStretch()
 
-        # Volume icon
-        self._volume_icon = QLabel("🔊")
+        # Volume icon (using text character ♪ not emoji, for consistent cross-platform rendering)
+        self._volume_icon = QLabel("♪♪")
         controls_layout.addWidget(self._volume_icon)
 
         # Volume slider
@@ -412,11 +421,11 @@ class BottomPanel(QWidget):
     def _update_volume_icon(self, volume: float) -> None:
         """Update volume icon based on level."""
         if volume == 0:
-            self._volume_icon.setText("🔇")
+            self._volume_icon.setText("♪")  # muted: single note
         elif volume < 0.5:
-            self._volume_icon.setText("🔉")
+            self._volume_icon.setText("♪♪")  # medium: two notes
         else:
-            self._volume_icon.setText("🔊")
+            self._volume_icon.setText("♪♪♪")  # high: three notes
 
     def _update_loop_button(self) -> None:
         """Update loop button appearance based on mode."""
@@ -436,29 +445,29 @@ class BottomPanel(QWidget):
             BottomPanel {{
                 background-color: rgba(245, 245, 245, {self._bg_alpha});
             }}
-            QPushButton {{
+            BottomPanel QPushButton {{
                 background-color: rgba(255, 255, 255, {self._button_alpha});
                 border: 1px solid rgba(200, 200, 200, 0.5);
                 border-radius: 5px;
             }}
-            QPushButton:hover {{
+            BottomPanel QPushButton:hover {{
                 background-color: rgba(230, 230, 230, 0.85);
             }}
-            QPushButton:pressed {{
+            BottomPanel QPushButton:pressed {{
                 background-color: rgba(200, 200, 200, 0.85);
             }}
-            QSlider::groove:horizontal {{
+            BottomPanel QSlider::groove:horizontal {{
                 background: rgba(200, 200, 200, 0.5);
                 height: 6px;
                 border-radius: 3px;
             }}
-            QSlider::handle:horizontal {{
+            BottomPanel QSlider::handle:horizontal {{
                 background: rgba(100, 100, 100, 0.85);
                 width: 14px;
                 margin: -4px 0;
                 border-radius: 7px;
             }}
-            QLabel {{
+            BottomPanel QLabel {{
                 background-color: transparent;
             }}
         """)
@@ -474,10 +483,11 @@ class BottomPanel(QWidget):
         """Update the play/pause button state."""
         self._is_playing = is_playing and not is_paused
         play_icon_color = QColor(255, 255, 255)  # White for play button
+        dpr = self.devicePixelRatioF()
         if self._is_playing:
-            self._play_btn.setIcon(create_vector_icon(draw_pause_icon, play_icon_color, 24))
+            self._play_btn.setIcon(create_vector_icon(draw_pause_icon, play_icon_color, 24, dpr))
         else:
-            self._play_btn.setIcon(create_vector_icon(draw_play_icon, play_icon_color, 24))
+            self._play_btn.setIcon(create_vector_icon(draw_play_icon, play_icon_color, 24, dpr))
 
     def set_volume(self, volume: float) -> None:
         """Set the volume level (0.0-1.0)."""

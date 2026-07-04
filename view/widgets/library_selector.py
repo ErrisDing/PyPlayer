@@ -85,7 +85,6 @@ class LibrarySelector(QWidget):
                     border: 1px solid #ccc;
                     border-radius: 4px;
                     padding: 4px 12px;
-                    font-size: 11px;
                 }
                 QPushButton:hover {
                     background-color: #d0d0d0;
