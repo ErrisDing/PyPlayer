@@ -13,13 +13,21 @@ Two structural rules make this the root-cause fix for the inconsistent
 widgets (A1):
 
 * **No bare widget rules.** Every ``QPushButton`` / ``QSlider`` / ``QListView``
-  / ``QLabel`` rule is scoped behind an ``#objectName`` or a
-  ``[prop="value"]`` dynamic-property selector, so a style can never leak
-  onto a widget that never asked for it (that leak is what made the progress
-  slider and the volume slider render differently side by side).
+  / ``QLabel`` rule carries a scope: an ``#objectName``, a
+  ``[prop="value"]`` dynamic-property selector, or an ancestor
+  (``QDialog QPushButton`` -- the dialog families, whose widgets get no
+  objectName anywhere in the plan). A style can then never leak onto a widget
+  that never asked for it (that leak is what made the progress slider and the
+  volume slider render differently side by side). Single-instance application
+  chrome (``QMainWindow``, ``QMenuBar``, ``QMenu``, ``QScrollBar``,
+  ``QToolTip``, ``QSplitter``, ``QGroupBox``) is the recorded exemption; the
+  test lists it by name, so a new bare class has to be argued for rather than
+  slipped in.
 * **No colour literals.** Every colour resolves to a token field, so LIGHT
   and DARK can be asserted identical in structure and the palette stays the
   one contrast-checked source of truth (see ``tests/test_theme.py``).
+  ``tests/test_theme_qss.py::PaletteOnlyColoursTest`` enforces this per theme,
+  so an edited rule that invents a hex fails the suite instead of shipping.
 
 The module is pure Python (no Qt import), so its output can be unit-tested
 without a display (see ``tests/test_theme_qss.py``).
@@ -296,10 +304,19 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     ]))
     # Controller ruling (deviates from the brief's mapping table): the selected
     # chip is an OUTLINED chip -- `accent` text and border on `surface` -- not a
-    # filled `accent_soft` one. No single `accent_*` foreground clears 4.5:1 on
-    # `accent_soft` in both themes (LIGHT `accent` 4.03, DARK `accent_pressed`
-    # 4.44 -- the accent family's lightness ordering inverts between themes),
-    # while `accent` on `surface` is 4.60 LIGHT / 6.91 DARK. Guarded in
+    # filled `accent_soft` one. Two reasons, both about meaning rather than
+    # contrast arithmetic alone:
+    #   1. `accent_hover` on `accent_soft` would clear 4.5:1 (5.03 LIGHT /
+    #      6.72 DARK), but it is a *state* token. Pinning it as the resting
+    #      text colour collides with the chip's `:hover` rule emitted just
+    #      above and makes the hover state of a selected chip indistinguishable.
+    #   2. `accent_soft` is numerically identical to `playing_bg` in both
+    #      themes (`#e3f2fd` LIGHT / `#1f3a52` DARK), so a filled `accent_soft`
+    #      chip renders exactly like the "now playing" row -- a library
+    #      switcher that mimics track state.
+    # The table's own pair (`accent` on `accent_soft`) is what forced the
+    # background to move: 4.03 LIGHT / 5.31 DARK, i.e. under the 4.5 text bar in
+    # LIGHT. `accent` on `surface` is 4.60 LIGHT / 6.91 DARK. Guarded in
     # tests/test_theme_qss.py::SelectedChipContrastTest.
     emit(_rule(f'{chip}[selected="true"]', [
         ('background-color', t.surface),
@@ -439,6 +456,46 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
         ('subcontrol-position', 'top left'),
         ('padding', f'0 {_px(SPACE_1)}'),
         ('color', t.text_secondary),
+    ]))
+    # Controller ruling on review finding 5: the buttons of
+    # ``view/dialogs/library_dialog.py`` (add / delete / up / down / close) and
+    # ``view/dialogs/appearance_dialog.py`` (select / clear / reset / close),
+    # plus the library ``QListWidget``, are plain widgets that the plan's Task 5
+    # objectName mandate never reaches. Without a rule of their own they would
+    # drop back to raw Fusion metrics the moment ``styles.qss`` is deleted, so
+    # the old global ``QPushButton`` / ``QListView`` rules migrate here as an
+    # ANCESTOR-SCOPED family -- the ancestor is the scope, which satisfies the
+    # no-bare-widget constraint and needs no widget change.
+    # Token mapping of the old literals: ``#ffffff`` -> ``button_bg``,
+    # ``#f5f5f5`` -> ``button_hover``, ``#e0e0e0`` -> ``button_pressed``,
+    # ``#bdbdbd`` -> ``border_strong`` (hover border), ``#ffffff`` (list) ->
+    # ``surface``; the base ``border`` uses the generic ``border`` token
+    # (old ``#e0e0e0`` has no border-family twin and must stay legible in DARK),
+    # disabled states reuse the same ``button_disabled_*`` pair as the rest of
+    # the sheet. Geometry (4px radius, 6px 12px padding, 30px min-width) is the
+    # old rule's, kept verbatim so the dialogs do not resize.
+    emit(_rule('QDialog QPushButton', [
+        ('background-color', t.button_bg),
+        ('border', f'1px solid {t.border}'),
+        ('border-radius', _px(RADIUS_SM)),
+        ('padding', '6px 12px'),
+        ('min-width', '30px'),
+    ]))
+    emit(_rule('QDialog QPushButton:hover', [
+        ('background-color', t.button_hover),
+        ('border-color', t.border_strong),
+    ]))
+    emit(_rule('QDialog QPushButton:pressed', [
+        ('background-color', t.button_pressed),
+    ]))
+    emit(_rule('QDialog QPushButton:disabled', [
+        ('background-color', t.button_disabled_bg),
+        ('color', t.button_disabled_text),
+        ('border-color', t.button_disabled_bg),
+    ]))
+    emit(_rule('QDialog QListWidget', [
+        ('background-color', t.surface),
+        ('border', 'none'),
     ]))
 
     return '\n'.join(rules)
