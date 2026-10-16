@@ -55,7 +55,7 @@
 
 ```
 window_bg #fafafa   surface #ffffff   surface_alt #f5f5f5   surface_header #f0f2f5   scrim #ffffff
-text_primary #1f1f1f  text_secondary #5a5a5a  text_muted #6e6e6e  text_on_accent #ffffff
+text_primary #1f1f1f  text_secondary #5a5a5a  text_muted #6a6a6a  text_on_accent #ffffff
 accent #1976d2  accent_hover #1565c0  accent_pressed #0d47a1  accent_soft #e3f2fd
 selection_bg #eceff1  playing_bg #e3f2fd  playing_text #0d47a1  playing_bar #1976d2  hover_bg #f0f0f0
 border #d5d5d5  border_strong #bdbdbd  divider #eeeeee
@@ -69,7 +69,7 @@ tooltip_bg #323232  tooltip_text #ffffff  scrollbar_thumb #c0c0c0  scrollbar_thu
 
 ```
 window_bg #1e1e1e   surface #252526   surface_alt #2d2d30   surface_header #2f3338   scrim #121212
-text_primary #e4e4e4  text_secondary #b0b0b0  text_muted #9a9a9a  text_on_accent #0b1c2c
+text_primary #e4e4e4  text_secondary #b0b0b0  text_muted #a3a3a3  text_on_accent #0b1c2c
 accent #64b5f6  accent_hover #90caf9  accent_pressed #42a5f5  accent_soft #1f3a52
 selection_bg #2f343a  playing_bg #1f3a52  playing_text #90caf9  playing_bar #64b5f6  hover_bg #2a2d2e
 border #3f3f46  border_strong #555555  divider #333333
@@ -79,9 +79,10 @@ icon #d0d0d0  icon_muted #9a9a9a  icon_on_accent #0b1c2c  focus_ring #64b5f6
 tooltip_bg #3b3b3b  tooltip_text #e4e4e4  scrollbar_thumb #4a4a4a  scrollbar_thumb_hover #6a6a6a
 ```
 
-两处刻意的行为变更（非纯配色平移）：
+三处刻意的行为变更（非纯配色平移）：
 
 - `accent` 从 `#2196F3` 改 `#1976d2`：白字压在 `#2196F3` 上只有 2.6:1，不达标；`#1976d2` 为 4.6:1。
+- `text_muted` 从 `#6e6e6e`（LIGHT）/ `#9a9a9a`（DARK）抬到 `#6a6a6a` / `#a3a3a3`：原值对 `selection_bg`、`playing_bg` 只有 4.42 / 4.46（LIGHT）与 4.46 / 4.18（DARK），低于 §6 断言的 4.5:1；新值在四个文字背景上的最低对比度为 4.68（LIGHT）/ 4.66（DARK）。阈值不放宽，改的是色值。
 - 选中与播放中改用不同族：选中 = 中性 `selection_bg`，播放中 = `playing_bg` + `playing_text` + 左侧 3px `playing_bar`（由 delegate 绘制）。
 
 共享的几何与排印 token（与主题无关，模块级常量）：
