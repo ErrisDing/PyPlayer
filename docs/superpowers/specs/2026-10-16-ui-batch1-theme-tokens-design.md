@@ -79,10 +79,11 @@ icon #d0d0d0  icon_muted #9a9a9a  icon_on_accent #0b1c2c  focus_ring #64b5f6
 tooltip_bg #3b3b3b  tooltip_text #e4e4e4  scrollbar_thumb #4a4a4a  scrollbar_thumb_hover #6a6a6a
 ```
 
-三处刻意的行为变更（非纯配色平移）：
+四处刻意的取值决策（非纯配色平移；最后一处是「不改」）：
 
 - `accent` 从 `#2196F3` 改 `#1976d2`：白字压在 `#2196F3` 上只有 2.6:1，不达标；`#1976d2` 为 4.6:1。
 - `text_muted` 从 `#6e6e6e`（LIGHT）/ `#9a9a9a`（DARK）抬到 `#6a6a6a` / `#a3a3a3`：原值对 `selection_bg`、`playing_bg` 只有 4.42 / 4.46（LIGHT）与 4.46 / 4.18（DARK），低于 §6 断言的 4.5:1；新值在四个文字背景上的最低对比度为 4.68（LIGHT）/ 4.66（DARK）。阈值不放宽，改的是色值。
+- **`icon_muted` 不跟着 `text_muted` 一起动**，保持 `#6e6e6e` / `#9a9a9a`：它是非文字 UI 组件（loop 关闭态图形），适用 WCAG 1.4.11 的 3:1 而不是 1.4.3 的 4.5:1（见 §4.6 D1），实测在其四个渲染背景（`button_bg`、`button_hover`、`button_pressed`、`surface`）上的最低对比度为 3.86（LIGHT，`button_pressed`）/ 3.14（DARK，`button_pressed`），已达标，并由 `ThemeContrastTest` 以 3.0 阈值守。后来者请勿把它镜像成 `text_muted` 的新值。
 - 选中与播放中改用不同族：选中 = 中性 `selection_bg`，播放中 = `playing_bg` + `playing_text` + 左侧 3px `playing_bar`（由 delegate 绘制）。
 
 共享的几何与排印 token（与主题无关，模块级常量）：
@@ -155,7 +156,10 @@ def icon(name, color_hex, size, dpr) -> QIcon   # 缓存键 (name, color, size, 
 
 - A6 硬编码文案改用已存在的 key：`metadata.no_track`（"No Track Playing"）、`metadata.unknown_artist`、`metadata.unknown_album`、`button.play_pause`、`button.prev_track`、`button.next_track`；新增 `metadata.unknown_title`、`playlist.header`（表头 "Playlist"）、`loop.mode_off/one/all`、`library.tooltip`。中英文两份 properties 同步补。
 - A7：`NowPlayingPanel` 初始态与 `clear()` 态统一为默认封面，删除 `"No Art"` 字面量与那段重复的 placeholder 样式。
-- D1：`text_muted`、`icon_muted`、相对路径文字色按 §4.1 抬到 ≥4.5:1，由测试守。
+- D1：两个 WCAG 类别，两条阈值，不可合并：
+  - 文字类（`text_muted`、相对路径文字色）按 1.4.3 正文对比度 ≥4.5:1，对其实际背景（`surface`、`surface_alt`、`selection_bg`、`playing_bg`）断言。
+  - 非文字 UI 组件类（`icon_muted`，即 loop 关闭态图形）按 1.4.11 非文字对比度 ≥3:1，对其实际渲染背景（`button_bg`、`button_hover`、`button_pressed`、`surface`）断言。
+  两者都由 `tests/test_theme.py::ThemeContrastTest` 守。因此每套主题里「弱文字」与「弱图标」是两种灰：`text_muted` 是对比度更高的那一侧（要过 4.5:1），`icon_muted` 停在 3:1 类所要求的水平，这个差值是类别不同导致的结果，不是笔误（见 §4.1 变更说明）。
 - D2：为 `#playlistView`、`[role="transport"]`、`#playButton`、`#loopButton`、`[chip="true"]` 加 `:focus` 环（`focus_ring`，2px）。
 - D3：播放/停止/下一曲补 tooltip（用上述 key），删除 `bottom_panel.py:311` 的 `hasattr(i18n,'get')` 无意义防御。
 

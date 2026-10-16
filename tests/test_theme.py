@@ -20,6 +20,32 @@ HEX_COLOR_RE = re.compile(r'^#[0-9a-f]{6}$')
 # Number of semantic colour tokens defined by spec §4.1.
 TOKEN_COUNT = 34
 
+# The 34 token names, transcribed from spec §4.1's field-group table in
+# declaration order (表面 → 文字 → 强调 → 列表状态 → 线 → 控件 → 浮层).
+#
+# This literal is the module's contract with Task 4's QSS generator and the
+# delegate painters. It must NOT be derived from ``core.theme`` (e.g. via
+# ``dataclasses.fields``): deriving it makes the comparison true by
+# construction, so renaming or reordering a token could never fail.
+EXPECTED_TOKEN_FIELDS = (
+    # 表面 / surfaces
+    'window_bg', 'surface', 'surface_alt', 'surface_header', 'scrim',
+    # 文字 / text
+    'text_primary', 'text_secondary', 'text_muted', 'text_on_accent',
+    # 强调 / accent
+    'accent', 'accent_hover', 'accent_pressed', 'accent_soft',
+    # 列表状态 / list states
+    'selection_bg', 'playing_bg', 'playing_text', 'playing_bar', 'hover_bg',
+    # 线 / lines
+    'border', 'border_strong', 'divider',
+    # 控件 / controls
+    'button_bg', 'button_hover', 'button_pressed', 'button_disabled_bg',
+    'button_disabled_text', 'icon', 'icon_muted', 'icon_on_accent',
+    'focus_ring',
+    # 浮层 / overlays
+    'tooltip_bg', 'tooltip_text', 'scrollbar_thumb', 'scrollbar_thumb_hover',
+)
+
 
 def _fields(tokens) -> set[str]:
     """Return the token names declared on ``tokens``' dataclass."""
@@ -29,10 +55,23 @@ def _fields(tokens) -> set[str]:
 class ThemeTokensTest(unittest.TestCase):
     """LIGHT / DARK must define the same complete set of colour tokens."""
 
+    def test_token_field_names_match_spec_4_1(self):
+        """The 34 token names, in declaration order, are pinned to spec 4.1.
+
+        ``EXPECTED_TOKEN_FIELDS`` is a literal transcribed from the spec's
+        field-group table, never derived from ``ThemeTokens``, so this fails
+        on a rename, a reorder, an addition or a removal. Those names are the
+        contract with ``core.theme_qss`` (Task 4) and the delegate painters.
+        """
+        from core.theme import TOKEN_FIELDS
+
+        self.assertEqual(len(EXPECTED_TOKEN_FIELDS), TOKEN_COUNT)
+        self.assertEqual(TOKEN_FIELDS, EXPECTED_TOKEN_FIELDS)
+
     def test_light_and_dark_define_identical_fields(self):
         from core.theme import DARK, LIGHT, TOKEN_FIELDS
 
-        expected = set(TOKEN_FIELDS)
+        expected = set(EXPECTED_TOKEN_FIELDS)
         self.assertEqual(_fields(LIGHT), _fields(DARK))
         self.assertEqual(_fields(LIGHT), expected)
         self.assertEqual(len(TOKEN_FIELDS), TOKEN_COUNT)
@@ -103,6 +142,17 @@ class ThemeContrastTest(unittest.TestCase):
         ('icon', 'surface', 3.0),
         ('icon_on_accent', 'accent', 3.0),
         ('tooltip_text', 'tooltip_bg', 4.5),
+        # icon_muted is a non-text UI component (the loop-off glyph), so its
+        # bar is 3:1 (WCAG 1.4.11), NOT the 4.5:1 that text_muted must clear
+        # (1.4.3) — see spec §4.6 D1. The two greys differ per theme on
+        # purpose; do not "fix" icon_muted by mirroring text_muted.
+        # Backgrounds are the surfaces the glyph actually renders on: the
+        # #loopButton states (button_bg / button_hover / button_pressed) and
+        # the panel surface it sits in.
+        ('icon_muted', 'button_bg', 3.0),
+        ('icon_muted', 'button_hover', 3.0),
+        ('icon_muted', 'button_pressed', 3.0),
+        ('icon_muted', 'surface', 3.0),
     )
 
     @staticmethod
