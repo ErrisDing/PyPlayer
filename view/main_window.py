@@ -49,7 +49,6 @@ class MainWindow(QMainWindow):
     library_selected = pyqtSignal(str)          # library path selected
     manage_libraries_requested = pyqtSignal()   # open library management dialog
     manage_appearance_requested = pyqtSignal()  # open appearance settings dialog
-    background_image_changed = pyqtSignal(str)  # background image path
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)

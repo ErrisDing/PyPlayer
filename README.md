@@ -109,8 +109,6 @@ PyPlayer/
 │       ├── library_selector.py    # 媒体库切换器
 │       ├── playlist_view.py       # 播放列表视图
 │       ├── bottom_panel.py        # 底部面板（进度条+控制按钮）
-│       ├── progress_slider.py     # 进度条组件
-│       └── control_panel.py       # 控制面板组件
 ├── presenter/
 │   └── main_presenter.py   # MVP 协调器
 ├── service/
