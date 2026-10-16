@@ -27,11 +27,6 @@ locales_dir = PROJECT_ROOT / 'locales'
 if locales_dir.exists():
     datas.append((str(locales_dir), 'locales'))
 
-# Add QSS stylesheet
-qss_file = PROJECT_ROOT / 'view' / 'resources' / 'styles.qss'
-if qss_file.exists():
-    datas.append((str(qss_file.parent), 'view/resources'))
-
 # PyQt6 specific data files (plugins, translations, etc.)
 try:
     pyqt6_datas = collect_data_files('PyQt6', include_py_files=False)
@@ -84,9 +79,7 @@ hiddenimports = [
     'view.main_window',
     'view.widgets',
     'view.widgets.now_playing_panel',
-    'view.widgets.control_panel',
     'view.widgets.playlist_view',
-    'view.widgets.progress_slider',
     'view.widgets.library_selector',
     'view.models',
     'view.models.playlist_model',

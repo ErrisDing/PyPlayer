@@ -5,7 +5,7 @@ PyPlayer QSS Generator
 The single stylesheet source of the theme layer (spec
 ``docs/superpowers/specs/2026-10-16-ui-batch1-theme-tokens-design.md`` §4.2).
 It replaces ``view/resources/styles.qss`` and, with it, the split between a
-global stylesheet and per-widget ``setStyleSheet`` calls: one call to
+global style sheet and per-widget inline sheets: one call to
 :func:`build_qss` produces the complete application stylesheet from the
 :class:`core.theme.ThemeTokens` plus the user's :class:`core.theme.AlphaSettings`.
 
@@ -79,6 +79,12 @@ REQUIRED_OBJECT_NAMES: tuple[str, ...] = (
     'timeLabel',
     'appearanceDialog',
     'bgPathLabel',
+    # The three transparency sliders of the appearance dialog. Task 5 named
+    # them and deliberately left them unstyled; Task 6 gave them the same rule
+    # set as the volume slider, so the styling contract closes here.
+    'overlaySlider',
+    'playlistSlider',
+    'controlsSlider',
 )
 
 # Dynamic properties used to scope rules for repeated elements (media-library
@@ -147,7 +153,7 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
             ``paintEvent`` scrim, **not** here, but is clamped defensively.
 
     Returns:
-        A QSS string ready for ``QApplication.setStyleSheet``. Every colour
+        A QSS string ready for the application-wide style sheet. Every colour
         comes from ``tokens`` (no literals), every widget rule is scoped, and
         every name in :data:`REQUIRED_OBJECT_NAMES` /
         :data:`REQUIRED_DYN_PROPERTIES` appears in the output.
@@ -161,7 +167,17 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
 
     transport = 'QPushButton[role="transport"]'
     chip = 'QPushButton[chip="true"]'
-    sliders = ('#progressSlider', '#volumeSlider')
+    # All five sliders share one rule set: the two transport sliders plus the
+    # three appearance-dialog sliders. The dialog ones are named here rather
+    # than left as bespoke Fusion widgets -- a transparency slider is a slider,
+    # and Task 5 gave them objectNames precisely so this rule could reach them.
+    sliders = (
+        '#progressSlider',
+        '#volumeSlider',
+        '#overlaySlider',
+        '#playlistSlider',
+        '#controlsSlider',
+    )
 
     rules: list[str] = []
     emit = rules.append
@@ -237,8 +253,9 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     ]))
 
     # -- 滑块 / sliders ------------------------------------------------------
-    # One rule set for both sliders: same groove, same accent sub-page, same
-    # handle. The progress/volume divergence is gone by construction.
+    # One rule set for every slider in the app: same groove, same accent
+    # sub-page, same handle. The progress/volume divergence is gone by
+    # construction, and the dialog's transparency sliders join the same family.
     emit(_rule(tuple(f'{name}::groove:horizontal' for name in sliders), [
         ('height', '6px'),
         ('background-color', groove_bg),
@@ -363,7 +380,8 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
 
     # -- 背景路径标签 / background-path label --------------------------------
     # The dialog toggles state via setProperty('empty', ...) + unpolish/polish
-    # instead of the old seven setStyleSheet call sites (spec §4.2).
+    # instead of the seven inline sheets it used to paste onto that label
+    # (spec §4.2).
     emit(_rule('#bgPathLabel', [
         ('color', t.text_primary),
     ]))
@@ -501,6 +519,11 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     emit(_rule('QDialog QListWidget', [
         ('background-color', t.surface),
         ('border', 'none'),
+        # ``styles.qss:117`` had it; without it a focus rectangle can reappear
+        # on the library list, and in DARK that rectangle is drawn from the
+        # palette's Highlight, i.e. an accent ring around a row that is not
+        # selected.
+        ('outline', 'none'),
     ]))
     # Item-level states of the library list (review round: the base-list
     # migration above left styles.qss:120-132's ``QListView::item`` family with

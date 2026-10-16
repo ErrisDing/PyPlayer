@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core import i18n
 from view.widgets import NowPlayingPanel, PlaylistView, BottomPanel
 from view.models import PlaylistModel, DisplayEntry
-from core.constants import AppearanceDefaults
 
 
 class MainWindow(QMainWindow):
@@ -31,6 +30,12 @@ class MainWindow(QMainWindow):
     - Clean separation of UI from business logic
     - Signals for all user actions
     - Public API for Presenter to update UI
+
+    Styling: the window owns no stylesheet. ``view.theme_manager.ThemeManager``
+    pushes one application-wide sheet and palette; this class only reacts to
+    ``theme_changed`` for the things QSS cannot restyle by itself -- the
+    hand-drawn transport icons, the delegate-painted playlist rows and the
+    background scrim -- through :meth:`recolor`.
     """
 
     # === User Action Signals ===
@@ -50,11 +55,15 @@ class MainWindow(QMainWindow):
     manage_libraries_requested = pyqtSignal()   # open library management dialog
     manage_appearance_requested = pyqtSignal()  # open appearance settings dialog
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, theme_manager, parent: Optional[QWidget] = None):
         super().__init__(parent)
 
         # Ensure i18n is initialized
         i18n.detect_init()
+
+        # The theme layer: tokens for the scrim, alphas for the overlay, and
+        # the manager handed to the widgets that paint colours themselves.
+        self._theme = theme_manager
 
         # Current library tracking
         self._current_library_path: str = ""
@@ -62,12 +71,17 @@ class MainWindow(QMainWindow):
 
         # Background image for custom painting
         self._background_pixmap: Optional[QPixmap] = None
-        self._overlay_alpha: float = AppearanceDefaults.BACKGROUND_OVERLAY_ALPHA
+        # Mirrors ``theme_manager.alphas.overlay``; refreshed by ``recolor`` so
+        # the scrim follows the manager's copy on every theme/alpha change.
+        self._overlay_alpha: float = theme_manager.alphas.overlay
 
         self._setup_window()
         self._setup_menu()
         self._setup_ui()
         self._setup_connections()
+
+        theme_manager.theme_changed.connect(self.recolor)
+        self.recolor(theme_manager.tokens)
 
     def _setup_window(self) -> None:
         """Set up window properties."""
@@ -167,7 +181,7 @@ class MainWindow(QMainWindow):
         playlist_layout.setContentsMargins(0, 0, 0, 0)
         playlist_layout.setSpacing(0)
 
-        self._playlist_view = PlaylistView()
+        self._playlist_view = PlaylistView(self._theme)
         playlist_layout.addWidget(self._playlist_view)
 
         splitter.addWidget(playlist_container)
@@ -182,7 +196,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(splitter, stretch=1)
 
         # Bottom panel - Combined progress and controls
-        self._bottom_panel = BottomPanel()
+        self._bottom_panel = BottomPanel(self._theme)
         main_layout.addWidget(self._bottom_panel)
 
         # Store base window title for status updates
@@ -290,9 +304,36 @@ class MainWindow(QMainWindow):
             self.update()
 
     def set_overlay_alpha(self, alpha: float) -> None:
-        """Set the background overlay transparency."""
-        self._overlay_alpha = alpha
-        self.update()  # Trigger repaint
+        """Set the background overlay transparency.
+
+        The value lives on the manager (single source for the sheet and the
+        scrim); ``theme_changed`` then comes back around to :meth:`recolor`,
+        which refreshes the local mirror and repaints.
+        """
+        self._theme.set_alpha('overlay', alpha)
+
+    def scrim_color(self) -> QColor:
+        """The background overlay colour: theme scrim token at the overlay alpha.
+
+        Replaces the hardcoded ``QColor(255, 255, 255, alpha)`` the paint event
+        used before the theme layer existed -- that white-on-dark-image scrim
+        was half of why dark mode read as light.
+        """
+        color = QColor(self._theme.tokens.scrim)
+        color.setAlphaF(min(1.0, max(0.0, self._overlay_alpha)))
+        return color
+
+    def recolor(self, tokens) -> None:
+        """React to ``ThemeManager.theme_changed``.
+
+        The application sheet and palette are already re-pushed by the manager;
+        what is left are the things it cannot reach: the hand-drawn transport
+        icons, the delegate-painted playlist rows, and this window's scrim.
+        """
+        self._overlay_alpha = self._theme.alphas.overlay
+        self._bottom_panel.recolor(tokens)
+        self._playlist_view.recolor()
+        self.update()
 
     def paintEvent(self, event) -> None:
         """Override paint event to draw scaled background image with semi-transparent overlay."""
@@ -329,10 +370,8 @@ class MainWindow(QMainWindow):
             target_rect = QRect(x, y, scaled_width, scaled_height)
             painter.drawPixmap(target_rect, self._background_pixmap)
 
-            # Draw semi-transparent overlay using configured alpha
-            # Convert 0.0-1.0 to 0-255
-            alpha_int = int(self._overlay_alpha * 255)
-            painter.fillRect(content_rect, QColor(255, 255, 255, alpha_int))
+            # Draw the theme scrim over the image (scrim token + overlay alpha)
+            painter.fillRect(content_rect, self.scrim_color())
 
     # === Public API for Presenter ===
 
@@ -408,12 +447,12 @@ class MainWindow(QMainWindow):
         self._bottom_panel.reset_progress()
 
     def set_playlist_alpha(self, alpha: float) -> None:
-        """Set playlist background transparency."""
-        self._playlist_view.set_bg_alpha(alpha)
+        """Set playlist background transparency (forwarded to the theme manager)."""
+        self._theme.set_alpha('playlist', alpha)
 
     def set_controls_alpha(self, alpha: float) -> None:
-        """Set bottom panel background transparency."""
-        self._bottom_panel.set_bg_alpha(alpha)
+        """Set bottom panel background transparency (forwarded to the theme manager)."""
+        self._theme.set_alpha('controls', alpha)
 
     def show_error(self, title: str, message: str) -> None:
         """Show an error dialog."""

@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from view.models.playlist_model import PlaylistModel
 from view.delegates.playlist_delegate import PlaylistItemDelegate
-from core.constants import AppearanceDefaults
 
 
 class PlaylistView(QWidget):
@@ -27,6 +26,10 @@ class PlaylistView(QWidget):
     - Double-click to play
     - Current track highlighting
     - Context menu for actions
+
+    The header and the list are styled by the application sheet through
+    ``#playlistHeader`` / ``#playlistView``; the row states are painted by
+    :class:`PlaylistItemDelegate`, which reads the theme manager's tokens.
     """
 
     # Signals
@@ -34,11 +37,9 @@ class PlaylistView(QWidget):
     # 批次 3：右键菜单接口，尚未 emit
     context_menu_requested = pyqtSignal(int, object)  # index, event
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, manager, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._bg_alpha = AppearanceDefaults.PLAYLIST_BG_ALPHA
-        self._selected_alpha = AppearanceDefaults.PLAYLIST_SELECTED_ALPHA
-        self._hover_alpha = AppearanceDefaults.PLAYLIST_HOVER_ALPHA
+        self._theme = manager
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -50,14 +51,6 @@ class PlaylistView(QWidget):
         # Header
         header = QLabel("Playlist")
         header.setObjectName("playlistHeader")
-        header.setStyleSheet("""
-            QLabel {
-                background-color: rgba(58, 58, 58, 0.85);
-                color: white;
-                padding: 8px;
-                font-weight: bold;
-            }
-        """)
         layout.addWidget(header)
 
         # List view with custom model
@@ -66,8 +59,10 @@ class PlaylistView(QWidget):
         self._model = PlaylistModel(self)
         self._list_view.setModel(self._model)
 
-        # Set custom delegate for rendering relative position
-        self._list_view.setItemDelegate(PlaylistItemDelegate(self._list_view))
+        # Set custom delegate for rendering relative position. The delegate is
+        # handed the manager because the row colours and the playing highlight
+        # are theme values, not model data.
+        self._list_view.setItemDelegate(PlaylistItemDelegate(self._theme, self._list_view))
 
         # Configure list view
         self._list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -79,9 +74,6 @@ class PlaylistView(QWidget):
         self._list_view.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
         self._list_view.setHorizontalScrollMode(QListView.ScrollMode.ScrollPerPixel)
 
-        # Styling with transparency
-        self._update_stylesheet()
-
         # Connect signals
         self._list_view.doubleClicked.connect(self._on_double_click)
 
@@ -91,31 +83,14 @@ class PlaylistView(QWidget):
         """Handle double-click on item."""
         self.track_double_clicked.emit(index.row())
 
-    def _update_stylesheet(self) -> None:
-        """Update the stylesheet based on current alpha values."""
-        self._list_view.setStyleSheet(f"""
-            QListView {{
-                background-color: rgba(250, 250, 250, {self._bg_alpha});
-                border: 1px solid rgba(200, 200, 200, 0.5);
-                outline: none;
-            }}
-            QListView::item {{
-                padding: 5px;
-                border-bottom: 1px solid rgba(230, 230, 230, 0.5);
-            }}
-            QListView::item:selected {{
-                background-color: rgba(227, 242, 253, {self._selected_alpha});
-                color: #333;
-            }}
-            QListView::item:hover {{
-                background-color: rgba(245, 245, 245, {self._hover_alpha});
-            }}
-        """)
+    def recolor(self) -> None:
+        """Repaint the rows after a theme change.
 
-    def set_bg_alpha(self, alpha: float) -> None:
-        """Set playlist background transparency."""
-        self._bg_alpha = alpha
-        self._update_stylesheet()
+        ``PlaylistItemDelegate`` reads the manager's tokens at paint time, so
+        nothing has to be rebuilt here -- the viewport just has to be asked to
+        paint again (the sheet itself is re-pushed by the manager).
+        """
+        self._list_view.viewport().update()
 
     def set_entries(self, entries: list) -> None:
         """

@@ -8,7 +8,6 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
 
 import sys
 from pathlib import Path
@@ -77,29 +76,11 @@ class LibrarySelector(QWidget):
             button.setProperty("library_path", lib.path)
             # Scope for the generated sheet: QPushButton[chip="true"] styles the
             # media-library chips, since objectNames would not scale per library.
-            # QSS matches property values as strings, hence "true" not True.
             button.setProperty("chip", "true")
             button.clicked.connect(lambda checked, p=lib.path: self._on_button_click(p))
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-
-            # Style
-            button.setStyleSheet("""
-                QPushButton {
-                    background-color: #e0e0e0;
-                    border: 1px solid #ccc;
-                    border-radius: 4px;
-                    padding: 4px 12px;
-                }
-                QPushButton:hover {
-                    background-color: #d0d0d0;
-                    border-color: #999;
-                }
-                QPushButton[selected="true"] {
-                    background-color: #4a9eff;
-                    border-color: #2a7eff;
-                    color: white;
-                }
-            """)
+            # No per-widget stylesheet: the sheet owns the chip's resting,
+            # hover, selected, disabled and focus looks.
 
             self._buttons.append(button)
             # Insert before stretch
@@ -113,10 +94,13 @@ class LibrarySelector(QWidget):
         for button in self._buttons:
             lib_path = button.property("library_path")
             is_selected = lib_path == self._current_path
-            # "selected"/"chip" are QSS property selectors and Qt matches those
-            # against the property value as a string, so the value has to be
-            # 'true'/'false' -- a Python bool would make QPushButton[
-            # selected="true"] in core/theme_qss.py inert.
+            # "selected"/"chip" are QSS property selectors. Strings are the
+            # declared contract of this widget tree, and the structure test
+            # asserts them as strings; Qt would in fact also match a Python
+            # bool, because its attribute selector special-cases
+            # QMetaType::Bool into "true"/"false". The strings stay anyway --
+            # they are what the sheet is written against and what a reader can
+            # grep.
             button.setProperty("selected", "true" if is_selected else "false")
             # Force style refresh
             button.style().unpolish(button)

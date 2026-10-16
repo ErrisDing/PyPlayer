@@ -8,7 +8,6 @@ from typing import List, Optional, Any
 from PyQt6.QtCore import (
     Qt, QAbstractListModel, QModelIndex, QVariant, pyqtSignal
 )
-from PyQt6.QtGui import QColor, QFont
 
 # Single DTO for the whole queue -> presenter -> model path: the service owns it
 # and the view only re-exports it, so `view.models.DisplayEntry is
@@ -28,6 +27,12 @@ class PlaylistModel(QAbstractListModel):
     - Incremental updates (no flicker)
     - Playing track highlighting
     - Custom display text with indentation
+
+    Data only: colours and fonts are the delegate's business
+    (``view.delegates.playlist_delegate``), which reads them from the theme
+    manager's tokens. Keeping ``QColor``/``QFont`` here used to pin the
+    presentation to whatever theme the model happened to be built for, so a
+    live theme flip could not reach it.
     """
 
     # Custom roles
@@ -37,10 +42,6 @@ class PlaylistModel(QAbstractListModel):
     SubIndexRole = Qt.ItemDataRole.UserRole + 4
     FullPathRole = Qt.ItemDataRole.UserRole + 5
     RelativePositionRole = Qt.ItemDataRole.UserRole + 6
-
-    # Colors
-    PLAYING_BG_COLOR = QColor(200, 230, 255)  # Light blue for playing track
-    FOLDER_COLOR = QColor(60, 60, 60)         # Darker for folder text
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -66,23 +67,6 @@ class PlaylistModel(QAbstractListModel):
 
         if role == Qt.ItemDataRole.DisplayRole:
             return entry.display_text
-
-        elif role == Qt.ItemDataRole.BackgroundRole:
-            if entry.is_playing:
-                return self.PLAYING_BG_COLOR
-            return QVariant()
-
-        elif role == Qt.ItemDataRole.ForegroundRole:
-            if entry.is_folder:
-                return self.FOLDER_COLOR
-            return QVariant()
-
-        elif role == Qt.ItemDataRole.FontRole:
-            if entry.is_folder:
-                font = QFont()
-                font.setBold(True)
-                return font
-            return QVariant()
 
         elif role == self.IsPlayingRole:
             return entry.is_playing
@@ -149,14 +133,14 @@ class PlaylistModel(QAbstractListModel):
                 self.dataChanged.emit(
                     self.index(old_playing),
                     self.index(old_playing),
-                    [Qt.ItemDataRole.BackgroundRole, self.IsPlayingRole]
+                    [self.IsPlayingRole]
                 )
 
             if new_playing_idx >= 0 and new_playing_idx != old_playing:
                 self.dataChanged.emit(
                     self.index(new_playing_idx),
                     self.index(new_playing_idx),
-                    [Qt.ItemDataRole.BackgroundRole, self.IsPlayingRole]
+                    [self.IsPlayingRole]
                 )
             return
 
@@ -220,7 +204,7 @@ class PlaylistModel(QAbstractListModel):
             self.dataChanged.emit(
                 self.index(old_idx),
                 self.index(old_idx),
-                [Qt.ItemDataRole.BackgroundRole, self.IsPlayingRole]
+                [self.IsPlayingRole]
             )
 
         if display_idx >= 0 and display_idx < len(self._entries):
@@ -228,7 +212,7 @@ class PlaylistModel(QAbstractListModel):
             self.dataChanged.emit(
                 self.index(display_idx),
                 self.index(display_idx),
-                [Qt.ItemDataRole.BackgroundRole, self.IsPlayingRole]
+                [self.IsPlayingRole]
             )
 
     def get_entry(self, row: int) -> Optional[DisplayEntry]:

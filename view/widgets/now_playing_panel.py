@@ -18,6 +18,7 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 from core.resource_utils import get_resource_path
+from core.theme import ART_SIZE as THEME_ART_SIZE
 DEFAULT_COVER_PATH = get_resource_path("resource/default_cover.png")
 
 from view.widgets.library_selector import LibrarySelector
@@ -46,8 +47,9 @@ class NowPlayingPanel(QWidget):
     art_clicked = pyqtSignal()
     library_selected = pyqtSignal(str)  # library path
 
-    # Default art size
-    ART_SIZE = 200
+    # Default art size: the shared geometry token, so the sheet and this widget
+    # cannot disagree about how big the cover box is.
+    ART_SIZE = THEME_ART_SIZE
 
     # Class-level cache for default cover
     _default_pixmap: Optional[QPixmap] = None
@@ -73,13 +75,13 @@ class NowPlayingPanel(QWidget):
 
     def _setup_ui(self) -> None:
         """Set up the UI components."""
-        # Style scope for the theme sheet (core/theme_qss.py emits
-        # `QMainWindow, #nowPlayingPanel`). Identification only, no styling.
+        # Style scopes for the theme sheet (core/theme_qss.py emits
+        # `QMainWindow, #nowPlayingPanel` and scopes every label here by its
+        # own objectName). No styling below: the sheet is the only source.
         self.setObjectName("nowPlayingPanel")
 
         # Enable transparency
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet("background-color: transparent;")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 15, 15, 15)
@@ -93,13 +95,6 @@ class NowPlayingPanel(QWidget):
         self._art_label.setObjectName("albumArt")
         self._art_label.setFixedSize(self.ART_SIZE, self.ART_SIZE)
         self._art_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._art_label.setStyleSheet("""
-            QLabel {
-                background-color: rgba(240, 240, 240, 0.85);
-                border: 1px solid rgba(200, 200, 200, 0.5);
-                border-radius: 5px;
-            }
-        """)
         self._art_label.setText("No Art")
         self._art_label.mousePressEvent = self._on_art_click
         layout.addWidget(self._art_label, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -111,7 +106,6 @@ class NowPlayingPanel(QWidget):
         # Title
         self._title_label = QLabel("No Track Playing")
         self._title_label.setObjectName("trackTitle")
-        self._title_label.setStyleSheet("font-weight: bold; background-color: transparent;")
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._title_label.setWordWrap(True)
         info_layout.addWidget(self._title_label)
@@ -119,7 +113,6 @@ class NowPlayingPanel(QWidget):
         # Artist
         self._artist_label = QLabel("")
         self._artist_label.setObjectName("trackArtist")
-        self._artist_label.setStyleSheet("color: #666; background-color: transparent;")
         self._artist_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._artist_label.setWordWrap(True)
         info_layout.addWidget(self._artist_label)
@@ -127,7 +120,6 @@ class NowPlayingPanel(QWidget):
         # Album
         self._album_label = QLabel("")
         self._album_label.setObjectName("trackAlbum")
-        self._album_label.setStyleSheet("color: #888; background-color: transparent;")
         self._album_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._album_label.setWordWrap(True)
         info_layout.addWidget(self._album_label)
@@ -221,16 +213,10 @@ class NowPlayingPanel(QWidget):
             )
             self._art_label.setPixmap(scaled)
         else:
-            # Fallback to text placeholder
+            # Fallback to text placeholder; #albumArt's sheet rule paints the
+            # box, so no stylesheet is re-applied here.
             self._art_label.clear()
             self._art_label.setText("No Art")
-            self._art_label.setStyleSheet("""
-                QLabel {
-                    background-color: rgba(240, 240, 240, 0.85);
-                    border: 1px solid rgba(200, 200, 200, 0.5);
-                    border-radius: 5px;
-                }
-            """)
 
     def clear(self) -> None:
         """Clear all display."""

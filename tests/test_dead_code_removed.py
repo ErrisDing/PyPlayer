@@ -144,6 +144,7 @@ class AppearanceBackgroundPathTest(unittest.TestCase):
 
         from view.main_window import MainWindow
         from presenter.main_presenter import MainPresenter
+        from tests.test_view_smoke import make_manager
 
         self._keep_app = QApplication.instance() or QApplication([])
 
@@ -153,7 +154,7 @@ class AppearanceBackgroundPathTest(unittest.TestCase):
         seed.fill(Qt.GlobalColor.darkGreen)
         self.assertTrue(seed.save(self.bg_path, 'PNG'), 'test fixture PNG failed to write')
 
-        self.view = MainWindow()
+        self.view = MainWindow(make_manager())
 
         self.playback = MagicMock(name='playback_service')
         self.playback.get_volume.return_value = 0.5

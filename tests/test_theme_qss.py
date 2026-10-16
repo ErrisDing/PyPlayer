@@ -552,7 +552,7 @@ class PaletteOnlyColoursTest(unittest.TestCase):
         )
         self.assertEqual(
             {'background-color', 'color', 'border', 'border-top', 'border-bottom',
-             'border-color'},
+             'border-color', 'outline'},
             {prop for prop, _value in declarations},
         )
         self.assertTrue(

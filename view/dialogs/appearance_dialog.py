@@ -62,8 +62,9 @@ class AppearanceDialog(QDialog):
 
     def _setup_ui(self) -> None:
         """Set up the dialog UI."""
-        # Style scope for the generated sheet (QDialog#appearanceDialog).
-        # Identification only -- this task adds no styling.
+        # Style scope for the generated sheet (QDialog#appearanceDialog, plus
+        # #bgPathLabel and the three dialog sliders by objectName). No styling
+        # happens in this file.
         self.setObjectName('appearanceDialog')
         self.setWindowTitle(i18n.dialog('dialog.title.appearance'))
         self.setMinimumWidth(450)
@@ -79,7 +80,6 @@ class AppearanceDialog(QDialog):
         self._bg_path_label = QLabel(i18n.dialog('appearance.no_background'))
         self._bg_path_label.setObjectName('bgPathLabel')
         self._bg_path_label.setWordWrap(True)
-        self._bg_path_label.setStyleSheet("color: #666; font-style: italic;")
         self._update_bg_path_state()
         bg_layout.addWidget(self._bg_path_label)
 
@@ -176,10 +176,12 @@ class AppearanceDialog(QDialog):
 
         ``core/theme_qss.py`` styles ``#bgPathLabel[empty="true"]`` (the muted
         italic placeholder) apart from a ``#bgPathLabel`` holding a real path.
-        QSS property selectors match the property value as a string, hence the
-        literals ``'true'``/``'false'``, and unpolish/polish is what makes the
-        sheet re-read it. Nothing here paints: the per-widget ``setStyleSheet``
-        calls still drive the look until Task 6 removes them.
+        Strings are the declared contract of this widget tree; Qt would also
+        match a Python ``bool``, because its attribute selector special-cases
+        QMetaType::Bool into ``"true"``/``"false"``. The strings stay because
+        they are what the sheet is written against. unpolish/polish is what
+        makes the sheet re-read the property -- this is the only styling hook
+        in the dialog, the old per-widget inline sheets are gone.
         """
         label = self._bg_path_label
         label.setProperty('empty', 'false' if self._background_image else 'true')
@@ -191,10 +193,8 @@ class AppearanceDialog(QDialog):
         # Background image path
         if self._background_image:
             self._bg_path_label.setText(self._background_image)
-            self._bg_path_label.setStyleSheet("color: #333; font-style: normal;")
         else:
             self._bg_path_label.setText(i18n.dialog('appearance.no_background'))
-            self._bg_path_label.setStyleSheet("color: #666; font-style: italic;")
         self._update_bg_path_state()
 
         # Sliders (convert 0.0-1.0 to 0-100)
@@ -224,7 +224,6 @@ class AppearanceDialog(QDialog):
         if file_path:
             self._background_image = file_path
             self._bg_path_label.setText(file_path)
-            self._bg_path_label.setStyleSheet("color: #333; font-style: normal;")
             self._update_bg_path_state()
             self.background_image_changed.emit(file_path)
 
@@ -232,7 +231,6 @@ class AppearanceDialog(QDialog):
         """Handle clear background button click."""
         self._background_image = None
         self._bg_path_label.setText(i18n.dialog('appearance.no_background'))
-        self._bg_path_label.setStyleSheet("color: #666; font-style: italic;")
         self._update_bg_path_state()
         self.background_image_changed.emit("")
 
@@ -274,10 +272,8 @@ class AppearanceDialog(QDialog):
         self._background_image = path
         if path:
             self._bg_path_label.setText(path)
-            self._bg_path_label.setStyleSheet("color: #333; font-style: normal;")
         else:
             self._bg_path_label.setText(i18n.dialog('appearance.no_background'))
-            self._bg_path_label.setStyleSheet("color: #666; font-style: italic;")
         self._update_bg_path_state()
 
     def set_overlay_alpha(self, alpha: float) -> None:

@@ -17,11 +17,12 @@ Two deliberate deviations from the original plan text, both recorded in
   sweep can therefore never see them, so the coverage test collects the union of
   both trees.
 * The three transparency sliders of
-  ``view/dialogs/appearance_dialog.py`` get objectNames here
-  (:data:`DIALOG_SLIDER_NAMES`) but are absent from ``REQUIRED_OBJECT_NAMES``:
-  Task 4's gate test pins that tuple's contents, and Task 6 owns writing the
-  rules. The names are asserted from this module's own expected set so the
-  widgets cannot drift before those rules exist.
+  ``view/dialogs/appearance_dialog.py`` are named here
+  (:data:`DIALOG_SLIDER_NAMES`). Task 5 gave them objectNames but no rules --
+  Task 4's gate test pins ``REQUIRED_OBJECT_NAMES`` and the sheet did not style
+  them yet -- and Task 6 wrote the rules and folded the three names into that
+  tuple, so this module's union is now just ``REQUIRED_OBJECT_NAMES``. The
+  constant stays so the dialog side of the tree is asserted explicitly.
 
 Run with an offscreen Qt platform:
     QT_QPA_PLATFORM=offscreen python -m unittest tests.test_view_structure -v
@@ -35,7 +36,7 @@ from types import SimpleNamespace
 # Make the project root importable no matter how the test is invoked.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.test_view_smoke import QT_AVAILABLE, make_app
+from tests.test_view_smoke import QT_AVAILABLE, make_app, make_manager
 
 from core.theme_qss import REQUIRED_DYN_PROPERTIES, REQUIRED_OBJECT_NAMES
 
@@ -49,9 +50,12 @@ except ImportError:  # pragma: no cover - environment without PyQt6
 # both the elapsed and the total-duration label, which are styled identically.
 MULTIPLICITY = {'timeLabel': 2}
 
-# Names this task hands to the widgets but that ``core.theme_qss`` does not
-# style yet (see the module docstring). Task 6 adds their rules and should then
-# fold them into ``REQUIRED_OBJECT_NAMES``.
+# The three transparency sliders of ``view/dialogs/appearance_dialog.py``.
+# Task 5 named them and left them unstyled (Task 4's gate pins
+# ``REQUIRED_OBJECT_NAMES`` and the sheet had no rule for them yet); Task 6
+# wrote the rules and folded the names into that tuple, so the union below is
+# now ``REQUIRED_OBJECT_NAMES`` itself. Kept as its own constant because this
+# module asserts the dialog side of the tree explicitly.
 DIALOG_SLIDER_NAMES = ('overlaySlider', 'playlistSlider', 'controlsSlider')
 
 
@@ -84,7 +88,7 @@ class ViewStructureTest(unittest.TestCase):
     def test_every_required_object_name_exists(self):
         from view.main_window import MainWindow
 
-        window = MainWindow()
+        window = MainWindow(make_manager())
         dialog = make_appearance_dialog()
         try:
             collected = set(collect_names(window)) | set(collect_names(dialog))
@@ -107,7 +111,7 @@ class ViewStructureTest(unittest.TestCase):
         self.assertIn(('role', 'transport'), REQUIRED_DYN_PROPERTIES)
         self.assertIn(('chip', 'true'), REQUIRED_DYN_PROPERTIES)
 
-        window = MainWindow()
+        window = MainWindow(make_manager())
         try:
             transports = [
                 button for button in window.findChildren(QPushButton)
@@ -128,14 +132,17 @@ class ViewStructureTest(unittest.TestCase):
             ]
             self.assertEqual(len(chips), 2, 'One chip button per media library')
 
-            # ``QPushButton[chip="true"][selected="true"]`` matches on strings: a
-            # Python bool would leave the selected-chip rule inert.
+            # ``QPushButton[chip="true"][selected="true"]`` is written against
+            # strings, and strings are the contract this test enforces. (Qt's
+            # attribute selector does special-case QMetaType::Bool and would
+            # match a Python bool as "true"/"false" -- but the sheet's own text
+            # is what a reader greps, so the widgets declare strings.)
             for chip in chips:
                 selected = chip.property('selected')
                 self.assertIsInstance(
                     selected, str,
                     f'chip {chip.text()!r} sets selected as {type(selected).__name__}, '
-                    'QSS property selectors need the strings "true"/"false"',
+                    'but the sheet is written against the strings "true"/"false"',
                 )
                 self.assertIn(selected, ('true', 'false'))
 
@@ -150,7 +157,7 @@ class ViewStructureTest(unittest.TestCase):
     def test_object_names_are_unique_per_scope(self):
         from view.main_window import MainWindow
 
-        window = MainWindow()
+        window = MainWindow(make_manager())
         dialog = make_appearance_dialog()
         try:
             counts = Counter(collect_names(window) + collect_names(dialog))

@@ -27,6 +27,20 @@ def make_app():
     return QApplication.instance() or QApplication([])
 
 
+def make_manager(mode: str = 'light'):
+    """A theme manager for tests that only need *a* theme, resolved now.
+
+    ``MainWindow`` takes a mandatory ``ThemeManager`` since Task 6 (it is the
+    only styling source), so every harness that builds the window has to build
+    the manager first. ``light`` is the default because that is what ``auto``
+    resolves to on the offscreen platform anyway, and a test should not depend
+    on the platform's colour scheme.
+    """
+    from view.theme_manager import ThemeManager
+
+    return ThemeManager(mode=mode)
+
+
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
 class ViewSmokeTest(unittest.TestCase):
     """MainWindow must construct and paint without raising."""
@@ -36,7 +50,7 @@ class ViewSmokeTest(unittest.TestCase):
 
         app = make_app()
 
-        w = MainWindow()
+        w = MainWindow(make_manager())
         w.resize(900, 600)
         w.show()
         app.processEvents()

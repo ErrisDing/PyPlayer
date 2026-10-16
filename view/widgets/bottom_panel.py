@@ -15,7 +15,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from core import i18n
-from core.constants import AppearanceDefaults
 
 
 def format_time(seconds: float) -> str:
@@ -213,7 +212,13 @@ class BottomPanel(QWidget):
     - Play/Pause, Stop, Previous, Next buttons
     - Volume slider
     - Loop mode button
-    - Unified transparent background
+    - Unified translucent background
+
+    Styling is the application sheet's job (``#bottomPanel``, ``#progressSlider``
+    / ``#volumeSlider``, ``[role="transport"]``, ``#playButton``,
+    ``#loopButton``, ``#timeLabel``). The only thing left here is the colour of
+    the hand-drawn icons, which QSS cannot reach: :meth:`recolor` regenerates
+    them from the theme tokens until the SVG pipeline replaces them in Task 8.
     """
 
     # Signals
@@ -225,24 +230,46 @@ class BottomPanel(QWidget):
     loop_mode_changed = pyqtSignal(str)  # "OFF", "ONE", "ALL"
     seek_requested = pyqtSignal(float)  # position in seconds
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, manager, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._theme = manager
         self._loop_mode = "OFF"
         self._is_playing = False
         self._duration: float = 0.0
         self._position: float = 0.0
         self._is_seeking: bool = False
-        # Transparency settings
-        self._bg_alpha = AppearanceDefaults.BOTTOM_PANEL_BG_ALPHA
-        self._button_alpha = AppearanceDefaults.BOTTOM_PANEL_BUTTON_ALPHA
         self._setup_ui()
+        self._generate_icons()
+
+    def _generate_icons(self) -> None:
+        """(Re)draw the transport glyphs in the current theme's icon colours.
+
+        Still hand-drawn polygons -- the SVG set and its colouring pipeline
+        land in Task 8 -- but the colours now come from the tokens, so a theme
+        flip cannot leave a light-grey glyph on a dark button.
+        """
+        tokens = self._theme.tokens
+        icon_color = QColor(tokens.icon)
+        accent_icon_color = QColor(tokens.icon_on_accent)
+        dpr = self.devicePixelRatioF()
+
+        self._prev_btn.setIcon(create_vector_icon(draw_prev_icon, icon_color, 20, dpr))
+        self._stop_btn.setIcon(create_vector_icon(draw_stop_icon, icon_color, 20, dpr))
+        self._next_btn.setIcon(create_vector_icon(draw_next_icon, icon_color, 20, dpr))
+        self._set_play_icon(accent_icon_color)
+
+    def _set_play_icon(self, color: QColor) -> None:
+        """Draw the play or pause glyph for the current state in ``color``."""
+        draw = draw_pause_icon if self._is_playing else draw_play_icon
+        self._play_btn.setIcon(
+            create_vector_icon(draw, color, 24, self.devicePixelRatioF())
+        )
 
     def _setup_ui(self) -> None:
         """Set up the UI components."""
         # Style scopes for the theme sheet (core/theme_qss.py selects on
         # #bottomPanel / #progressSlider / #volumeSlider / #playButton /
         # #loopButton / #timeLabel and on [role="transport"]).
-        # Identification only here -- no styling changes in this task.
         self.setObjectName("bottomPanel")
 
         # Enable transparency for the widget
@@ -251,9 +278,6 @@ class BottomPanel(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(10, 5, 10, 5)
         main_layout.setSpacing(5)
-
-        # Set semi-transparent background using instance variables
-        self._update_stylesheet()
 
         # === Progress row ===
         progress_layout = QHBoxLayout()
@@ -272,23 +296,6 @@ class BottomPanel(QWidget):
         self._slider.setRange(0, 1000)
         self._slider.setValue(0)
         self._slider.setEnabled(False)
-        self._slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                background: rgba(200, 200, 200, 0.5);
-                height: 6px;
-                border-radius: 3px;
-            }
-            QSlider::handle:horizontal {
-                background: rgba(33, 150, 243, 0.9);
-                width: 14px;
-                margin: -4px 0;
-                border-radius: 7px;
-            }
-            QSlider::sub-page:horizontal {
-                background: rgba(33, 150, 243, 0.7);
-                border-radius: 3px;
-            }
-        """)
         self._slider.sliderPressed.connect(self._on_slider_pressed)
         self._slider.sliderReleased.connect(self._on_slider_released)
         self._slider.sliderMoved.connect(self._on_slider_moved)
@@ -307,18 +314,15 @@ class BottomPanel(QWidget):
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(10)
 
-        # Icon colors
-        icon_color = QColor(80, 80, 80)  # Gray for normal buttons
-        play_icon_color = QColor(255, 255, 255)  # White for play button
-        dpr = self.devicePixelRatioF()
-
+        # The glyphs are drawn by ``_generate_icons``, called at the end of
+        # ``__init__`` and again from ``recolor``; that keeps every button's
+        # icon colour anchored to the theme tokens instead of a local literal.
         # Previous button
         self._prev_btn = QPushButton()
         # QSS matches dynamic properties as strings, so the transport scope is
         # the literal "transport" (QPushButton[role="transport"]).
         self._prev_btn.setProperty("role", "transport")
         self._prev_btn.setFixedSize(40, 40)
-        self._prev_btn.setIcon(create_vector_icon(draw_prev_icon, icon_color, 20, dpr))
         self._prev_btn.setIconSize(QSize(20, 20))
         self._prev_btn.setToolTip(i18n.get('button.prev') if hasattr(i18n, 'get') else "Previous")
         self._prev_btn.clicked.connect(self.prev_clicked.emit)
@@ -328,20 +332,6 @@ class BottomPanel(QWidget):
         self._play_btn = QPushButton()
         self._play_btn.setObjectName("playButton")
         self._play_btn.setFixedSize(50, 50)
-        self._play_btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(33, 150, 243, 0.85);
-                border: none;
-                border-radius: 25px;
-            }
-            QPushButton:hover {
-                background-color: rgba(25, 118, 210, 0.95);
-            }
-            QPushButton:pressed {
-                background-color: rgba(21, 101, 192, 0.95);
-            }
-        """)
-        self._play_btn.setIcon(create_vector_icon(draw_play_icon, play_icon_color, 24, dpr))
         self._play_btn.setIconSize(QSize(24, 24))
         self._play_btn.clicked.connect(self.play_pause_clicked.emit)
         controls_layout.addWidget(self._play_btn)
@@ -350,7 +340,6 @@ class BottomPanel(QWidget):
         self._stop_btn = QPushButton()
         self._stop_btn.setProperty("role", "transport")
         self._stop_btn.setFixedSize(40, 40)
-        self._stop_btn.setIcon(create_vector_icon(draw_stop_icon, icon_color, 20, dpr))
         self._stop_btn.setIconSize(QSize(20, 20))
         self._stop_btn.clicked.connect(self.stop_clicked.emit)
         controls_layout.addWidget(self._stop_btn)
@@ -359,7 +348,6 @@ class BottomPanel(QWidget):
         self._next_btn = QPushButton()
         self._next_btn.setProperty("role", "transport")
         self._next_btn.setFixedSize(40, 40)
-        self._next_btn.setIcon(create_vector_icon(draw_next_icon, icon_color, 20, dpr))
         self._next_btn.setIconSize(QSize(20, 20))
         self._next_btn.clicked.connect(self.next_clicked.emit)
         controls_layout.addWidget(self._next_btn)
@@ -373,7 +361,6 @@ class BottomPanel(QWidget):
         self._loop_btn.setFixedSize(40, 40)
         self._loop_btn.setToolTip("Loop: OFF")
         self._loop_btn.clicked.connect(self._on_loop_clicked)
-        self._loop_btn.setStyleSheet("QPushButton { color: #999; background-color: rgba(255, 255, 255, 0.7); }")
         controls_layout.addWidget(self._loop_btn)
 
         # Spacer
@@ -445,66 +432,46 @@ class BottomPanel(QWidget):
             self._volume_icon.setText("♪♪♪")  # high: three notes
 
     def _update_loop_button(self) -> None:
-        """Update loop button appearance based on mode."""
-        if self._loop_mode == "OFF":
-            self._loop_btn.setStyleSheet("QPushButton { color: #999; background-color: rgba(255, 255, 255, 0.7); }")
-            self._loop_btn.setToolTip("Loop: OFF")
-        elif self._loop_mode == "ONE":
-            self._loop_btn.setStyleSheet("QPushButton { color: #2196F3; background-color: rgba(227, 242, 253, 0.85); }")
-            self._loop_btn.setToolTip("Loop: ONE")
-        else:  # ALL
-            self._loop_btn.setStyleSheet("QPushButton { color: #4CAF50; background-color: rgba(232, 245, 233, 0.85); }")
-            self._loop_btn.setToolTip("Loop: ALL")
+        """Update loop button appearance based on mode.
 
-    def _update_stylesheet(self) -> None:
-        """Update the stylesheet based on current alpha values."""
-        self.setStyleSheet(f"""
-            BottomPanel {{
-                background-color: rgba(245, 245, 245, {self._bg_alpha});
-            }}
-            BottomPanel QPushButton {{
-                background-color: rgba(255, 255, 255, {self._button_alpha});
-                border: 1px solid rgba(200, 200, 200, 0.5);
-                border-radius: 5px;
-            }}
-            BottomPanel QPushButton:hover {{
-                background-color: rgba(230, 230, 230, 0.85);
-            }}
-            BottomPanel QPushButton:pressed {{
-                background-color: rgba(200, 200, 200, 0.85);
-            }}
-            BottomPanel QSlider::groove:horizontal {{
-                background: rgba(200, 200, 200, 0.5);
-                height: 6px;
-                border-radius: 3px;
-            }}
-            BottomPanel QSlider::handle:horizontal {{
-                background: rgba(100, 100, 100, 0.85);
-                width: 14px;
-                margin: -4px 0;
-                border-radius: 7px;
-            }}
-            BottomPanel QLabel {{
-                background-color: transparent;
-            }}
-        """)
+        Only the tooltip changes: the per-mode colours were inline stylesheets
+        (``#999`` / ``#2196F3`` / ``#4CAF50``, none of them in the token set),
+        and the glyph itself is still the same ``↺`` character. State colours
+        and the distinct loop glyphs arrive with Task 8 (SVG icon set) and
+        Task 9 (state tokens) -- until then the modes are distinguished by
+        tooltip only, which is the deliberate hand-off recorded in the plan.
+        """
+        tips = {
+            "OFF": "Loop: OFF",
+            "ONE": "Loop: ONE",
+            "ALL": "Loop: ALL",
+        }
+        self._loop_btn.setToolTip(tips[self._loop_mode])
 
     def set_bg_alpha(self, alpha: float) -> None:
-        """Set bottom panel background transparency."""
-        self._bg_alpha = alpha
-        self._update_stylesheet()
+        """Set bottom panel background transparency through the theme manager.
+
+        Kept as a public alias because the panel is the widget the slider
+        visually belongs to; the value itself is the manager's, so the sheet
+        and every other consumer agree on it.
+        """
+        self._theme.set_alpha('controls', alpha)
 
     # === Public API ===
+
+    def recolor(self, tokens) -> None:
+        """Regenerate the transport icons for a new theme.
+
+        Called from ``MainWindow.recolor`` on every ``theme_changed``. The
+        button chrome itself is QSS's business; only the hand-drawn glyphs are
+        painted here, so they are the only thing to redraw.
+        """
+        self._generate_icons()
 
     def set_playing_state(self, is_playing: bool, is_paused: bool = False) -> None:
         """Update the play/pause button state."""
         self._is_playing = is_playing and not is_paused
-        play_icon_color = QColor(255, 255, 255)  # White for play button
-        dpr = self.devicePixelRatioF()
-        if self._is_playing:
-            self._play_btn.setIcon(create_vector_icon(draw_pause_icon, play_icon_color, 24, dpr))
-        else:
-            self._play_btn.setIcon(create_vector_icon(draw_play_icon, play_icon_color, 24, dpr))
+        self._set_play_icon(QColor(self._theme.tokens.icon_on_accent))
 
     def set_volume(self, volume: float) -> None:
         """Set the volume level (0.0-1.0)."""

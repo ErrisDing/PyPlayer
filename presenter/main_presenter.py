@@ -12,7 +12,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from view.main_window import MainWindow
-from view.models import DisplayEntry
+# ``view.models.DisplayEntry`` is the service DTO since Task 2 merged the
+# duplicate, so the presenter has no conversion left to do and no import of its
+# own to make (see ``_on_display_changed``).
 from view.dialogs import LibraryManagementDialog, AppearanceDialog
 from service.playback_service import PlaybackService
 
@@ -441,23 +443,14 @@ class MainPresenter(QObject):
 
     @pyqtSlot(list)
     def _on_display_changed(self, entries: List[QueueDisplayEntry]) -> None:
-        """Handle display entries change from queue service."""
-        # Convert to view model DisplayEntry
-        view_entries = []
-        for entry in entries:
-            view_entry = DisplayEntry(
-                display_text=entry.display_text,
-                node_idx=entry.node_idx,
-                is_folder=entry.is_folder,
-                path=entry.path,
-                sub_index=entry.sub_index,
-                full_path=entry.full_path,
-                is_playing=entry.is_playing,
-                relative_position=entry.relative_position
-            )
-            view_entries.append(view_entry)
+        """Handle display entries change from queue service.
 
-        self._view.set_playlist_entries(view_entries)
+        No conversion step: Task 2 merged the duplicate DTOs, so
+        ``view.models.DisplayEntry is service.queue_service.DisplayEntry`` and
+        rebuilding the list field-by-field only produced copies of objects the
+        view was already free to read.
+        """
+        self._view.set_playlist_entries(entries)
 
     @pyqtSlot(str, object)
     def _on_metadata_loaded(self, filepath: str, metadata) -> None:
