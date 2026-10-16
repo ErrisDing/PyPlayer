@@ -31,7 +31,7 @@ class PlaylistView(QWidget):
 
     # Signals
     track_double_clicked = pyqtSignal(int)       # display index
-    track_selected = pyqtSignal(int)             # display index
+    # 批次 3：右键菜单接口，尚未 emit
     context_menu_requested = pyqtSignal(int, object)  # index, event
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -82,17 +82,12 @@ class PlaylistView(QWidget):
 
         # Connect signals
         self._list_view.doubleClicked.connect(self._on_double_click)
-        self._list_view.clicked.connect(self._on_click)
 
         layout.addWidget(self._list_view)
 
     def _on_double_click(self, index: QModelIndex) -> None:
         """Handle double-click on item."""
         self.track_double_clicked.emit(index.row())
-
-    def _on_click(self, index: QModelIndex) -> None:
-        """Handle click on item."""
-        self.track_selected.emit(index.row())
 
     def _update_stylesheet(self) -> None:
         """Update the stylesheet based on current alpha values."""

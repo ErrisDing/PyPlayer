@@ -91,7 +91,6 @@ class MainPresenter(QObject):
         self._view.track_double_clicked.connect(self._on_track_double_clicked)
 
         # Library management
-        self._view.add_library_requested.connect(self._on_add_library)
         self._view.scan_folder_requested.connect(self._on_scan_folder)
         self._view.refresh_library_requested.connect(self._on_refresh_library)
         self._view.refresh_all_requested.connect(self._on_refresh_all)
@@ -219,16 +218,6 @@ class MainPresenter(QObject):
         track = self._queue.set_position_by_display_index(display_idx)
         if track:
             self._playback.play(track.path)
-
-    @pyqtSlot(str)
-    def _on_add_library(self, path: str) -> None:
-        """Handle add library request."""
-        if self._config.add_library(path):
-            self._library.load_library(path)
-            # Refresh library list in UI
-            libraries = self._config.get_libraries()
-            self._view.set_libraries(libraries)
-            self._view.set_status_message(f"Added library: {path}")
 
     @pyqtSlot(str)
     def _on_scan_folder(self, folder: str) -> None:

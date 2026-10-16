@@ -5,31 +5,19 @@ Solves rendering issues with incremental updates and proper highlighting
 """
 
 from typing import List, Optional, Any
-from dataclasses import dataclass
 from PyQt6.QtCore import (
     Qt, QAbstractListModel, QModelIndex, QVariant, pyqtSignal
 )
 from PyQt6.QtGui import QColor, QFont
 
-# Import DisplayEntry from queue_service for type hinting
+# Single DTO for the whole queue -> presenter -> model path: the service owns it
+# and the view only re-exports it, so `view.models.DisplayEntry is
+# service.queue_service.DisplayEntry`.
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from service.queue_service import DisplayEntry as QueueDisplayEntry
-
-
-@dataclass
-class DisplayEntry:
-    """Entry for display in playlist model."""
-    display_text: str
-    node_idx: int
-    is_folder: bool
-    path: str
-    sub_index: int = -1
-    full_path: str = ""
-    is_playing: bool = False
-    relative_position: str = ""
+from service.queue_service import DisplayEntry
 
 
 class PlaylistModel(QAbstractListModel):

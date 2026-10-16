@@ -7,10 +7,9 @@ Assembles all UI components and provides the public View interface
 from typing import Optional, List, Any
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QApplication, QSplitter,
-    QMenuBar, QMenu, QFileDialog, QMessageBox,
-    QSizePolicy
+    QFileDialog, QMessageBox, QSizePolicy
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect
+from PyQt6.QtCore import Qt, pyqtSignal, QRect
 from PyQt6.QtGui import QAction, QKeySequence, QCloseEvent, QPixmap, QPainter, QColor
 
 import sys
@@ -44,8 +43,6 @@ class MainWindow(QMainWindow):
     volume_changed = pyqtSignal(float)          # 0.0 - 1.0
     loop_mode_changed = pyqtSignal(str)         # "OFF", "ONE", "ALL"
     track_double_clicked = pyqtSignal(int)      # display index
-    add_library_requested = pyqtSignal(str)     # library path
-    remove_library_requested = pyqtSignal(str)  # library path
     refresh_library_requested = pyqtSignal(str) # library path
     refresh_all_requested = pyqtSignal()        # refresh all libraries
     scan_folder_requested = pyqtSignal(str)     # folder path
@@ -237,15 +234,6 @@ class MainWindow(QMainWindow):
         if folder:
             self.scan_folder_requested.emit(folder)
 
-    def _on_add_library(self) -> None:
-        """Handle add library action."""
-        folder = QFileDialog.getExistingDirectory(
-            self,
-            i18n.get('dialog.add_library')
-        )
-        if folder:
-            self.add_library_requested.emit(folder)
-
     def _on_refresh_library(self) -> None:
         """Handle refresh library action."""
         # Emit signal with current library path if available
@@ -268,23 +256,6 @@ class MainWindow(QMainWindow):
             i18n.get('dialog.about.title'),
             i18n.get('dialog.about.text')
         )
-
-    def _on_set_background(self) -> None:
-        """Handle set background image action."""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            i18n.get('dialog.select_background', default='选择背景图片'),
-            "",
-            i18n.get('dialog.image_files', default='图片文件') + " (*.jpg *.jpeg *.png *.bmp *.gif *.webp)"
-        )
-        if file_path:
-            self.set_background_image(file_path)
-            self.background_image_changed.emit(file_path)
-
-    def _on_clear_background(self) -> None:
-        """Handle clear background image action."""
-        self.set_background_image(None)
-        self.background_image_changed.emit("")
 
     def _check_background_image(self, config) -> None:
         """
