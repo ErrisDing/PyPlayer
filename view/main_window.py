@@ -6,11 +6,11 @@ Assembles all UI components and provides the public View interface
 
 from typing import Optional, List, Any
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QMenuBar, QMenu, QToolBar, QFileDialog, QMessageBox,
+    QMainWindow, QWidget, QVBoxLayout, QApplication, QSplitter,
+    QMenuBar, QMenu, QFileDialog, QMessageBox,
     QSizePolicy
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint, QRect
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QRect
 from PyQt6.QtGui import QAction, QKeySequence, QCloseEvent, QPixmap, QPainter, QColor
 
 import sys
