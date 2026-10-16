@@ -18,10 +18,15 @@ widgets (A1):
   (``QDialog QPushButton`` -- the dialog families, whose widgets get no
   objectName anywhere in the plan). A style can then never leak onto a widget
   that never asked for it (that leak is what made the progress slider and the
-  volume slider render differently side by side). Single-instance application
-  chrome (``QMainWindow``, ``QMenuBar``, ``QMenu``, ``QScrollBar``,
-  ``QToolTip``, ``QSplitter``, ``QGroupBox``) is the recorded exemption; the
-  test lists it by name, so a new bare class has to be argued for rather than
+  volume slider render differently side by side). Application chrome
+  (``QMenuBar``, ``QMenu``, ``QScrollBar``, ``QToolTip``, ``QSplitter``,
+  ``QGroupBox``) is the recorded exemption -- not because it is single-instance
+  (``QMenu``, ``QScrollBar`` and ``QGroupBox`` recur many times per window) but
+  because the brief's mapping table mandates those rules bare; per-widget
+  scoping there is not what the table asks for. ``QMainWindow`` is the one
+  genuinely single-instance member, listed for the same table-mandated reason
+  (its first table row is ``QMainWindow, #nowPlayingPanel``). The test lists
+  the exemption by name, so a new bare class has to be argued for rather than
   slipped in.
 * **No colour literals.** Every colour resolves to a token field, so LIGHT
   and DARK can be asserted identical in structure and the palette stays the
@@ -496,6 +501,29 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     emit(_rule('QDialog QListWidget', [
         ('background-color', t.surface),
         ('border', 'none'),
+    ]))
+    # Item-level states of the library list (review round: the base-list
+    # migration above left styles.qss:120-132's ``QListView::item`` family with
+    # no successor). ``PlaylistItemDelegate`` paints ``#playlistView``'s item
+    # states, but this ``QListWidget`` carries no delegate, so its row padding,
+    # dividers and selection/hover colours must migrate too -- ``library_
+    # dialog.py:113`` builds two-line rows (``f"{name}\n{path}"``) whose
+    # legibility depends on exactly the ``6px 8px`` padding. Old literals ->
+    # tokens: ``border-bottom #f0f0f0`` -> ``divider``, selected bg ``#e3f2fd``
+    # -> ``accent_soft``, selected fg ``#333333`` -> ``text_primary``, hover bg
+    # ``#f5f5f5`` -> ``hover_bg``. The ``6px 8px`` padding is not a tokenised
+    # metric and the two-line rows need it, so it is kept verbatim. Ancestor-
+    # scoped with two compounds, so it stays legal under the scope gate.
+    emit(_rule('QDialog QListWidget::item', [
+        ('padding', '6px 8px'),
+        ('border-bottom', f'1px solid {t.divider}'),
+    ]))
+    emit(_rule('QDialog QListWidget::item:selected', [
+        ('background-color', t.accent_soft),
+        ('color', t.text_primary),
+    ]))
+    emit(_rule('QDialog QListWidget::item:hover', [
+        ('background-color', t.hover_bg),
     ]))
 
     return '\n'.join(rules)

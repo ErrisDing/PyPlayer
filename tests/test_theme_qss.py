@@ -28,9 +28,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 SCOPED_NEEDING_CLASSES = ('QPushButton', 'QSlider', 'QListView', 'QLabel')
 
 # Recorded exemption (controller ruling on review finding 1): application
-# chrome with a single instance per window, which stays bare *by decision* --
-# per-widget scoping would be noise and the task's mapping table mandates these
-# rules. Adding a class here is a review-visible decision, not a blind spot.
+# chrome that stays bare *by decision* -- the brief's mapping table mandates
+# these rules bare. This is NOT a single-instance claim: ``QMenu``, ``QScrollBar``
+# and ``QGroupBox`` recur many times per window and are still named globally by
+# the table (per-widget scoping would be noise and is not what the brief asks).
+# Adding a class here is a review-visible decision, not a blind spot.
 # ``QMainWindow`` is the seventh entry: the ruling named six, and the gate then
 # caught the bare ``QMainWindow`` of the table's first row (brief line 33,
 # ``QMainWindow, #nowPlayingPanel``). It belongs here rather than in the blind
@@ -103,6 +105,9 @@ DIALOG_SELECTORS = (
     'QDialog QPushButton:pressed',
     'QDialog QPushButton:disabled',
     'QDialog QListWidget',
+    'QDialog QListWidget::item',
+    'QDialog QListWidget::item:selected',
+    'QDialog QListWidget::item:hover',
 )
 
 
@@ -348,8 +353,11 @@ class BuildQssTest(unittest.TestCase):
         ``library_dialog.py`` / ``appearance_dialog.py`` build plain
         ``QPushButton`` and ``QListWidget`` children with no objectName and no
         dynamic property, and Task 5's mandate does not reach them. The old
-        global ``QPushButton`` (``styles.qss:91-111``) and ``QListView``
-        (``:114-133``) rules therefore survive as a ``QDialog``-scoped family.
+        global ``QPushButton`` (``styles.qss:91-111``) and the whole
+        ``QListView`` family -- base *and* the ``::item`` / ``::item:selected`` /
+        ``::item:hover`` states (``styles.qss:114-132``) -- therefore survive as
+        a ``QDialog``-scoped family. The item states matter specifically here:
+        unlike ``#playlistView``, this list carries no delegate to paint them.
         """
         from core.theme import DARK, LIGHT, AlphaSettings
         from core.theme_qss import build_qss
@@ -377,6 +385,19 @@ class BuildQssTest(unittest.TestCase):
             self.assertIn(f'color: {tokens.button_disabled_text};', disabled)
             listing = _rule_block(qss, 'QDialog QListWidget')
             self.assertIn(f'background-color: {tokens.surface};', listing)
+
+            # Item-level states: the base-list migration left styles.qss:120-132
+            # with no successor. This QListWidget has no delegate, so row
+            # padding, dividers and selection/hover colours must survive here or
+            # the two-line rows (library_dialog.py:113) lose them.
+            item = _rule_block(qss, 'QDialog QListWidget::item')
+            self.assertIn('padding: 6px 8px;', item)
+            self.assertIn(f'1px solid {tokens.divider}', item)
+            item_selected = _rule_block(qss, 'QDialog QListWidget::item:selected')
+            self.assertIn(f'background-color: {tokens.accent_soft};', item_selected)
+            self.assertIn(f'color: {tokens.text_primary};', item_selected)
+            item_hover = _rule_block(qss, 'QDialog QListWidget::item:hover')
+            self.assertIn(f'background-color: {tokens.hover_bg};', item_hover)
 
             # The family must stay scoped by its ancestor: drop `QDialog ` and
             # these rules become the exact global leak the sheet exists to close
