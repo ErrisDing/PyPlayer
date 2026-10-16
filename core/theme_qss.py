@@ -294,8 +294,15 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     emit(_rule(f'{chip}:hover', [
         ('background-color', t.button_hover),
     ]))
+    # Controller ruling (deviates from the brief's mapping table): the selected
+    # chip is an OUTLINED chip -- `accent` text and border on `surface` -- not a
+    # filled `accent_soft` one. No single `accent_*` foreground clears 4.5:1 on
+    # `accent_soft` in both themes (LIGHT `accent` 4.03, DARK `accent_pressed`
+    # 4.44 -- the accent family's lightness ordering inverts between themes),
+    # while `accent` on `surface` is 4.60 LIGHT / 6.91 DARK. Guarded in
+    # tests/test_theme_qss.py::SelectedChipContrastTest.
     emit(_rule(f'{chip}[selected="true"]', [
-        ('background-color', t.accent_soft),
+        ('background-color', t.surface),
         ('border-color', t.accent),
         ('color', t.accent),
     ]))

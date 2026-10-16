@@ -32,6 +32,11 @@ LEFTOVER_PLACEHOLDER_RE = re.compile(r'\{[a-z_]+\}')
 # The alpha value of any ``rgba(r, g, b, a)`` produced by the generator.
 RGBA_ALPHA_RE = re.compile(r'rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([0-9.]+)\s*\)')
 
+# The selected media-library chip rule, pinned so the contrast guard below
+# reads the exact rule the generator emits rather than a substring hit on the
+# base ``QPushButton[chip="true"]`` rule.
+CHIP_SELECTED_SELECTOR = 'QPushButton[chip="true"][selected="true"]'
+
 
 def _rule_block(qss: str, selector_pattern: str) -> str:
     """Return the declaration body of the rule whose selector matches.
@@ -43,6 +48,82 @@ def _rule_block(qss: str, selector_pattern: str) -> str:
     match = re.search(re.escape(selector_pattern) + r'\s*\{([^}]*)\}', qss)
     assert match, f'no rule block found for {selector_pattern!r}'
     return match.group(1)
+
+
+def _colour_declaration(block: str, prop: str) -> str:
+    """Return the ``#rrggbb`` value ``prop`` is declared with in a rule body.
+
+    Reading the emitted stylesheet (instead of re-deriving the mapping from the
+    tokens) is what keeps the contrast guard below honest: change the mapping
+    and the value under test changes with it.
+    """
+    match = re.search(
+        rf'^\s*{re.escape(prop)}\s*:\s*(#[0-9a-fA-F]{{6}})\s*;', block, re.M)
+    assert match, (
+        f'{prop!r} is not declared with a #rrggbb token colour in: {block!r}')
+    return match.group(1).lower()
+
+
+class SelectedChipContrastTest(unittest.TestCase):
+    """Task 4's own WCAG invariant for the selected media-library chip.
+
+    The brief's mapping table (``task-4-brief.md`` line 42) paired ``accent``
+    text with an ``accent_soft`` background for
+    ``QPushButton[chip="true"][selected="true"]``. Measured with the shared
+    WCAG helper that pairing is 4.03:1 in LIGHT, and no other ``accent_*``
+    foreground clears 4.5:1 on ``accent_soft`` in BOTH themes -- DARK's accent
+    family inverts its lightness ordering relative to LIGHT (``accent``
+    5.31/4.03 vs ``accent_pressed`` 4.44/7.56). The ruling is therefore on the
+    background: the selected chip is an outlined chip -- ``accent`` text and
+    border on ``surface`` -- which is 4.60:1 LIGHT / 6.91:1 DARK.
+
+    This lives here, not in Task 3's ``ThemeContrastTest.EXTRA_PAIRS``, because
+    it is an invariant of the *mapping*, not of the palette: ``core/theme.py``
+    is untouched and Task 3's file stays as it shipped.
+    """
+
+    def _blocks(self):
+        from core.theme import DARK, LIGHT, AlphaSettings
+        from core.theme_qss import build_qss
+
+        for name in ('LIGHT', 'DARK'):
+            tokens = LIGHT if name == 'LIGHT' else DARK
+            qss = build_qss(tokens, AlphaSettings())
+            yield name, tokens, _rule_block(qss, CHIP_SELECTED_SELECTOR)
+
+    def test_selected_chip_is_accent_on_surface(self):
+        """The mapping is the outlined chip: accent text/border on surface."""
+        for name, tokens, block in self._blocks():
+            with self.subTest(theme=name):
+                self.assertEqual(
+                    tokens.surface, _colour_declaration(block, 'background-color'),
+                    f'{name}: selected chip background must be the `surface` token '
+                    f'-- an `accent_soft` fill puts `accent` text under 4.5:1',
+                )
+                self.assertEqual(
+                    tokens.accent, _colour_declaration(block, 'color'),
+                    f'{name}: selected chip text must be the `accent` token',
+                )
+                self.assertEqual(
+                    tokens.accent, _colour_declaration(block, 'border-color'),
+                    f'{name}: selected chip border must be the `accent` token',
+                )
+
+    def test_selected_chip_text_clears_wcag_aa(self):
+        """Whatever the rule emits for text+background must clear 4.5:1, both themes."""
+        from tests.test_theme import ThemeContrastTest
+
+        failures = []
+        for name, _tokens, block in self._blocks():
+            fg = _colour_declaration(block, 'color')
+            bg = _colour_declaration(block, 'background-color')
+            ratio = ThemeContrastTest.contrast(fg, bg)
+            if ratio < 4.5:
+                failures.append(
+                    f'{name}: selected chip text {fg} on {bg} = {ratio:.2f}:1, '
+                    f'needs 4.5:1')
+
+        self.assertEqual([], failures, '\n'.join(failures))
 
 
 class BuildQssTest(unittest.TestCase):
