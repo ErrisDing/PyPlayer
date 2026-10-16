@@ -49,6 +49,7 @@ class PlaylistView(QWidget):
 
         # Header
         header = QLabel("Playlist")
+        header.setObjectName("playlistHeader")
         header.setStyleSheet("""
             QLabel {
                 background-color: rgba(58, 58, 58, 0.85);
@@ -61,6 +62,7 @@ class PlaylistView(QWidget):
 
         # List view with custom model
         self._list_view = QListView()
+        self._list_view.setObjectName("playlistView")
         self._model = PlaylistModel(self)
         self._list_view.setModel(self._model)
 

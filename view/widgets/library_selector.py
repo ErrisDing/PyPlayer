@@ -75,6 +75,10 @@ class LibrarySelector(QWidget):
             name = lib.name if lib.name else Path(lib.path).name
             button = QPushButton(name)
             button.setProperty("library_path", lib.path)
+            # Scope for the generated sheet: QPushButton[chip="true"] styles the
+            # media-library chips, since objectNames would not scale per library.
+            # QSS matches property values as strings, hence "true" not True.
+            button.setProperty("chip", "true")
             button.clicked.connect(lambda checked, p=lib.path: self._on_button_click(p))
             button.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -109,7 +113,11 @@ class LibrarySelector(QWidget):
         for button in self._buttons:
             lib_path = button.property("library_path")
             is_selected = lib_path == self._current_path
-            button.setProperty("selected", is_selected)
+            # "selected"/"chip" are QSS property selectors and Qt matches those
+            # against the property value as a string, so the value has to be
+            # 'true'/'false' -- a Python bool would make QPushButton[
+            # selected="true"] in core/theme_qss.py inert.
+            button.setProperty("selected", "true" if is_selected else "false")
             # Force style refresh
             button.style().unpolish(button)
             button.style().polish(button)

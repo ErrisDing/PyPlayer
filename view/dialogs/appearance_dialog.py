@@ -62,6 +62,9 @@ class AppearanceDialog(QDialog):
 
     def _setup_ui(self) -> None:
         """Set up the dialog UI."""
+        # Style scope for the generated sheet (QDialog#appearanceDialog).
+        # Identification only -- this task adds no styling.
+        self.setObjectName('appearanceDialog')
         self.setWindowTitle(i18n.dialog('dialog.title.appearance'))
         self.setMinimumWidth(450)
 
@@ -74,8 +77,10 @@ class AppearanceDialog(QDialog):
 
         # Current background display
         self._bg_path_label = QLabel(i18n.dialog('appearance.no_background'))
+        self._bg_path_label.setObjectName('bgPathLabel')
         self._bg_path_label.setWordWrap(True)
         self._bg_path_label.setStyleSheet("color: #666; font-style: italic;")
+        self._update_bg_path_state()
         bg_layout.addWidget(self._bg_path_label)
 
         # Background buttons
@@ -98,6 +103,7 @@ class AppearanceDialog(QDialog):
 
         overlay_slider_layout = QHBoxLayout()
         self._overlay_slider = QSlider(Qt.Orientation.Horizontal)
+        self._overlay_slider.setObjectName('overlaySlider')
         self._overlay_slider.setRange(AppearanceDefaults.SLIDER_MIN, AppearanceDefaults.SLIDER_MAX)
         self._overlay_slider.valueChanged.connect(self._on_overlay_changed)
         overlay_slider_layout.addWidget(self._overlay_slider)
@@ -118,6 +124,7 @@ class AppearanceDialog(QDialog):
 
         playlist_slider_layout = QHBoxLayout()
         self._playlist_slider = QSlider(Qt.Orientation.Horizontal)
+        self._playlist_slider.setObjectName('playlistSlider')
         self._playlist_slider.setRange(AppearanceDefaults.SLIDER_MIN, AppearanceDefaults.SLIDER_MAX)
         self._playlist_slider.valueChanged.connect(self._on_playlist_changed)
         playlist_slider_layout.addWidget(self._playlist_slider)
@@ -138,6 +145,7 @@ class AppearanceDialog(QDialog):
 
         controls_slider_layout = QHBoxLayout()
         self._controls_slider = QSlider(Qt.Orientation.Horizontal)
+        self._controls_slider.setObjectName('controlsSlider')
         self._controls_slider.setRange(AppearanceDefaults.SLIDER_MIN, AppearanceDefaults.SLIDER_MAX)
         self._controls_slider.valueChanged.connect(self._on_controls_changed)
         controls_slider_layout.addWidget(self._controls_slider)
@@ -163,6 +171,21 @@ class AppearanceDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
+    def _update_bg_path_state(self) -> None:
+        """Sync the ``empty`` dynamic property the generated sheet selects on.
+
+        ``core/theme_qss.py`` styles ``#bgPathLabel[empty="true"]`` (the muted
+        italic placeholder) apart from a ``#bgPathLabel`` holding a real path.
+        QSS property selectors match the property value as a string, hence the
+        literals ``'true'``/``'false'``, and unpolish/polish is what makes the
+        sheet re-read it. Nothing here paints: the per-widget ``setStyleSheet``
+        calls still drive the look until Task 6 removes them.
+        """
+        label = self._bg_path_label
+        label.setProperty('empty', 'false' if self._background_image else 'true')
+        label.style().unpolish(label)
+        label.style().polish(label)
+
     def _populate_values(self) -> None:
         """Populate UI with current values."""
         # Background image path
@@ -172,6 +195,7 @@ class AppearanceDialog(QDialog):
         else:
             self._bg_path_label.setText(i18n.dialog('appearance.no_background'))
             self._bg_path_label.setStyleSheet("color: #666; font-style: italic;")
+        self._update_bg_path_state()
 
         # Sliders (convert 0.0-1.0 to 0-100)
         self._overlay_slider.blockSignals(True)
@@ -201,6 +225,7 @@ class AppearanceDialog(QDialog):
             self._background_image = file_path
             self._bg_path_label.setText(file_path)
             self._bg_path_label.setStyleSheet("color: #333; font-style: normal;")
+            self._update_bg_path_state()
             self.background_image_changed.emit(file_path)
 
     def _on_clear_background(self) -> None:
@@ -208,6 +233,7 @@ class AppearanceDialog(QDialog):
         self._background_image = None
         self._bg_path_label.setText(i18n.dialog('appearance.no_background'))
         self._bg_path_label.setStyleSheet("color: #666; font-style: italic;")
+        self._update_bg_path_state()
         self.background_image_changed.emit("")
 
     def _on_overlay_changed(self, value: int) -> None:
@@ -252,6 +278,7 @@ class AppearanceDialog(QDialog):
         else:
             self._bg_path_label.setText(i18n.dialog('appearance.no_background'))
             self._bg_path_label.setStyleSheet("color: #666; font-style: italic;")
+        self._update_bg_path_state()
 
     def set_overlay_alpha(self, alpha: float) -> None:
         """Update overlay slider value."""

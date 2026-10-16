@@ -239,6 +239,12 @@ class BottomPanel(QWidget):
 
     def _setup_ui(self) -> None:
         """Set up the UI components."""
+        # Style scopes for the theme sheet (core/theme_qss.py selects on
+        # #bottomPanel / #progressSlider / #volumeSlider / #playButton /
+        # #loopButton / #timeLabel and on [role="transport"]).
+        # Identification only here -- no styling changes in this task.
+        self.setObjectName("bottomPanel")
+
         # Enable transparency for the widget
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
@@ -255,12 +261,14 @@ class BottomPanel(QWidget):
 
         # Current time label
         self._current_time = QLabel("0:00")
+        self._current_time.setObjectName("timeLabel")
         self._current_time.setMinimumWidth(50)
         self._current_time.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         progress_layout.addWidget(self._current_time)
 
         # Progress slider
         self._slider = ClickableSlider(Qt.Orientation.Horizontal)
+        self._slider.setObjectName("progressSlider")
         self._slider.setRange(0, 1000)
         self._slider.setValue(0)
         self._slider.setEnabled(False)
@@ -288,6 +296,7 @@ class BottomPanel(QWidget):
 
         # Duration label
         self._duration_label = QLabel("0:00")
+        self._duration_label.setObjectName("timeLabel")
         self._duration_label.setMinimumWidth(50)
         self._duration_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         progress_layout.addWidget(self._duration_label)
@@ -305,6 +314,9 @@ class BottomPanel(QWidget):
 
         # Previous button
         self._prev_btn = QPushButton()
+        # QSS matches dynamic properties as strings, so the transport scope is
+        # the literal "transport" (QPushButton[role="transport"]).
+        self._prev_btn.setProperty("role", "transport")
         self._prev_btn.setFixedSize(40, 40)
         self._prev_btn.setIcon(create_vector_icon(draw_prev_icon, icon_color, 20, dpr))
         self._prev_btn.setIconSize(QSize(20, 20))
@@ -314,6 +326,7 @@ class BottomPanel(QWidget):
 
         # Play/Pause button
         self._play_btn = QPushButton()
+        self._play_btn.setObjectName("playButton")
         self._play_btn.setFixedSize(50, 50)
         self._play_btn.setStyleSheet("""
             QPushButton {
@@ -335,6 +348,7 @@ class BottomPanel(QWidget):
 
         # Stop button
         self._stop_btn = QPushButton()
+        self._stop_btn.setProperty("role", "transport")
         self._stop_btn.setFixedSize(40, 40)
         self._stop_btn.setIcon(create_vector_icon(draw_stop_icon, icon_color, 20, dpr))
         self._stop_btn.setIconSize(QSize(20, 20))
@@ -343,6 +357,7 @@ class BottomPanel(QWidget):
 
         # Next button
         self._next_btn = QPushButton()
+        self._next_btn.setProperty("role", "transport")
         self._next_btn.setFixedSize(40, 40)
         self._next_btn.setIcon(create_vector_icon(draw_next_icon, icon_color, 20, dpr))
         self._next_btn.setIconSize(QSize(20, 20))
@@ -354,6 +369,7 @@ class BottomPanel(QWidget):
 
         # Loop mode button
         self._loop_btn = QPushButton("↺")
+        self._loop_btn.setObjectName("loopButton")
         self._loop_btn.setFixedSize(40, 40)
         self._loop_btn.setToolTip("Loop: OFF")
         self._loop_btn.clicked.connect(self._on_loop_clicked)
@@ -369,6 +385,7 @@ class BottomPanel(QWidget):
 
         # Volume slider
         self._volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self._volume_slider.setObjectName("volumeSlider")
         self._volume_slider.setRange(0, 100)
         self._volume_slider.setValue(100)
         self._volume_slider.setFixedWidth(100)

@@ -73,6 +73,10 @@ class NowPlayingPanel(QWidget):
 
     def _setup_ui(self) -> None:
         """Set up the UI components."""
+        # Style scope for the theme sheet (core/theme_qss.py emits
+        # `QMainWindow, #nowPlayingPanel`). Identification only, no styling.
+        self.setObjectName("nowPlayingPanel")
+
         # Enable transparency
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("background-color: transparent;")
@@ -86,6 +90,7 @@ class NowPlayingPanel(QWidget):
 
         # Album art label
         self._art_label = QLabel()
+        self._art_label.setObjectName("albumArt")
         self._art_label.setFixedSize(self.ART_SIZE, self.ART_SIZE)
         self._art_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._art_label.setStyleSheet("""
@@ -105,6 +110,7 @@ class NowPlayingPanel(QWidget):
 
         # Title
         self._title_label = QLabel("No Track Playing")
+        self._title_label.setObjectName("trackTitle")
         self._title_label.setStyleSheet("font-weight: bold; background-color: transparent;")
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._title_label.setWordWrap(True)
@@ -112,6 +118,7 @@ class NowPlayingPanel(QWidget):
 
         # Artist
         self._artist_label = QLabel("")
+        self._artist_label.setObjectName("trackArtist")
         self._artist_label.setStyleSheet("color: #666; background-color: transparent;")
         self._artist_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._artist_label.setWordWrap(True)
@@ -119,6 +126,7 @@ class NowPlayingPanel(QWidget):
 
         # Album
         self._album_label = QLabel("")
+        self._album_label.setObjectName("trackAlbum")
         self._album_label.setStyleSheet("color: #888; background-color: transparent;")
         self._album_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._album_label.setWordWrap(True)
