@@ -125,8 +125,13 @@ class BottomPanel(QWidget):
         self._setup_ui()
         self._generate_icons()
 
-    def _generate_icons(self) -> None:
+    def _generate_icons(self, tokens=None) -> None:
         """(Re)rasterise every glyph from the SVG set in the current tokens.
+
+        ``tokens`` defaults to the manager's current set (the live theme-switch
+        path); a caller that passes tokens gets *those* tokens -- the argument
+        was previously ignored and re-read the manager behind the caller's
+        back, which is the Task 8 trap this signature closes.
 
         One colour per role, no literals anywhere: ``icon`` for the transport
         buttons and the volume speaker, ``icon_on_accent`` for the play disc,
@@ -134,7 +139,8 @@ class BottomPanel(QWidget):
         colour is what the WCAG guards in ``tests/test_theme.py`` measured
         against the background the widget actually paints it on.
         """
-        tokens = self._theme.tokens
+        if tokens is None:
+            tokens = self._theme.tokens
         dpr = self.devicePixelRatioF()
 
         self._prev_btn.setIcon(
@@ -212,7 +218,11 @@ class BottomPanel(QWidget):
         self._prev_btn.setProperty("role", "transport")
         self._prev_btn.setFixedSize(TRANSPORT_SIZE, TRANSPORT_SIZE)
         self._prev_btn.setIconSize(QSize(TRANSPORT_ICON_SIZE, TRANSPORT_ICON_SIZE))
-        self._prev_btn.setToolTip(i18n.get('button.prev') if hasattr(i18n, 'get') else "Previous")
+        # A6/D3: tooltips come from i18n. ``i18n`` is a hard dependency of this
+        # module (imported above), so the old ``hasattr(i18n, 'get')`` guard
+        # could only ever fire after a broken install -- it was deleted rather
+        # than ported.
+        self._prev_btn.setToolTip(i18n.get('button.prev_track'))
         self._prev_btn.clicked.connect(self.prev_clicked.emit)
         controls_layout.addWidget(self._prev_btn)
 
@@ -221,6 +231,7 @@ class BottomPanel(QWidget):
         self._play_btn.setObjectName("playButton")
         self._play_btn.setFixedSize(PLAY_SIZE, PLAY_SIZE)
         self._play_btn.setIconSize(QSize(PLAY_ICON_SIZE, PLAY_ICON_SIZE))
+        self._play_btn.setToolTip(i18n.get('button.play_pause'))
         self._play_btn.clicked.connect(self.play_pause_clicked.emit)
         controls_layout.addWidget(self._play_btn)
 
@@ -229,6 +240,7 @@ class BottomPanel(QWidget):
         self._stop_btn.setProperty("role", "transport")
         self._stop_btn.setFixedSize(TRANSPORT_SIZE, TRANSPORT_SIZE)
         self._stop_btn.setIconSize(QSize(TRANSPORT_ICON_SIZE, TRANSPORT_ICON_SIZE))
+        self._stop_btn.setToolTip(i18n.get('button.stop_track'))
         self._stop_btn.clicked.connect(self.stop_clicked.emit)
         controls_layout.addWidget(self._stop_btn)
 
@@ -237,6 +249,7 @@ class BottomPanel(QWidget):
         self._next_btn.setProperty("role", "transport")
         self._next_btn.setFixedSize(TRANSPORT_SIZE, TRANSPORT_SIZE)
         self._next_btn.setIconSize(QSize(TRANSPORT_ICON_SIZE, TRANSPORT_ICON_SIZE))
+        self._next_btn.setToolTip(i18n.get('button.next_track'))
         self._next_btn.clicked.connect(self.next_clicked.emit)
         controls_layout.addWidget(self._next_btn)
 
@@ -251,7 +264,7 @@ class BottomPanel(QWidget):
         self._loop_btn.setObjectName("loopButton")
         self._loop_btn.setFixedSize(TRANSPORT_SIZE, TRANSPORT_SIZE)
         self._loop_btn.setIconSize(QSize(TRANSPORT_ICON_SIZE, TRANSPORT_ICON_SIZE))
-        self._loop_btn.setToolTip("Loop: OFF")
+        self._loop_btn.setToolTip(i18n.get('loop.mode_off'))
         self._loop_btn.clicked.connect(self._on_loop_clicked)
         controls_layout.addWidget(self._loop_btn)
 
@@ -357,9 +370,9 @@ class BottomPanel(QWidget):
         """
         self._set_loop_icon(self._theme.tokens)
         tips = {
-            "OFF": "Loop: OFF",
-            "ONE": "Loop: ONE",
-            "ALL": "Loop: ALL",
+            "OFF": i18n.get('loop.mode_off'),
+            "ONE": i18n.get('loop.mode_one'),
+            "ALL": i18n.get('loop.mode_all'),
         }
         self._loop_btn.setToolTip(tips[self._loop_mode])
 
@@ -370,9 +383,10 @@ class BottomPanel(QWidget):
 
         Called from ``MainWindow.recolor`` on every ``theme_changed``. The
         button chrome itself is QSS's business; the glyphs are the one thing
-        here that QSS cannot restyle, so they are the one thing redrawn.
+        here that QSS cannot restyle, so they are the one thing redrawn --
+        from the tokens handed in, whatever the manager may say later.
         """
-        self._generate_icons()
+        self._generate_icons(tokens)
 
     def set_playing_state(self, is_playing: bool, is_paused: bool = False) -> None:
         """Update the play/pause button state."""

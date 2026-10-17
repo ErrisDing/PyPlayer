@@ -783,6 +783,7 @@ class BottomPanelIconTest(unittest.TestCase):
         icon has to be that button's *icon* -- not a transparent label beside it
         -- or the guard protects a surface the icon never appears on.
         """
+        from core import i18n
         from core.theme import DARK, LIGHT
         from core.theme_qss import build_qss
         from tests.test_theme_qss import _rule_block
@@ -802,7 +803,12 @@ class BottomPanelIconTest(unittest.TestCase):
                     _token(expected), self._button_colour(panel._loop_btn),
                     f'{mode} must be drawn with {expected}')
                 tip = panel._loop_btn.toolTip()
-                self.assertIn(mode, tip)
+                # Task 9 (A6/D3): the per-mode tooltips are i18n keys now
+                # (loop.mode_off / mode_one / mode_all), so this pins "the tip
+                # is the key's value" rather than the old English literal --
+                # locale-independent by construction, and the distinctness
+                # assertions below still prove one tooltip per mode.
+                self.assertEqual(tip, i18n.get(f'loop.mode_{mode.lower()}'))
                 tips.append(tip)
                 glyphs.append(panel._loop_btn.icon().pixmap(
                     panel._loop_btn.iconSize()).toImage().copy())

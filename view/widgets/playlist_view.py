@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from core import i18n
 from view.models.playlist_model import PlaylistModel
 from view.delegates.playlist_delegate import PlaylistItemDelegate
 
@@ -48,8 +49,9 @@ class PlaylistView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header
-        header = QLabel("Playlist")
+        # Header (A6: the English literal is gone; #playlistHeader's text is
+        # the i18n value, re-read whenever the widget tree is built).
+        header = QLabel(i18n.get('playlist.header'))
         header.setObjectName("playlistHeader")
         layout.addWidget(header)
 

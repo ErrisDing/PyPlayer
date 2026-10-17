@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from core import i18n
+
 
 class LibrarySelector(QWidget):
     """
@@ -77,6 +79,11 @@ class LibrarySelector(QWidget):
             # Scope for the generated sheet: QPushButton[chip="true"] styles the
             # media-library chips, since objectNames would not scale per library.
             button.setProperty("chip", "true")
+            # A6: the tooltip tells the user *which folder* the chip points at;
+            # the copy is i18n'd, the path substituted with the single-brace
+            # {path} convention the rest of the properties files already use
+            # (see presenter/main_presenter.py's .format() calls).
+            button.setToolTip(i18n.get('library.tooltip').format(path=lib.path))
             button.clicked.connect(lambda checked, p=lib.path: self._on_button_click(p))
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             # No per-widget stylesheet: the sheet owns the chip's resting,
