@@ -163,7 +163,6 @@ def main_qt():
         library_service=library_service,
         metadata_service=metadata_service,
         config_service=config_service,
-        theme_manager=theme_manager
     )
 
     # Start presenter

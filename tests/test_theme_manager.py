@@ -904,7 +904,6 @@ class PresenterThemeFlowTest(unittest.TestCase):
             library_service=MagicMock(name='library_service'),
             metadata_service=MagicMock(name='metadata_service'),
             config_service=self.config,
-            theme_manager=self.manager,
         )
 
     def tearDown(self):
@@ -973,30 +972,28 @@ class PresenterThemeFlowTest(unittest.TestCase):
 
         self.assertEqual('dark', seen['mode'])
 
-    def test_presenter_without_a_manager_still_persists(self):
-        """``theme_manager`` is optional, so a manager-less presenter cannot raise.
+    def test_a_failed_write_reports_to_the_user(self):
+        """A rejected persist must not be a silent no-op for the user.
 
-        ``tests/test_dead_code_removed.py`` builds a presenter without one; the
-        appearance dialog still has to be able to save the user's choice.
+        ``ConfigService.set_theme`` answers False when the write fails (full or
+        read-only disk, a Windows ``os.replace`` collision). It then emits no
+        ``theme_changed``, so nothing restyles -- the running theme and the file
+        keep the old mode while the click did nothing visible. The presenter's
+        job is to say so on the view's one status surface, not to add a second
+        apply path.
         """
-        from unittest.mock import MagicMock
+        from unittest.mock import patch
 
-        from presenter.main_presenter import MainPresenter
+        from core import i18n
 
-        presenter = MainPresenter(
-            view=self.view,
-            playback_service=self.playback,
-            queue_service=MagicMock(name='queue_service'),
-            library_service=MagicMock(name='library_service'),
-            metadata_service=MagicMock(name='metadata_service'),
-            config_service=self.config,
-        )
-        self.addCleanup(presenter.stop)
-        self.assertIsNone(presenter._theme)
+        self.config.set_theme.return_value = False
+        with patch.object(self.view, 'set_status_message') as status:
+            self.presenter._handle_theme_change('dark')
 
-        presenter._handle_theme_change('light')
-
-        self.config.set_theme.assert_called_with('light')
+        status.assert_called_once_with(i18n.get('status.theme_save_failed'))
+        self.assertEqual(
+            'auto', self.manager.mode,
+            'a refused write emits nothing, so a failed save may not restyle')
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
@@ -1051,7 +1048,6 @@ class ThemeRestartIntegrationTest(unittest.TestCase):
             library_service=MagicMock(name='library_service'),
             metadata_service=MagicMock(name='metadata_service'),
             config_service=self.config,
-            theme_manager=self.manager,
         )
 
     def tearDown(self):
@@ -1138,6 +1134,19 @@ class ThemeRestartIntegrationTest(unittest.TestCase):
         self.assertEqual('dark', self.manager.mode)
         self.assertIs(DARK, self.manager.tokens)
 
+        # Wipe the dark palette the click above already pushed onto the shared
+        # app, so the repaint check after the restart can only be satisfied by
+        # the restart itself re-applying the theme. Left alone it reads DARK
+        # with or without the restart path and proves nothing about it.
+        perturbed = QPalette()
+        perturbed.setColor(QPalette.ColorRole.Base, QColor('#010203'))
+        self.app.setPalette(perturbed)
+        self.assertNotEqual(
+            QColor(DARK.surface).name().lower(),
+            self.app.palette().color(QPalette.ColorRole.Base).name().lower(),
+            'the perturbation must clear the dark base, or the check below is '
+            'the tautology it used to be')
+
         # --- restart: a second process would build exactly these two objects ---
         restarted = ConfigService(config_file=self.settings_file)
         buffer = io.StringIO()
@@ -1156,7 +1165,8 @@ class ThemeRestartIntegrationTest(unittest.TestCase):
         self.assertEqual(
             QColor(DARK.surface).name().lower(),
             self.app.palette().color(QPalette.ColorRole.Base).name().lower(),
-            'the restart must actually repaint, not only report the mode')
+            'the restart must repaint: the dark base was wiped just above, so '
+            'only ThemeManager.apply_to on the restarted path can put it back')
 
         # And the dialog tells the truth about it on the next open.
         dialog = AppearanceDialog(

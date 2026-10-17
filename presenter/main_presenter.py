@@ -4,7 +4,7 @@ Main Presenter - Coordinates View and Service layers
 Implements MVP pattern for clean separation of concerns
 """
 
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, List
 from PyQt6.QtCore import QObject, QTimer, pyqtSlot
 
 import sys
@@ -17,13 +17,6 @@ from view.main_window import MainWindow
 # own to make (see ``_on_display_changed``).
 from view.dialogs import LibraryManagementDialog, AppearanceDialog
 from service.playback_service import PlaybackService
-
-if TYPE_CHECKING:
-    # Type-only: ``view.theme_manager`` pulls in ``core.theme_qss`` and the
-    # Qt gui module, and the presenter never needs it at runtime -- it holds the
-    # instance ``main.py`` already built, and the mode reaches that instance
-    # through ``ConfigService.theme_changed``, not from here.
-    from view.theme_manager import ThemeManager
 from service.queue_service import QueueService, PlaybackPosition, DisplayEntry as QueueDisplayEntry
 from service.library_service import LibraryService
 from service.metadata_service import MetadataService
@@ -57,7 +50,6 @@ class MainPresenter(QObject):
         metadata_service: MetadataService,
         config_service: ConfigService,
         parent: Optional[QObject] = None,
-        theme_manager: Optional['ThemeManager'] = None
     ):
         super().__init__(parent)
 
@@ -67,13 +59,6 @@ class MainPresenter(QObject):
         self._library = library_service
         self._metadata = metadata_service
         self._config = config_service
-        # The styling source ``main.py`` built from this same config service,
-        # kept as the presenter's handle on it. Optional so a presenter without
-        # a theme (dialog-only tests, TUI-ish harnesses) still constructs.
-        # ``_handle_theme_change`` does not read it: the mode is applied by
-        # ``ConfigService.theme_changed`` -> ``ThemeManager.set_mode``, wired
-        # once in ``main.py``.
-        self._theme = theme_manager
 
         # Current library tracking
         self._current_library_path: str = ""
@@ -357,15 +342,24 @@ class MainPresenter(QObject):
         """Handle a theme mode choice from the dialog: persist it, nothing else.
 
         Applying is the service's job. ``ConfigService.set_theme`` writes the
-        mode and emits ``theme_changed``, and ``main.py`` has that signal
-        connected to ``ThemeManager.set_mode``, so the flow is
-        view -> presenter -> service -> theme layer, one apply per click.
-        Calling ``set_mode`` from here too would be a second path, restyling
-        twice and looping back once anything else listens on the signal.
-        The write is what makes the choice survive a restart, and a write that
-        fails emits nothing, so the file and the running theme cannot disagree.
+        mode and, only when the write succeeds, emits ``theme_changed``, and
+        ``main.py`` has that signal connected to ``ThemeManager.set_mode``, so
+        the flow is view -> presenter -> service -> theme layer, one apply per
+        click. Calling ``set_mode`` from here too would be a second path,
+        restyling twice and looping back once anything else listens on the
+        signal.
+
+        The return value is the write's verdict, so it is checked. A write that
+        fails emits nothing, so the running theme and the file both keep the
+        old mode -- that much is guaranteed. What is not: ``set_theme`` in
+        ``core.config`` mutates ``settings.theme`` before saving, so after a
+        failed write ``get_theme()`` already answers the mode the user did not
+        get, and the dialog re-opened from it would lie. The presenter cannot
+        fix that ordering from here, so it tells the user the save failed
+        instead; a user-initiated click that silently does nothing is the bug.
         """
-        self._config.set_theme(mode)
+        if not self._config.set_theme(mode):
+            self._view.set_status_message(i18n.get('status.theme_save_failed'))
 
     def _handle_background_change(self, dialog: AppearanceDialog, path: str) -> None:
         """Handle background image change from dialog."""
