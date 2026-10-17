@@ -1,0 +1,16 @@
+<!-- loop_one: the same ring, unchanged, plus a "1" in the open middle. The
+     digit keeps the set's 2-unit stroke weight (stem x 11.5..13.5) and is
+     bbox-centred on x=12 together with its flag, so it does not lean.
+
+     The digit is the reason the ring could not simply be scaled down: at the
+     Task 10 measurements the old ring left a 10 x 10 hole, the redrawn one
+     leaves 8 x 8 once the arrowheads are accounted for, and the "1" is placed
+     inside what is actually clear. Its top edge is y=10.5 because the upper
+     arrowhead's lower vertex is (13, 10): at y=10 the digit and the arrowhead
+     touched and the "1" read as part of the ring. Its stem's left edge at
+     x=11.5 clears the lower arrowhead's base line at x=11, and its foot at
+     y=16 clears the lower band at y=17. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M5 5h8v-1l6 3-6 3v-3H7v5H5V5zM11 17h6v-5h2v7H11v1L5 17l6-3v3z"/>
+  <path fill="currentColor" d="M13.5 10.5V16H11.5V12L10 13L9.2 11.8L11.5 10.5Z"/>
+</svg>

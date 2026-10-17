@@ -1,0 +1,5 @@
+<!-- volume_mid: cone + two arcs (3.5/5.5 and 6.5/8.5). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M2 9v6h4l6 5V4L6 9H2z"/>
+  <path fill="currentColor" d="M13.25 9.32L14.54 7.79A5.5 5.5 0 0 1 14.54 16.21L13.25 14.68A3.5 3.5 0 0 0 13.25 9.32Z M15.18 7.02L16.46 5.49A8.5 8.5 0 0 1 16.46 18.51L15.18 16.98A6.5 6.5 0 0 0 15.18 7.02Z"/>
+</svg>

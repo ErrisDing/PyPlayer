@@ -55,7 +55,7 @@
 
 ```
 window_bg #fafafa   surface #ffffff   surface_alt #f5f5f5   surface_header #f0f2f5   scrim #ffffff
-text_primary #1f1f1f  text_secondary #5a5a5a  text_muted #6e6e6e  text_on_accent #ffffff
+text_primary #1f1f1f  text_secondary #5a5a5a  text_muted #6a6a6a  text_on_accent #ffffff
 accent #1976d2  accent_hover #1565c0  accent_pressed #0d47a1  accent_soft #e3f2fd
 selection_bg #eceff1  playing_bg #e3f2fd  playing_text #0d47a1  playing_bar #1976d2  hover_bg #f0f0f0
 border #d5d5d5  border_strong #bdbdbd  divider #eeeeee
@@ -69,7 +69,7 @@ tooltip_bg #323232  tooltip_text #ffffff  scrollbar_thumb #c0c0c0  scrollbar_thu
 
 ```
 window_bg #1e1e1e   surface #252526   surface_alt #2d2d30   surface_header #2f3338   scrim #121212
-text_primary #e4e4e4  text_secondary #b0b0b0  text_muted #9a9a9a  text_on_accent #0b1c2c
+text_primary #e4e4e4  text_secondary #b0b0b0  text_muted #a3a3a3  text_on_accent #0b1c2c
 accent #64b5f6  accent_hover #90caf9  accent_pressed #42a5f5  accent_soft #1f3a52
 selection_bg #2f343a  playing_bg #1f3a52  playing_text #90caf9  playing_bar #64b5f6  hover_bg #2a2d2e
 border #3f3f46  border_strong #555555  divider #333333
@@ -79,9 +79,11 @@ icon #d0d0d0  icon_muted #9a9a9a  icon_on_accent #0b1c2c  focus_ring #64b5f6
 tooltip_bg #3b3b3b  tooltip_text #e4e4e4  scrollbar_thumb #4a4a4a  scrollbar_thumb_hover #6a6a6a
 ```
 
-两处刻意的行为变更（非纯配色平移）：
+四处刻意的取值决策（非纯配色平移；最后一处是「不改」）：
 
 - `accent` 从 `#2196F3` 改 `#1976d2`：白字压在 `#2196F3` 上只有 2.6:1，不达标；`#1976d2` 为 4.6:1。
+- `text_muted` 从 `#6e6e6e`（LIGHT）/ `#9a9a9a`（DARK）抬到 `#6a6a6a` / `#a3a3a3`：原值对 `selection_bg`、`playing_bg` 只有 4.42 / 4.46（LIGHT）与 4.46 / 4.18（DARK），低于 §6 断言的 4.5:1；新值在四个文字背景上的最低对比度为 4.68（LIGHT）/ 4.66（DARK）。阈值不放宽，改的是色值。
+- **`icon_muted` 不跟着 `text_muted` 一起动**，保持 `#6e6e6e` / `#9a9a9a`：它是非文字 UI 组件（loop 关闭态图形），适用 WCAG 1.4.11 的 3:1 而不是 1.4.3 的 4.5:1（见 §4.6 D1），实测在其四个渲染背景（`button_bg`、`button_hover`、`button_pressed`、`surface`）上的最低对比度为 3.86（LIGHT，`button_pressed`）/ 3.14（DARK，`button_pressed`），已达标，并由 `ThemeContrastTest` 以 3.0 阈值守。后来者请勿把它镜像成 `text_muted` 的新值。
 - 选中与播放中改用不同族：选中 = 中性 `selection_bg`，播放中 = `playing_bg` + `playing_text` + 左侧 3px `playing_bar`（由 delegate 绘制）。
 
 共享的几何与排印 token（与主题无关，模块级常量）：
@@ -154,7 +156,10 @@ def icon(name, color_hex, size, dpr) -> QIcon   # 缓存键 (name, color, size, 
 
 - A6 硬编码文案改用已存在的 key：`metadata.no_track`（"No Track Playing"）、`metadata.unknown_artist`、`metadata.unknown_album`、`button.play_pause`、`button.prev_track`、`button.next_track`；新增 `metadata.unknown_title`、`playlist.header`（表头 "Playlist"）、`loop.mode_off/one/all`、`library.tooltip`。中英文两份 properties 同步补。
 - A7：`NowPlayingPanel` 初始态与 `clear()` 态统一为默认封面，删除 `"No Art"` 字面量与那段重复的 placeholder 样式。
-- D1：`text_muted`、`icon_muted`、相对路径文字色按 §4.1 抬到 ≥4.5:1，由测试守。
+- D1：两个 WCAG 类别，两条阈值，不可合并：
+  - 文字类（`text_muted`、相对路径文字色）按 1.4.3 正文对比度 ≥4.5:1，对其实际背景（`surface`、`surface_alt`、`selection_bg`、`playing_bg`）断言。
+  - 非文字 UI 组件类（`icon_muted`，即 loop 关闭态图形）按 1.4.11 非文字对比度 ≥3:1，对其实际渲染背景（`button_bg`、`button_hover`、`button_pressed`、`surface`）断言。
+  两者都由 `tests/test_theme.py::ThemeContrastTest` 守。因此每套主题里「弱文字」与「弱图标」是两种灰：`text_muted` 是对比度更高的那一侧（要过 4.5:1），`icon_muted` 停在 3:1 类所要求的水平，这个差值是类别不同导致的结果，不是笔误（见 §4.1 变更说明）。
 - D2：为 `#playlistView`、`[role="transport"]`、`#playButton`、`#loopButton`、`[chip="true"]` 加 `:focus` 环（`focus_ring`，2px）。
 - D3：播放/停止/下一曲补 tooltip（用上述 key），删除 `bottom_panel.py:311` 的 `hasattr(i18n,'get')` 无意义防御。
 
@@ -180,18 +185,30 @@ def icon(name, color_hex, size, dpr) -> QIcon   # 缓存键 (name, color, size, 
 
 ## 6. 测试
 
+> 本节在 Task 10 订正：原文低估了 `tests/test_theme.py` 与 `tests/test_theme_qss.py` 实际断言的内容，并把后者的 `build_qss` 断言误记在前者名下。以下按测试文件的现状重写。
+
 新增 `tests/test_theme.py`（纯函数，无 Qt）：
 
-- `LIGHT` 与 `DARK` 字段集合完全一致（防漏定义）。
-- `resolve` 真值表：`auto|light|dark` × `Dark|Light|Unknown` 共 9 种输入，`auto+Unknown → LIGHT`。
-- 对比度：对每套主题断言 `text_primary/text_secondary/text_muted` 对其实际背景（`surface`、`surface_alt`、`playing_bg`、`selection_bg`）≥4.5:1；`text_on_accent` 对 `accent` ≥4.5:1；`icon` 对 `surface` ≥3:1。测试内实现 WCAG 相对亮度计算。
-- `build_qss` 输出不含未替换的 `{`、不含 `styles.qss` 时代遗留的裸 `QPushButton {` 规则；alpha 越界输入被夹到 0..1。
+- `ThemeTokensTest.test_token_field_names_match_spec_4_1`：34 个 token 名按 §4.1 的字段分组顺序逐一钉死。期望值是**从 spec 手抄的字面量**，不从 `ThemeTokens` 派生，因此改名、换序、增删任一项都会失败。
+- `ThemeTokensTest.test_light_and_dark_define_identical_fields`：两套主题的字段集合完全一致（防漏定义），且每个字段都是小写 `#rrggbb` 字符串。
+- `ThemeTokensTest.test_resolve_truth_table`：`auto|light|dark` × `Dark|Light|Unknown` 共 9 种输入，`auto+Unknown → LIGHT`；断言的是 `LIGHT`/`DARK` 单例的**同一性**（`is`），不是相等。
+- `ThemeTokensTest.test_resolve_rejects_unknown_mode`：`neon`、`''`、`AUTO`、`Light`、`system` 一律 `ValueError`（大小写敏感是刻意设计）。
+- `ThemeContrastTest.test_contrast_requirements`：测试内实现 WCAG 2.1 相对亮度与对比度，对两套主题逐对断言，阈值不放宽、不达标就改色值。断言的对远多于原文所列：
+  - 文字类（4.5:1）：`text_primary`、`text_secondary`、`text_muted` 各自对 `surface`、`surface_alt`、`selection_bg`、`playing_bg` 共 12 对；另有 `text_on_accent`/`accent`、`playing_text`/`playing_bg`、`tooltip_text`/`tooltip_bg`。
+  - 非文字组件类（3:1，WCAG 1.4.11）：`icon`/`surface`、`icon_on_accent`/`accent`；`icon_muted` 对其四个真实渲染背景（`button_bg`、`button_hover`、`button_pressed`、`surface`）；Task 8 之后 `icon` 与 `accent` 各自对 transport/loop 按钮的三个背景也进入断言表。
+  - 结论是每套主题里 `text_muted` 与 `icon_muted` 是两种灰（4.5 类与 3 类的必然结果，见 §4.1、§4.6 D1）。
 
-新增 `tests/test_icons.py`：12 个 SVG 均存在、可 XML 解析、含 `viewBox="0 0 24 24"` 与 `currentColor`；`icon()` 在 dpr 1 与 2 下返回非空 pixmap（`QT_QPA_PLATFORM=offscreen`）。
+新增 `tests/test_theme_qss.py`（纯函数，无 Qt）：
 
-新增 `tests/test_view_smoke.py`：offscreen 下构造 `MainWindow`、`AppearanceDialog`，断言不抛异常且 `grab()` 非空。**这条就是本批次 0 那个启动崩溃的回归网**——它当时能直接拦住。无 PyQt6 时 `unittest.skipUnless` 跳过。
+- `SelectedChipContrastTest`：`QPushButton[chip="true"][selected="true"]` 必须是「描边态」——`background-color` 取 `surface`、`color` 与 `border-color` 取 `accent`（逐条比对生成表里该规则块的实际声明），且该前景/背景组合在两套主题下都过 4.5:1。这条守的是 §4.2 映射表被裁定改掉的那一格（表里的 `accent` on `accent_soft` 在 LIGHT 只有 4.03:1）。
+- `BuildQssTest`：对 `LIGHT|DARK` × 三组 alpha 共 6 份输出断言——无未替换的 `{placeholder}`、花括号配对；`QPushButton`/`QSlider`/`QListView`/`QLabel` 每条规则都带作用域（两道闸：行锚定的裸类正则，覆盖 `:disabled`、`:hover` 与逗号列表成员；以及逐 compound 的选择器解析，它连 `*` 和任何未登记裸类一起拒）；`EXEMPT_CHROME_CLASSES` 七项（`QMenuBar` `QMenu` `QScrollBar` `QToolTip` `QSplitter` `QGroupBox` `QMainWindow`）是**封闭清单**，多一个少一个都失败；对话框家族（`QDialog QPushButton`、`QDialog QListWidget` 及其 `::item` 状态）必须是祖先限定而非裸类；`REQUIRED_OBJECT_NAMES` 与 `REQUIRED_DYN_PROPERTIES` 每一项都出现在输出里；alpha 生效且越界被夹到 0..1；`hex_to_rgba` 的格式（含尾零裁剪）。
+- `PaletteOnlyColoursTest`：输出里每个 `#rrggbb` 必须等于某个 token 值、每个 `rgba(...)` 必须是「某 token + 某 alpha」，命名色只允许 `transparent` 与 `none`；并有一条元测试确认这套颜色扫描本身有牙。
 
-手动验证矩阵（离屏渲染，产出前后对比图）：`light|dark` × `空|有数据` × `820×520|1100×720`，共 8 张。注意离屏 harness 的中文字形会退化为方框，文字正确性须在真实 Windows 运行确认。
+新增 `tests/test_icons.py`：12 个 SVG 均存在、可 XML 解析、含 `viewBox="0 0 24 24"` 与 `currentColor`、无外部引用；`icon()` 在 dpr 1 与 2 下返回非空且真的填满了 `size*dpr` 那张图（HiDPI 断言量像素，不接受「调用过就行」）；缓存键含颜色、`clear_cache` 有效、资源缺失/坏 SVG 降级为 `QIcon()` 且只打一行警告；几何组用 2 px/unit 光栅化后的墨迹掩膜断言光学盒、transport 五连的高度节奏、prev/next 镜像一致、音量四级只增弧不移喇叭、loop 三态共用同一枚环、以及（Task 10 补）loop 图形不得跳出 transport 那一档尺寸级别。
+
+新增 `tests/test_view_smoke.py`：offscreen 下构造 `MainWindow`，断言不抛异常且 `grab()` 非空非零。**这条就是本批次 0 那个启动崩溃的回归网**——它当时能直接拦住。无 PyQt6 时 `unittest.skipUnless` 跳过。
+
+Task 10 另补 `tests/tools/render_matrix.py`：把上述断言看不见的部分交给眼睛。`--out DIR`，offscreen，真 `MainWindow` 灌假数据，产出 `light|dark` × `空|有数据` × `820×520|1100×720` 共 8 张 PNG，退出码 0。注意离屏 harness 的中文字形会退化为方框，文字正确性须在真实 Windows 运行确认；离屏也不驱动 `:hover`，弹窗与 chip 的悬停态需要真实指针。
 
 ## 7. 提交拆分
 

@@ -1,0 +1,6 @@
+<!-- prev: bar + left-pointing triangle (Material skip-previous geometry,
+     retuned to the set's 14-unit rhythm). Ink spans x 6..18, so the pair with
+     next is an exact mirror about x=12. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M6 5h3v14H6zM18 5v14l-8-7z"/>
+</svg>

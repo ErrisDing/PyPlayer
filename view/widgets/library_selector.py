@@ -8,11 +8,12 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from core import i18n
 
 
 class LibrarySelector(QWidget):
@@ -75,27 +76,18 @@ class LibrarySelector(QWidget):
             name = lib.name if lib.name else Path(lib.path).name
             button = QPushButton(name)
             button.setProperty("library_path", lib.path)
+            # Scope for the generated sheet: QPushButton[chip="true"] styles the
+            # media-library chips, since objectNames would not scale per library.
+            button.setProperty("chip", "true")
+            # A6: the tooltip tells the user *which folder* the chip points at;
+            # the copy is i18n'd, the path substituted with the single-brace
+            # {path} convention the rest of the properties files already use
+            # (see presenter/main_presenter.py's .format() calls).
+            button.setToolTip(i18n.get('library.tooltip').format(path=lib.path))
             button.clicked.connect(lambda checked, p=lib.path: self._on_button_click(p))
             button.setCursor(Qt.CursorShape.PointingHandCursor)
-
-            # Style
-            button.setStyleSheet("""
-                QPushButton {
-                    background-color: #e0e0e0;
-                    border: 1px solid #ccc;
-                    border-radius: 4px;
-                    padding: 4px 12px;
-                }
-                QPushButton:hover {
-                    background-color: #d0d0d0;
-                    border-color: #999;
-                }
-                QPushButton[selected="true"] {
-                    background-color: #4a9eff;
-                    border-color: #2a7eff;
-                    color: white;
-                }
-            """)
+            # No per-widget stylesheet: the sheet owns the chip's resting,
+            # hover, selected, disabled and focus looks.
 
             self._buttons.append(button)
             # Insert before stretch
@@ -109,7 +101,14 @@ class LibrarySelector(QWidget):
         for button in self._buttons:
             lib_path = button.property("library_path")
             is_selected = lib_path == self._current_path
-            button.setProperty("selected", is_selected)
+            # "selected"/"chip" are QSS property selectors. Strings are the
+            # declared contract of this widget tree, and the structure test
+            # asserts them as strings; Qt would in fact also match a Python
+            # bool, because its attribute selector special-cases
+            # QMetaType::Bool into "true"/"false". The strings stay anyway --
+            # they are what the sheet is written against and what a reader can
+            # grep.
+            button.setProperty("selected", "true" if is_selected else "false")
             # Force style refresh
             button.style().unpolish(button)
             button.style().polish(button)

@@ -122,10 +122,6 @@ def build_onefile_mode(project_root: Path) -> int:
     if locales_dir.exists():
         cmd.extend(['--add-data', f"{locales_dir};locales"])
 
-    qss_file = project_root / 'view' / 'resources' / 'styles.qss'
-    if qss_file.exists():
-        cmd.extend(['--add-data', f"{qss_file.parent};view/resources"])
-
     # Add hidden imports
     hidden_imports = [
         'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets', 'PyQt6.sip',

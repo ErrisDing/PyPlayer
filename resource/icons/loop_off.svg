@@ -1,0 +1,15 @@
+<!-- loop_off: the ring is drawn first and unchanged, then crossed by a 2-unit
+     slash on the top-left to bottom-right diagonal. That diagonal is the only
+     one which meets the ring at its two corner bends (the x 5..7 stub and the
+     x 17..19 one) while touching neither arrowhead (the upper one starts at
+     x=13, the lower one ends at x=11): a slash through an arrowhead reads as a
+     new arrowhead.
+
+     The slash is deliberately shorter than the old one, which ran x 1.2..21.6
+     and made loop_off the largest glyph in the app, larger even than
+     loop_all, so the *inactive* mode was the one that shouted. It now overruns
+     the ring by 0.7 units at each end, enough to read as a crossing-out. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M5 5h8v-1l6 3-6 3v-3H7v5H5V5zM11 17h6v-5h2v7H11v1L5 17l6-3v3z"/>
+  <path fill="currentColor" d="M5.71 4.29L19.21 17.79L17.79 19.21L4.29 5.71Z"/>
+</svg>

@@ -4,7 +4,7 @@ Main Presenter - Coordinates View and Service layers
 Implements MVP pattern for clean separation of concerns
 """
 
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, List
 from PyQt6.QtCore import QObject, QTimer, pyqtSlot
 
 import sys
@@ -12,12 +12,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from view.main_window import MainWindow
-from view.models import DisplayEntry
+# ``view.models.DisplayEntry`` is the service DTO since Task 2 merged the
+# duplicate, so the presenter has no conversion left to do and no import of its
+# own to make (see ``_on_display_changed``).
 from view.dialogs import LibraryManagementDialog, AppearanceDialog
 from service.playback_service import PlaybackService
-
-if TYPE_CHECKING:
-    pass
 from service.queue_service import QueueService, PlaybackPosition, DisplayEntry as QueueDisplayEntry
 from service.library_service import LibraryService
 from service.metadata_service import MetadataService
@@ -50,7 +49,7 @@ class MainPresenter(QObject):
         library_service: LibraryService,
         metadata_service: MetadataService,
         config_service: ConfigService,
-        parent: Optional[QObject] = None
+        parent: Optional[QObject] = None,
     ):
         super().__init__(parent)
 
@@ -91,15 +90,11 @@ class MainPresenter(QObject):
         self._view.track_double_clicked.connect(self._on_track_double_clicked)
 
         # Library management
-        self._view.add_library_requested.connect(self._on_add_library)
         self._view.scan_folder_requested.connect(self._on_scan_folder)
         self._view.refresh_library_requested.connect(self._on_refresh_library)
         self._view.refresh_all_requested.connect(self._on_refresh_all)
         self._view.library_selected.connect(self._on_library_selected)
         self._view.manage_libraries_requested.connect(self._on_manage_libraries)
-
-        # Background image
-        self._view.background_image_changed.connect(self._on_background_image_changed)
 
         # Appearance settings
         self._view.manage_appearance_requested.connect(self._on_manage_appearance)
@@ -221,16 +216,6 @@ class MainPresenter(QObject):
             self._playback.play(track.path)
 
     @pyqtSlot(str)
-    def _on_add_library(self, path: str) -> None:
-        """Handle add library request."""
-        if self._config.add_library(path):
-            self._library.load_library(path)
-            # Refresh library list in UI
-            libraries = self._config.get_libraries()
-            self._view.set_libraries(libraries)
-            self._view.set_status_message(f"Added library: {path}")
-
-    @pyqtSlot(str)
     def _on_scan_folder(self, folder: str) -> None:
         """Handle scan folder request."""
         self._library.load_library(folder)
@@ -324,16 +309,6 @@ class MainPresenter(QObject):
             self._view.set_libraries(libraries)
             dialog.set_libraries(libraries)
 
-    @pyqtSlot(str)
-    def _on_background_image_changed(self, path: str) -> None:
-        """Handle background image change from UI."""
-        if path:
-            self._config.set_background_image(path)
-            self._view.set_status_message(i18n.get('status.background_set', default='背景图片已设置'))
-        else:
-            self._config.set_background_image(None)
-            self._view.set_status_message(i18n.get('status.background_cleared', default='背景图片已清除'))
-
     @pyqtSlot()
     def _on_manage_appearance(self) -> None:
         """Handle manage appearance menu action - open dialog."""
@@ -342,10 +317,12 @@ class MainPresenter(QObject):
             overlay_alpha=self._config.get_overlay_alpha(),
             playlist_alpha=self._config.get_playlist_alpha(),
             controls_alpha=self._config.get_controls_alpha(),
+            theme_mode=self._config.get_theme(),
             parent=self._view
         )
 
         # Connect dialog signals
+        dialog.theme_selected.connect(self._handle_theme_change)
         dialog.background_image_changed.connect(
             lambda path: self._handle_background_change(dialog, path)
         )
@@ -360,6 +337,29 @@ class MainPresenter(QObject):
         )
 
         dialog.exec()
+
+    def _handle_theme_change(self, mode: str) -> None:
+        """Handle a theme mode choice from the dialog: persist it, nothing else.
+
+        Applying is the service's job. ``ConfigService.set_theme`` writes the
+        mode and, only when the write succeeds, emits ``theme_changed``, and
+        ``main.py`` has that signal connected to ``ThemeManager.set_mode``, so
+        the flow is view -> presenter -> service -> theme layer, one apply per
+        click. Calling ``set_mode`` from here too would be a second path,
+        restyling twice and looping back once anything else listens on the
+        signal.
+
+        The return value is the write's verdict, so it is checked. A write that
+        fails emits nothing, so the running theme and the file both keep the
+        old mode -- that much is guaranteed. What is not: ``set_theme`` in
+        ``core.config`` mutates ``settings.theme`` before saving, so after a
+        failed write ``get_theme()`` already answers the mode the user did not
+        get, and the dialog re-opened from it would lie. The presenter cannot
+        fix that ordering from here, so it tells the user the save failed
+        instead; a user-initiated click that silently does nothing is the bug.
+        """
+        if not self._config.set_theme(mode):
+            self._view.set_status_message(i18n.get('status.theme_save_failed'))
 
     def _handle_background_change(self, dialog: AppearanceDialog, path: str) -> None:
         """Handle background image change from dialog."""
@@ -414,8 +414,13 @@ class MainPresenter(QObject):
             self._view.highlight_current_track(-1)
             return
 
-        # Update UI with track info
-        title = track.title if track.title else "Unknown Title"
+        # Update UI with track info. The unknown title stays *empty* here:
+        # ``NowPlayingPanel.update_track_info`` maps an empty title to
+        # ``i18n.get('metadata.unknown_title')``. Pre-filling that copy in the
+        # presenter used to jump over the view's fallback, so a zh_CN user saw
+        # English in the headline (review finding 1: the view owns the
+        # fallback, the presenter passes the raw data through).
+        title = track.title if track.title else ""
         artist = track.artist if track.artist else ""
         album = track.album if track.album else ""
 
@@ -429,8 +434,11 @@ class MainPresenter(QObject):
         if position.display_index >= 0:
             self._view.highlight_current_track(position.display_index)
 
-        # Update status
-        self._view.set_status_message(f"Now playing: {title}")
+        # Update status. The status line is presenter-owned text, so it cannot
+        # reuse the view's fallback; the label still comes from the same key.
+        self._view.set_status_message(
+            f"Now playing: {title or i18n.get('metadata.unknown_title')}"
+        )
 
     @pyqtSlot()
     def _on_track_ended(self) -> None:
@@ -465,23 +473,14 @@ class MainPresenter(QObject):
 
     @pyqtSlot(list)
     def _on_display_changed(self, entries: List[QueueDisplayEntry]) -> None:
-        """Handle display entries change from queue service."""
-        # Convert to view model DisplayEntry
-        view_entries = []
-        for entry in entries:
-            view_entry = DisplayEntry(
-                display_text=entry.display_text,
-                node_idx=entry.node_idx,
-                is_folder=entry.is_folder,
-                path=entry.path,
-                sub_index=entry.sub_index,
-                full_path=entry.full_path,
-                is_playing=entry.is_playing,
-                relative_position=entry.relative_position
-            )
-            view_entries.append(view_entry)
+        """Handle display entries change from queue service.
 
-        self._view.set_playlist_entries(view_entries)
+        No conversion step: Task 2 merged the duplicate DTOs, so
+        ``view.models.DisplayEntry is service.queue_service.DisplayEntry`` and
+        rebuilding the list field-by-field only produced copies of objects the
+        view was already free to read.
+        """
+        self._view.set_playlist_entries(entries)
 
     @pyqtSlot(str, object)
     def _on_metadata_loaded(self, filepath: str, metadata) -> None:
