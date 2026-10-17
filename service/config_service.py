@@ -25,10 +25,25 @@ class ConfigService(QObject):
     libraries_reordered = pyqtSignal()    # emitted when library order changes
     config_saved = pyqtSignal()
     appearance_changed = pyqtSignal()     # emitted when appearance settings change
+    theme_changed = pyqtSignal(str)       # emitted with the new mode (auto/light/dark)
 
-    def __init__(self, parent: Optional[QObject] = None):
+    def __init__(
+        self,
+        config_file: Optional[str] = None,
+        parent: Optional[QObject] = None,
+    ):
+        """Create the service.
+
+        Args:
+            config_file: Settings file to read and write. Defaults to the
+                cache location (``~/.pyplayer/cache/settings.json``), with the
+                one-time migration from the project root that
+                :class:`SettingsManager` performs. Tests pass a temporary path
+                so a signal test cannot rewrite a real user's configuration.
+            parent: Optional ``QObject`` parent.
+        """
         super().__init__(parent)
-        self._manager = SettingsManager()
+        self._manager = SettingsManager(config_file)
 
     @property
     def settings(self) -> Settings:
@@ -142,6 +157,26 @@ class ConfigService(QObject):
         result = self._manager.set_background_image(path)
         if result:
             self.config_saved.emit()
+        return result
+
+    # === Theme Methods ===
+
+    def get_theme(self) -> str:
+        """Get the theme mode: ``'auto'``, ``'light'`` or ``'dark'``."""
+        return self._manager.get_theme()
+
+    def set_theme(self, mode: str) -> bool:
+        """Persist the theme mode and emit :attr:`theme_changed`.
+
+        Returns:
+            True if the mode was saved; False (and no signal) for a mode the
+            theme layer cannot resolve. The listener order matters here: the
+            presenter persists first and only then hands the mode to
+            ``ThemeManager.set_mode``, which raises on a bad value.
+        """
+        result = self._manager.set_theme(mode)
+        if result:
+            self.theme_changed.emit(mode)
         return result
 
     # === Appearance Settings Methods ===

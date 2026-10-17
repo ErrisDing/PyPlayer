@@ -334,6 +334,40 @@ class ThemeManagerTest(unittest.TestCase):
             window.close()
             window.deleteLater()
 
+    def test_dark_palette_keeps_the_hovered_list_row_legible(self):
+        """Task 4's carried-over dependency, now closed.
+
+        ``QDialog QListWidget::item:hover`` sets a background and no foreground,
+        so the hovered library row reads its text colour from the palette. That
+        was only safe once something actually installed a palette -- Task 6
+        installed it, Task 7 makes ``'dark'`` reachable for real (it used to be
+        unreachable behind the hardcoded ``mode='auto'``), so the pairing is
+        asserted in the theme a user can now persist.
+        """
+        from tests.test_theme import ThemeContrastTest
+
+        from core.theme import DARK
+
+        mgr = self._manager('dark')
+        mgr.apply_to(self.app)
+
+        hover = _rule_block(self.app.styleSheet(),
+                            'QDialog QListWidget::item:hover')
+        self.assertIn('background-color', hover)
+        self.assertNotIn(
+            'color:', hover.replace('background-color', ''),
+            'the hover rule must keep taking its foreground from the palette '
+            'or this test stops proving the palette pairing',
+        )
+        self.assertEqual(
+            self.app.palette().color(QPalette.ColorRole.Text),
+            QColor(DARK.text_primary),
+        )
+        self.assertGreaterEqual(
+            ThemeContrastTest.contrast(DARK.text_primary, DARK.hover_bg), 4.5,
+            'hovered library text is body text: WCAG 2.1 AA needs 4.5:1',
+        )
+
     def test_widgets_take_their_colours_from_tokens(self):
         """The transport icons are regenerated from the tokens, not hardcoded."""
         from core.theme import DARK, LIGHT
@@ -529,9 +563,12 @@ class StartupSeamTest(unittest.TestCase):
     the construction of the manager a startup hazard, so the seam has to catch
     it, fall back to ``auto`` and say so once.
 
-    ``main_qt`` still passes ``mode='auto'`` literally (Task 6 hardcodes it);
-    the helper takes the mode as an argument so the fallback is reachable and
-    tested, and Task 7 only has to hand it ``config_service.get_theme()``.
+    Since Task 7 the mode comes from ``config_service.get_theme()``, which is
+    what makes that protective catch a live code path instead of decoration
+    around a literal. Two layers defend the same value: ``core.config``
+    normalises it on read (``tests/test_config_theme.py``), and this seam still
+    catches anything unresolvable that reaches it -- so a future caller that
+    hands over a raw value cannot brick startup either.
     """
 
     def setUp(self):
@@ -543,12 +580,79 @@ class StartupSeamTest(unittest.TestCase):
         self.app.setPalette(self._saved_palette)
 
     @staticmethod
-    def _config():
+    def _config(theme='auto'):
+        """A stand-in ``ConfigService``: the three alphas plus the persisted mode."""
         return SimpleNamespace(
             get_overlay_alpha=lambda: 0.47,
             get_playlist_alpha=lambda: 0.75,
             get_controls_alpha=lambda: 0.85,
+            get_theme=lambda: theme,
         )
+
+    def test_persisted_mode_is_read_from_the_config_service(self):
+        """No literal any more: the stored ``'dark'`` is what the manager starts on.
+
+        Before Task 7 this failed by construction -- ``main_qt`` handed
+        ``mode='auto'`` and the config value was never consulted.
+        """
+        import io
+        from contextlib import redirect_stdout
+
+        import main as main_module
+        from core.theme import DARK
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            mgr = main_module.build_theme_manager(
+                self.app, self._config(theme='dark'))
+
+        self.assertEqual(
+            '', buffer.getvalue(),
+            'a valid persisted mode must not print a fallback warning')
+        self.assertEqual('dark', mgr.mode)
+        self.assertIs(
+            DARK, mgr.tokens,
+            'the mode the app started with has to be the persisted one')
+
+    def test_bad_persisted_mode_falls_back_with_one_warning(self):
+        """Task 6's guard, now reachable from a real stored value.
+
+        ``build_theme_manager`` is handed only the config service, so the bad
+        mode can have come from nowhere but ``get_theme()``: this is the
+        hand-edited ``"theme": "Auto"`` / ``"theme": "neon"`` case, and startup
+        must survive it.
+        """
+        import io
+        from contextlib import redirect_stdout
+
+        import main as main_module
+        from core.theme import LIGHT
+
+        for persisted in ('Auto', 'neon', ''):
+            with self.subTest(persisted=persisted):
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    mgr = main_module.build_theme_manager(
+                        self.app, self._config(theme=persisted))
+                out = buffer.getvalue()
+
+                self.assertEqual(
+                    1, out.count('Warning'),
+                    f'exactly one warning line is expected, got: {out!r}')
+                self.assertEqual('auto', mgr.mode)
+                self.assertIs(LIGHT, mgr.tokens)
+                self.assertIn('#bottomPanel', self.app.styleSheet())
+
+    def test_main_qt_does_not_hardcode_the_mode(self):
+        """The literal that made the guard unreachable must stay gone."""
+        import inspect
+
+        import main as main_module
+
+        source = inspect.getsource(main_module.main_qt)
+        self.assertNotIn('mode="auto"', source)
+        self.assertNotIn("mode='auto'", source)
+        self.assertIn('build_theme_manager(app, config_service)', source)
 
     def test_bad_mode_falls_back_to_auto(self):
         import io
@@ -590,6 +694,289 @@ class StartupSeamTest(unittest.TestCase):
         self.assertAlmostEqual(mgr.alphas.playlist, 0.75)
         self.assertAlmostEqual(mgr.alphas.controls, 0.85)
         self.assertAlmostEqual(mgr.alphas.overlay, 0.47)
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class AppearanceThemeChoiceTest(unittest.TestCase):
+    """The dialog's three-mode group and the presenter route that applies it.
+
+    ``AppearanceDialog`` owns no service: it emits ``theme_selected(str)`` and
+    ``MainPresenter`` is the only thing allowed to persist the mode and flip the
+    manager, which is what makes the choice take effect without a restart.
+    """
+
+    MODES = {'themeAuto': 'auto', 'themeLight': 'light', 'themeDark': 'dark'}
+
+    def setUp(self):
+        self.app = make_app()
+        self._saved_palette = self.app.palette()
+
+    def tearDown(self):
+        self.app.setPalette(self._saved_palette)
+
+    def _dialog(self, theme_mode='auto'):
+        """Built the way the presenter builds it, with the mode it persists."""
+        from view.dialogs import AppearanceDialog
+
+        dialog = AppearanceDialog(
+            background_image=None,
+            overlay_alpha=1.0,
+            playlist_alpha=1.0,
+            controls_alpha=1.0,
+            theme_mode=theme_mode,
+        )
+        self.addCleanup(dialog.deleteLater)
+        return dialog
+
+    def _radio(self, dialog, object_name):
+        from PyQt6.QtWidgets import QRadioButton
+
+        radio = dialog.findChild(QRadioButton, object_name)
+        self.assertIsNotNone(
+            radio, f'#{object_name} is missing from the appearance dialog')
+        return radio
+
+    def test_theme_group_is_the_first_group_of_the_dialog(self):
+        """The mode picker precedes the background sliders: it is the bigger choice."""
+        from PyQt6.QtWidgets import QGroupBox
+
+        from core import i18n
+
+        dialog = self._dialog('light')
+        first = dialog.layout().itemAt(0).widget()
+        self.assertIsInstance(first, QGroupBox)
+        self.assertEqual(
+            i18n.dialog('appearance.group.theme'), first.title(),
+            'the theme group must be the first group box in the dialog')
+        self.assertEqual(
+            i18n.dialog('dialog.title.appearance'), dialog.windowTitle())
+
+    def test_the_three_modes_are_one_exclusive_group(self):
+        from core import i18n
+
+        dialog = self._dialog('auto')
+        for object_name, mode in self.MODES.items():
+            with self.subTest(mode=mode):
+                radio = self._radio(dialog, object_name)
+                self.assertEqual(
+                    i18n.dialog(f'appearance.theme_{mode}'), radio.text())
+                self.assertNotIn(
+                    '[MISSING', radio.text(),
+                    'the label must be in both dialog catalogues')
+                self.assertEqual(
+                    'auto' == mode, radio.isChecked(),
+                    'constructing with the mode must check exactly that radio')
+
+    def test_the_radio_set_covers_every_theme_mode(self):
+        """Drift guard: the picker is driven by ``core.config.THEME_MODES``.
+
+        ``THEME_CHOICES`` pairs each mode with its objectName, so it is a second
+        list of the same three values. A fourth mode added to the resolver (or a
+        rename) would otherwise leave the dialog unable to reach a mode the
+        settings file can store and ``ThemeManager.set_mode`` accepts -- and no
+        sheet rule or test would notice, because every radio would simply still
+        work. Uniqueness is checked too: two radios on one mode would fight.
+        """
+        from core.config import THEME_MODES
+        from view.dialogs.appearance_dialog import THEME_CHOICES
+
+        modes = [mode for mode, _ in THEME_CHOICES]
+        self.assertEqual(set(THEME_MODES), set(modes))
+        self.assertEqual(len(THEME_MODES), len(modes), 'a mode is listed twice')
+        names = [name for _, name in THEME_CHOICES]
+        self.assertEqual(len(names), len(set(names)),
+                         'objectNames must be unique')
+        self.assertEqual(self.MODES, dict(zip(names, modes)),
+                         'the objectName -> mode map the tests click on must be '
+                         'the one the dialog builds')
+
+    def test_clicking_a_mode_emits_theme_selected(self):
+        """One click, one emission, the mode string -- and nothing else reached."""
+        dialog = self._dialog('auto')
+        emitted = []
+        dialog.theme_selected.connect(emitted.append)
+
+        self._radio(dialog, 'themeDark').click()
+        self._radio(dialog, 'themeLight').click()
+
+        self.assertEqual(['dark', 'light'], emitted)
+        self.assertTrue(self._radio(dialog, 'themeLight').isChecked())
+        self.assertFalse(
+            self._radio(dialog, 'themeDark').isChecked(),
+            'the radios must be mutually exclusive, not three checkboxes')
+
+    def test_an_unrecognised_stored_mode_is_shown_as_auto(self):
+        """The dialog degrades like the loader does: never an unchecked group.
+
+        ``MainPresenter`` can hand it anything (in these tests a ``MagicMock``),
+        and a group with no checked radio is a UI dead end.
+        """
+        from types import SimpleNamespace
+
+        for bad in ('neon', 'Auto', None, SimpleNamespace()):
+            with self.subTest(theme_mode=bad):
+                dialog = self._dialog(bad)
+                self.assertTrue(self._radio(dialog, 'themeAuto').isChecked())
+
+    def test_the_sliders_still_work_after_the_new_group(self):
+        """Regression guard for the group inserted above them.
+
+        The alpha sliders and the background label are looked up by objectName
+        by other suites; an insert at the top of the layout must not have
+        shifted or orphaned any of them.
+        """
+        from PyQt6.QtWidgets import QLabel, QSlider
+
+        dialog = self._dialog('dark')
+        for object_name in ('overlaySlider', 'playlistSlider', 'controlsSlider'):
+            self.assertIsNotNone(
+                dialog.findChild(QSlider, object_name),
+                f'#{object_name} is no longer a child of the dialog')
+        self.assertIsNotNone(dialog.findChild(QLabel, 'bgPathLabel'))
+
+    def test_reset_defaults_moves_the_sliders_but_not_the_theme(self):
+        """The mode has its own control; "reset" must not restyle the app.
+
+        The button predates the theme group and answers the three sliders. Since
+        Task 7 a click would otherwise be able to persist ``'auto'`` and flip
+        every colour while the user was only chasing opacity, so the exclusion
+        is a decision -- and now it is pinned.
+        """
+        dialog = self._dialog('dark')
+        emitted = []
+        dialog.theme_selected.connect(emitted.append)
+
+        dialog._on_reset_defaults()
+
+        self.assertEqual([], emitted,
+                         'reset must not emit theme_selected')
+        self.assertEqual('dark', dialog.theme_mode)
+        self.assertTrue(self._radio(dialog, 'themeDark').isChecked())
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class PresenterThemeFlowTest(unittest.TestCase):
+    """dialog -> presenter -> (config, ThemeManager), the live theme change."""
+
+    def setUp(self):
+        from unittest.mock import MagicMock
+
+        from presenter.main_presenter import MainPresenter
+        from tests.test_view_smoke import make_manager
+        from view.main_window import MainWindow
+
+        self.app = make_app()
+        self._saved_palette = self.app.palette()
+
+        self.manager = make_manager('auto')
+        self.manager.apply_to(self.app)
+        self.view = MainWindow(self.manager)
+        self.addCleanup(self.view.deleteLater)
+
+        self.config = MagicMock(name='config_service')
+        self.config.get_libraries.return_value = []
+        self.config.get_background_image.return_value = None
+        self.config.get_overlay_alpha.return_value = 0.47
+        self.config.get_playlist_alpha.return_value = 0.75
+        self.config.get_controls_alpha.return_value = 0.85
+        self.config.get_theme.return_value = 'auto'
+        self.config.set_theme.return_value = True
+
+        # ``MainPresenter.__init__`` runs ``_load_config``, which reads the real
+        # view, so the mocks answer with the types the view expects.
+        self.playback = MagicMock(name='playback_service')
+        self.playback.get_volume.return_value = 0.5
+
+        self.presenter = MainPresenter(
+            view=self.view,
+            playback_service=self.playback,
+            queue_service=MagicMock(name='queue_service'),
+            library_service=MagicMock(name='library_service'),
+            metadata_service=MagicMock(name='metadata_service'),
+            config_service=self.config,
+            theme_manager=self.manager,
+        )
+
+    def tearDown(self):
+        self.view.close()
+        self.app.setPalette(self._saved_palette)
+
+    def _pick(self, object_name):
+        """Open the dialog the way the menu does and click one mode radio."""
+        from unittest.mock import patch
+
+        from PyQt6.QtWidgets import QRadioButton
+
+        from view.dialogs.appearance_dialog import AppearanceDialog
+
+        def fake_exec(dialog):
+            radio = dialog.findChild(QRadioButton, object_name)
+            self.assertIsNotNone(radio, f'#{object_name} missing from dialog')
+            radio.click()
+            return AppearanceDialog.DialogCode.Accepted
+
+        with patch.object(AppearanceDialog, 'exec', fake_exec):
+            self.presenter._on_manage_appearance()
+
+    def test_choosing_a_mode_persists_it_and_restyles(self):
+        from core.theme import DARK, LIGHT
+
+        self.assertIs(LIGHT, self.manager.tokens)
+
+        self._pick('themeDark')
+
+        self.config.set_theme.assert_called_once_with('dark')
+        self.assertEqual('dark', self.manager.mode)
+        self.assertIs(
+            DARK, self.manager.tokens,
+            'the running theme must flip without a restart')
+
+        self._pick('themeLight')
+        self.assertEqual('light', self.manager.mode)
+        self.assertIs(LIGHT, self.manager.tokens)
+
+    def test_the_dialog_opens_on_the_persisted_mode(self):
+        """``get_theme()`` is what pre-checks a radio, so the dialog cannot lie."""
+        from unittest.mock import patch
+
+        from view.dialogs.appearance_dialog import AppearanceDialog
+
+        self.config.get_theme.return_value = 'dark'
+        seen = {}
+
+        def fake_exec(dialog):
+            seen['mode'] = dialog._theme_mode
+            return AppearanceDialog.DialogCode.Accepted
+
+        with patch.object(AppearanceDialog, 'exec', fake_exec):
+            self.presenter._on_manage_appearance()
+
+        self.assertEqual('dark', seen['mode'])
+
+    def test_presenter_without_a_manager_still_persists(self):
+        """``theme_manager`` is optional, so a manager-less presenter cannot raise.
+
+        ``tests/test_dead_code_removed.py`` builds a presenter without one; the
+        appearance dialog still has to be able to save the user's choice.
+        """
+        from unittest.mock import MagicMock
+
+        from presenter.main_presenter import MainPresenter
+
+        presenter = MainPresenter(
+            view=self.view,
+            playback_service=self.playback,
+            queue_service=MagicMock(name='queue_service'),
+            library_service=MagicMock(name='library_service'),
+            metadata_service=MagicMock(name='metadata_service'),
+            config_service=self.config,
+        )
+        self.addCleanup(presenter.stop)
+        self.assertIsNone(presenter._theme)
+
+        presenter._handle_theme_change('light')
+
+        self.config.set_theme.assert_called_with('light')
 
 
 if __name__ == '__main__':

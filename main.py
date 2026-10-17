@@ -11,32 +11,45 @@ Usage:
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Add project root to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
 
-def build_theme_manager(app, config_service, mode: str = "auto"):
+def build_theme_manager(app, config_service, mode: Optional[str] = None):
     """Create the theme manager and install it on ``app``.
 
     The only stylesheet/palette source of the GUI: the old ``styles.qss`` file
     and the darwin-only dark palette this function replaced are both gone, so
     a theme is ``resolve(mode, system_scheme)`` -> tokens -> palette + QSS.
 
-    The mode is validated by :func:`core.theme.resolve`, which deliberately
-    raises ``ValueError`` on an unrecognised value so a typo'd preference can
-    never silently render the wrong theme. That would otherwise take the whole
-    app down at startup on a hand-edited ``settings.json`` (``"theme": "Auto"``),
-    so the seam catches it, prints one line and falls back to ``'auto'``.
+    The mode comes from ``config_service.get_theme()`` unless a caller overrides
+    it, which is what makes the fallback below a live path: the value was written
+    by hand as much as by the app. ``core.theme.resolve`` deliberately raises
+    ``ValueError`` on an unrecognised value so a typo'd preference can never
+    silently render the wrong theme; left alone that would take the whole app
+    down at startup on a ``settings.json`` edited to ``"theme": "Auto"`` (the
+    resolver is case-sensitive) or ``"theme": "neon"``. So the seam catches it,
+    prints one line and falls back to ``'auto'``.
+
+    ``core.config`` normalises the same value on read, which is why a bad mode
+    reaching here is the second line of defence rather than the only one: it
+    happens when a caller hands over something that never went through the
+    loader.
 
     Args:
         app: The running ``QApplication`` (must already have its style set).
-        config_service: Source of the three transparency settings.
-        mode: ``'auto'``, ``'light'`` or ``'dark'``. Task 6 hardcodes the
-            default; Task 7 passes ``config_service.get_theme()``.
+        config_service: Source of the theme mode and the three transparency
+            settings.
+        mode: ``'auto'``, ``'light'`` or ``'dark'``; ``None`` (the startup
+            default) reads it from ``config_service``.
     """
     from core.theme import AlphaSettings
     from view.theme_manager import ThemeManager
+
+    if mode is None:
+        mode = config_service.get_theme()
 
     alphas = AlphaSettings(
         overlay=config_service.get_overlay_alpha(),
@@ -98,8 +111,11 @@ def main_qt():
     config_service = ConfigService()
 
     # Single styling source: palette + generated sheet, before any widget is
-    # constructed so the first polish already sees the theme.
-    theme_manager = build_theme_manager(app, config_service, mode="auto")
+    # constructed so the first polish already sees the theme. The mode is the
+    # persisted one -- Task 6 left a literal here, which made the ValueError
+    # fallback inside the helper unreachable and meant a chosen theme never
+    # survived a restart.
+    theme_manager = build_theme_manager(app, config_service)
 
     # Create view
     view = MainWindow(theme_manager)
@@ -111,7 +127,8 @@ def main_qt():
         queue_service=queue_service,
         library_service=library_service,
         metadata_service=metadata_service,
-        config_service=config_service
+        config_service=config_service,
+        theme_manager=theme_manager
     )
 
     # Start presenter

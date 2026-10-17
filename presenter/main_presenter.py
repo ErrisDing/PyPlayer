@@ -19,7 +19,10 @@ from view.dialogs import LibraryManagementDialog, AppearanceDialog
 from service.playback_service import PlaybackService
 
 if TYPE_CHECKING:
-    pass
+    # Type-only: ``view.theme_manager`` pulls in ``core.theme_qss`` and the
+    # Qt gui module, and the presenter never needs it at runtime -- it holds the
+    # instance ``main.py`` already built and only calls ``set_mode`` on it.
+    from view.theme_manager import ThemeManager
 from service.queue_service import QueueService, PlaybackPosition, DisplayEntry as QueueDisplayEntry
 from service.library_service import LibraryService
 from service.metadata_service import MetadataService
@@ -52,7 +55,8 @@ class MainPresenter(QObject):
         library_service: LibraryService,
         metadata_service: MetadataService,
         config_service: ConfigService,
-        parent: Optional[QObject] = None
+        parent: Optional[QObject] = None,
+        theme_manager: Optional['ThemeManager'] = None
     ):
         super().__init__(parent)
 
@@ -62,6 +66,11 @@ class MainPresenter(QObject):
         self._library = library_service
         self._metadata = metadata_service
         self._config = config_service
+        # The styling source ``main.py`` built from the same config service.
+        # Optional so a presenter without a theme (dialog-only tests, TUI-ish
+        # harnesses) can still persist the choice; ``_handle_theme_change``
+        # checks it before restyling.
+        self._theme = theme_manager
 
         # Current library tracking
         self._current_library_path: str = ""
@@ -320,10 +329,12 @@ class MainPresenter(QObject):
             overlay_alpha=self._config.get_overlay_alpha(),
             playlist_alpha=self._config.get_playlist_alpha(),
             controls_alpha=self._config.get_controls_alpha(),
+            theme_mode=self._config.get_theme(),
             parent=self._view
         )
 
         # Connect dialog signals
+        dialog.theme_selected.connect(self._handle_theme_change)
         dialog.background_image_changed.connect(
             lambda path: self._handle_background_change(dialog, path)
         )
@@ -338,6 +349,21 @@ class MainPresenter(QObject):
         )
 
         dialog.exec()
+
+    def _handle_theme_change(self, mode: str) -> None:
+        """Handle a theme mode choice from the dialog.
+
+        Persist first, then restyle: the mode lives in ``settings.json`` and the
+        running theme is derived from it, so the order is what makes the choice
+        survive a restart instead of only painting this session. ``set_mode``
+        resolves the value and raises on anything outside auto/light/dark --
+        the dialog can only emit those three, and a refused ``set_theme`` (False)
+        still reaches that check on purpose: the UI and the file must not be
+        allowed to disagree.
+        """
+        self._config.set_theme(mode)
+        if self._theme is not None:
+            self._theme.set_mode(mode)
 
     def _handle_background_change(self, dialog: AppearanceDialog, path: str) -> None:
         """Handle background image change from dialog."""

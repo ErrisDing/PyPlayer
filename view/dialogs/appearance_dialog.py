@@ -6,7 +6,7 @@ Appearance Configuration Dialog - Dialog for customizing UI appearance
 from typing import Optional
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider,
-    QPushButton, QGroupBox, QFileDialog, QWidget
+    QPushButton, QGroupBox, QRadioButton, QFileDialog, QWidget
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -15,7 +15,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from core import i18n
+from core.config import DEFAULT_THEME_MODE, THEME_MODES
 from core.constants import AppearanceDefaults
+
+# The three modes in display order: follow the system, then the two overrides.
+# The first element is the value ``theme_selected`` emits and the suffix of the
+# i18n key ``appearance.theme_<mode>``; the second is the widget's objectName,
+# which is what the tests and any future sheet rule address the radio by. The
+# allowed set itself is ``core.config.THEME_MODES`` -- one list, three consumers
+# (dialog, settings file, ``core.theme.resolve``).
+THEME_CHOICES = (
+    ('auto', 'themeAuto'),
+    ('light', 'themeLight'),
+    ('dark', 'themeDark'),
+)
 
 
 class AppearanceDialog(QDialog):
@@ -23,6 +36,7 @@ class AppearanceDialog(QDialog):
     Dialog for configuring application appearance.
 
     Features:
+    - Theme mode radio group: follow the system, or force light/dark
     - Background image selection and clearing
     - Background overlay transparency slider
     - Playlist transparency slider
@@ -36,6 +50,7 @@ class AppearanceDialog(QDialog):
     overlay_alpha_changed = pyqtSignal(float)        # 0.0 - 1.0
     playlist_alpha_changed = pyqtSignal(float)       # 0.0 - 1.0
     controls_alpha_changed = pyqtSignal(float)       # 0.0 - 1.0
+    theme_selected = pyqtSignal(str)                 # 'auto' | 'light' | 'dark'
 
     def __init__(
         self,
@@ -43,6 +58,7 @@ class AppearanceDialog(QDialog):
         overlay_alpha: float,
         playlist_alpha: float,
         controls_alpha: float,
+        theme_mode: str = DEFAULT_THEME_MODE,
         parent: Optional[QWidget] = None
     ):
         super().__init__(parent)
@@ -51,6 +67,11 @@ class AppearanceDialog(QDialog):
         i18n.detect_init()
 
         self._background_image = background_image
+
+        # Degrade like the loader does: an unrecognised mode must not leave the
+        # group with nothing checked, and this dialog is handed whatever
+        # ``ConfigService.get_theme()`` answered.
+        self._theme_mode = theme_mode if theme_mode in THEME_MODES else DEFAULT_THEME_MODE
 
         # Store current values (0.0-1.0 scale)
         self._overlay_alpha = overlay_alpha
@@ -71,6 +92,28 @@ class AppearanceDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(15)
+
+        # === Theme Mode Group ===
+        # Above the background group on purpose: the mode decides the colours of
+        # everything below it, including this dialog's own chrome.
+        theme_group = QGroupBox(i18n.dialog('appearance.group.theme'))
+        theme_layout = QVBoxLayout(theme_group)
+
+        # Sharing the group box as their parent widget is what makes these three
+        # radios mutually exclusive, so no ``QButtonGroup`` is needed; the modes
+        # are addressed by objectName, which is also how any future sheet rule
+        # would scope them (the generated stylesheet does not style them yet).
+        self._theme_buttons = {}
+        for mode, object_name in THEME_CHOICES:
+            radio = QRadioButton(i18n.dialog(f'appearance.theme_{mode}'))
+            radio.setObjectName(object_name)
+            radio.toggled.connect(
+                lambda checked, selected=mode: self._on_theme_toggled(
+                    checked, selected))
+            theme_layout.addWidget(radio)
+            self._theme_buttons[mode] = radio
+
+        layout.addWidget(theme_group)
 
         # === Background Image Group ===
         bg_group = QGroupBox(i18n.dialog('appearance.group.background'))
@@ -190,6 +233,9 @@ class AppearanceDialog(QDialog):
 
     def _populate_values(self) -> None:
         """Populate UI with current values."""
+        # Theme mode radio (no signal: see ``set_theme_mode``)
+        self.set_theme_mode(self._theme_mode)
+
         # Background image path
         if self._background_image:
             self._bg_path_label.setText(self._background_image)
@@ -212,6 +258,20 @@ class AppearanceDialog(QDialog):
         self._controls_slider.setValue(int(self._controls_alpha * 100))
         self._controls_value_label.setText(f"{int(self._controls_alpha * 100)}%")
         self._controls_slider.blockSignals(False)
+
+    def _on_theme_toggled(self, checked: bool, mode: str) -> None:
+        """Handle a theme radio toggle.
+
+        ``toggled`` fires for both halves of an exclusive switch, so only the
+        button becoming checked carries a decision, and a mode that is already
+        the current one is not worth persisting again -- the presenter writes
+        ``settings.json`` on every emission, and re-clicking the checked radio
+        must not rewrite the file.
+        """
+        if not checked or mode == self._theme_mode:
+            return
+        self._theme_mode = mode
+        self.theme_selected.emit(mode)
 
     def _on_select_background(self) -> None:
         """Handle select background button click."""
@@ -253,7 +313,13 @@ class AppearanceDialog(QDialog):
         self.controls_alpha_changed.emit(self._controls_alpha)
 
     def _on_reset_defaults(self) -> None:
-        """Reset all values to defaults."""
+        """Reset all values to defaults.
+
+        The theme mode is deliberately not included: this button answers the
+        three sliders, and silently flipping the app's colours while a user is
+        adjusting opacity would be a much bigger change than they asked for.
+        The mode has its own three-way control.
+        """
         self._overlay_alpha = AppearanceDefaults.BACKGROUND_OVERLAY_ALPHA
         self._playlist_alpha = AppearanceDefaults.PLAYLIST_BG_ALPHA
         self._controls_alpha = AppearanceDefaults.BOTTOM_PANEL_BG_ALPHA
@@ -266,6 +332,25 @@ class AppearanceDialog(QDialog):
         self.controls_alpha_changed.emit(self._controls_alpha)
 
     # === Public API for Presenter ===
+
+    @property
+    def theme_mode(self) -> str:
+        """``'auto'``, ``'light'`` or ``'dark'`` as the dialog currently stands."""
+        return self._theme_mode
+
+    def set_theme_mode(self, mode: str) -> None:
+        """Check the radio for ``mode`` without emitting ``theme_selected``.
+
+        ``_theme_mode`` is assigned before the widget state so the toggled
+        handler sees "already current" and stays quiet -- which is exactly what
+        makes this safe to call from :meth:`_populate_values` and from the
+        presenter when something else changed the theme. Anything outside
+        :data:`core.config.THEME_MODES` is shown as ``'auto'``, the same
+        degradation the loader performs.
+        """
+        mode = mode if mode in THEME_MODES else DEFAULT_THEME_MODE
+        self._theme_mode = mode
+        self._theme_buttons[mode].setChecked(True)
 
     def set_background_image(self, path: Optional[str]) -> None:
         """Update background image display."""

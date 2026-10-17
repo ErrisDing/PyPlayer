@@ -14,6 +14,28 @@ from datetime import datetime
 
 from core.constants import AppearanceDefaults
 
+# The theme modes the rest of the theme layer accepts, verbatim:
+# ``core.theme.resolve`` compares against these exact lowercase literals and
+# raises ``ValueError`` for anything else, and ``ThemeManager`` hands that value
+# straight through. Keeping the set here (rather than importing it from
+# ``core.theme``) keeps ``core.config`` dependency-free -- it is used by the TUI
+# and by tests with no Qt installed.
+THEME_MODES = ('auto', 'light', 'dark')
+DEFAULT_THEME_MODE = 'auto'
+
+
+def _normalize_theme(value: object) -> str:
+    """Coerce a persisted ``theme`` value to one of :data:`THEME_MODES`.
+
+    Deliberately tolerant: reading a hand-edited ``settings.json`` must never
+    stop the app from starting, so an unrecognised value -- ``'Auto'`` (the
+    resolver is case-sensitive), ``'neon'``, a non-string -- degrades to
+    ``'auto'``, which is also what a missing key gives. The strict counterpart
+    is :meth:`SettingsManager.set_theme`, which refuses to *write* a value
+    outside the set.
+    """
+    return value if value in THEME_MODES else DEFAULT_THEME_MODE
+
 
 @dataclass
 class LibraryConfig:
@@ -31,6 +53,10 @@ class Settings:
     """Represents the complete system configuration"""
     media_libraries: List[LibraryConfig] = field(default_factory=list)
     background_image: Optional[str] = None  # 自定义背景图片路径
+
+    # Theme mode: 'auto' (follow the system) / 'light' / 'dark'. Normalised on
+    # read and validated on write by ``_normalize_theme`` / ``SettingsManager``.
+    theme: str = DEFAULT_THEME_MODE
 
     # Appearance settings (transparency values 0.0-1.0)
     overlay_alpha: float = field(default_factory=lambda: AppearanceDefaults.BACKGROUND_OVERLAY_ALPHA)
@@ -148,6 +174,13 @@ class SettingsManager:
         # Parse background image path
         background_image = data.get('background_image', None)
 
+        # Parse the theme mode. ``data.get`` covers a pre-Task-7 file (the key
+        # simply is not there) and ``_normalize_theme`` covers a hand-edited
+        # one; neither can raise, so no ``CONFIG_VERSION`` bump is needed --
+        # the version check is only a warning channel, and bumping it would add
+        # a startup warning for every existing user for no behavioural change.
+        theme = _normalize_theme(data.get('theme', DEFAULT_THEME_MODE))
+
         # Parse appearance settings with defaults
         overlay_alpha = data.get('overlay_alpha', AppearanceDefaults.BACKGROUND_OVERLAY_ALPHA)
         playlist_alpha = data.get('playlist_alpha', AppearanceDefaults.PLAYLIST_BG_ALPHA)
@@ -156,6 +189,7 @@ class SettingsManager:
         return Settings(
             media_libraries=libraries,
             background_image=background_image,
+            theme=theme,
             overlay_alpha=overlay_alpha,
             playlist_alpha=playlist_alpha,
             controls_alpha=controls_alpha
@@ -200,6 +234,8 @@ class SettingsManager:
                 "last_updated": datetime.now().isoformat(),
                 "media_libraries": libraries,
                 "background_image": self._settings.background_image,
+                # Theme mode (normalised on read, validated on write)
+                "theme": _normalize_theme(self._settings.theme),
                 # Appearance settings
                 "overlay_alpha": self._settings.overlay_alpha,
                 "playlist_alpha": self._settings.playlist_alpha,
@@ -269,6 +305,38 @@ class SettingsManager:
             True if saved successfully.
         """
         self.settings.background_image = path
+        return self.save()
+
+    # === Theme Methods ===
+
+    def get_theme(self) -> str:
+        """Get the theme mode: ``'auto'``, ``'light'`` or ``'dark'``.
+
+        Never anything else -- an unrecognised value on disk was already
+        degraded to ``'auto'`` by :func:`_normalize_theme` at load time, which
+        is what keeps a hand-edited ``settings.json`` from taking the GUI down
+        inside :func:`core.theme.resolve`.
+        """
+        return _normalize_theme(self.settings.theme)
+
+    def set_theme(self, mode: str) -> bool:
+        """Set the theme mode and save it immediately.
+
+        Args:
+            mode: One of :data:`THEME_MODES`.
+
+        Returns:
+            True if saved, False if ``mode`` is not a theme mode. An invalid
+            mode is refused rather than normalised away: the read path has to
+            forgive a typo in a hand-edited file, but a caller from code has no
+            business persisting a value the resolver cannot render.
+        """
+        if mode not in THEME_MODES:
+            print(f"Unknown theme mode: {mode!r} (expected one of "
+                  f"{', '.join(THEME_MODES)})")
+            return False
+
+        self.settings.theme = mode
         return self.save()
 
     # === Appearance Settings Methods ===
