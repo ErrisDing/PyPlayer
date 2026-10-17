@@ -698,11 +698,13 @@ class StartupSeamTest(unittest.TestCase):
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
 class AppearanceThemeChoiceTest(unittest.TestCase):
-    """The dialog's three-mode group and the presenter route that applies it.
+    """The dialog's three-mode group and the presenter route that persists it.
 
     ``AppearanceDialog`` owns no service: it emits ``theme_selected(str)`` and
-    ``MainPresenter`` is the only thing allowed to persist the mode and flip the
-    manager, which is what makes the choice take effect without a restart.
+    ``MainPresenter`` is the only thing allowed to persist the mode. Applying it
+    is the service's job -- ``ConfigService.set_theme`` emits ``theme_changed``
+    and ``main.py`` connects that signal to ``ThemeManager.set_mode``, which is
+    what makes the choice take effect without a restart.
     """
 
     MODES = {'themeAuto': 'auto', 'themeLight': 'light', 'themeDark': 'dark'}
@@ -856,7 +858,15 @@ class AppearanceThemeChoiceTest(unittest.TestCase):
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
 class PresenterThemeFlowTest(unittest.TestCase):
-    """dialog -> presenter -> (config, ThemeManager), the live theme change."""
+    """dialog -> presenter -> config, and nothing else.
+
+    The presenter's job ends at the write. ``ConfigService.theme_changed`` is
+    what applies a mode (wired to ``ThemeManager.set_mode`` in ``main.py``), and
+    the class name that used to sit here -- "the live theme change" -- describes
+    the second apply path this suite now guards against: with the config
+    stubbed, the signal cannot fire, so a manager that moves at all proves the
+    presenter is calling ``set_mode`` behind the service's back.
+    """
 
     def setUp(self):
         from unittest.mock import MagicMock
@@ -918,22 +928,32 @@ class PresenterThemeFlowTest(unittest.TestCase):
         with patch.object(AppearanceDialog, 'exec', fake_exec):
             self.presenter._on_manage_appearance()
 
-    def test_choosing_a_mode_persists_it_and_restyles(self):
-        from core.theme import DARK, LIGHT
+    def test_choosing_a_mode_persists_it_and_applies_nothing_itself(self):
+        """The slot writes; only the service signal may restyle.
+
+        ``self.config`` is a ``MagicMock``, so ``set_theme`` records the call and
+        emits nothing. If the presenter still reached for
+        ``ThemeManager.set_mode`` the manager would move here -- which is exactly
+        the double apply the service wire exists to remove. The end-to-end
+        version (real service, signal connected, manager flipped) is
+        ``ThemeRestartIntegrationTest``.
+        """
+        from core.theme import LIGHT
 
         self.assertIs(LIGHT, self.manager.tokens)
 
         self._pick('themeDark')
-
-        self.config.set_theme.assert_called_once_with('dark')
-        self.assertEqual('dark', self.manager.mode)
-        self.assertIs(
-            DARK, self.manager.tokens,
-            'the running theme must flip without a restart')
-
         self._pick('themeLight')
-        self.assertEqual('light', self.manager.mode)
-        self.assertIs(LIGHT, self.manager.tokens)
+
+        self.assertEqual(
+            [mock.call('dark'), mock.call('light')],
+            self.config.set_theme.call_args_list)
+        self.assertEqual(
+            'auto', self.manager.mode,
+            'the presenter must not apply the mode itself')
+        self.assertIs(
+            LIGHT, self.manager.tokens,
+            'a stubbed service emits no theme_changed, so nothing may restyle')
 
     def test_the_dialog_opens_on_the_persisted_mode(self):
         """``get_theme()`` is what pre-checks a radio, so the dialog cannot lie."""
@@ -977,6 +997,213 @@ class PresenterThemeFlowTest(unittest.TestCase):
         presenter._handle_theme_change('light')
 
         self.config.set_theme.assert_called_with('light')
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class ThemeRestartIntegrationTest(unittest.TestCase):
+    """Task 7's headline promise -- "survives restart" -- with nothing stubbed.
+
+    The two suites above each break the chain in one place:
+    ``PresenterThemeFlowTest`` asserts persistence against a ``MagicMock``
+    service, and ``StartupSeamTest`` hands :func:`main.build_theme_manager` a
+    ``SimpleNamespace``. Two adjacencies therefore went unexecuted: a *real*
+    ``ConfigService`` (temp file) driving the *real* theme manager over its
+    ``theme_changed`` wire, and a dialog click landing in that *real* file. This
+    class runs both, on both sides of a restart. The only stand-ins are the four
+    services the presenter polls for playback state, which have no part in a
+    theme; the config service, the theme manager, the window and the dialog are
+    the production objects.
+
+    Everything writes into a temporary ``settings.json``.
+    """
+
+    def setUp(self):
+        import tempfile
+        from unittest.mock import MagicMock
+
+        import main as main_module
+
+        from presenter.main_presenter import MainPresenter
+        from service.config_service import ConfigService
+        from view.main_window import MainWindow
+
+        self.app = make_app()
+        self._saved_palette = self.app.palette()
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.settings_file = str(Path(self._tmp.name) / 'settings.json')
+
+        self.config = ConfigService(config_file=self.settings_file)
+        # The real startup seam, then the real wiring main_qt performs.
+        self.manager = main_module.build_theme_manager(self.app, self.config)
+        main_module.connect_theme_signal(self.config, self.manager)
+
+        self.view = MainWindow(self.manager)
+        self.addCleanup(self.view.deleteLater)
+
+        playback = MagicMock(name='playback_service')
+        playback.get_volume.return_value = 0.5
+        self.presenter = MainPresenter(
+            view=self.view,
+            playback_service=playback,
+            queue_service=MagicMock(name='queue_service'),
+            library_service=MagicMock(name='library_service'),
+            metadata_service=MagicMock(name='metadata_service'),
+            config_service=self.config,
+            theme_manager=self.manager,
+        )
+
+    def tearDown(self):
+        self.presenter.stop()
+        self.view.close()
+        self.app.setPalette(self._saved_palette)
+
+    def _disk_theme(self) -> str:
+        """The raw ``theme`` value written into the settings file."""
+        import json
+
+        return json.loads(
+            Path(self.settings_file).read_text(encoding='utf-8'))['theme']
+
+    def _pick(self, object_name):
+        """Click one mode radio in the dialog the way the menu opens it."""
+        from unittest.mock import patch
+
+        from PyQt6.QtWidgets import QRadioButton
+
+        from view.dialogs.appearance_dialog import AppearanceDialog
+
+        def fake_exec(dialog):
+            radio = dialog.findChild(QRadioButton, object_name)
+            self.assertIsNotNone(radio, f'#{object_name} missing from dialog')
+            radio.click()
+            return AppearanceDialog.DialogCode.Accepted
+
+        with patch.object(AppearanceDialog, 'exec', fake_exec):
+            self.presenter._on_manage_appearance()
+
+    def test_the_service_signal_is_what_applies_the_mode(self):
+        """``theme_changed`` is a live wire, not decoration.
+
+        Nothing in this test touches the manager except the connect performed in
+        ``setUp``: delete the ``connect`` inside
+        :func:`main.connect_theme_signal` and the mode never reaches
+        ``ThemeManager.set_mode``, so the assertions below fail.
+        """
+        import io
+        from contextlib import redirect_stdout
+
+        from core.theme import DARK
+
+        emitted = []
+        self.config.theme_changed.connect(emitted.append)
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            self.assertTrue(self.config.set_theme('dark'))
+
+        self.assertEqual(['dark'], emitted)
+        self.assertEqual('dark', self.manager.mode)
+        self.assertIs(
+            DARK, self.manager.tokens,
+            'the persisted mode must be applied through the service signal')
+        self.assertIn('#bottomPanel', self.app.styleSheet())
+
+    def test_a_dialog_click_persists_and_survives_a_restart(self):
+        """Click dark -> real file -> fresh service + fresh manager -> dark."""
+        import io
+        from contextlib import redirect_stdout
+
+        from PyQt6.QtGui import QColor, QPalette
+        from PyQt6.QtWidgets import QRadioButton
+
+        import main as main_module
+
+        from core.theme import DARK
+        from service.config_service import ConfigService
+        from view.dialogs.appearance_dialog import AppearanceDialog
+
+        emitted = []
+        self.config.theme_changed.connect(emitted.append)
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            self._pick('themeDark')
+
+        self.assertEqual(
+            ['dark'], emitted,
+            'one click, one write, one theme_changed emission')
+        self.assertEqual('dark', self._disk_theme())
+        self.assertEqual('dark', self.manager.mode)
+        self.assertIs(DARK, self.manager.tokens)
+
+        # --- restart: a second process would build exactly these two objects ---
+        restarted = ConfigService(config_file=self.settings_file)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            restarted_manager = main_module.build_theme_manager(
+                self.app, restarted)
+        self.assertEqual(
+            '', buffer.getvalue(),
+            f'a persisted mode must start cleanly, got {buffer.getvalue()!r}')
+
+        self.assertEqual('dark', restarted.get_theme())
+        self.assertEqual('dark', restarted_manager.mode)
+        self.assertIs(
+            DARK, restarted_manager.tokens,
+            'the mode read back from disk must resolve to the tokens it implies')
+        self.assertEqual(
+            QColor(DARK.surface).name().lower(),
+            self.app.palette().color(QPalette.ColorRole.Base).name().lower(),
+            'the restart must actually repaint, not only report the mode')
+
+        # And the dialog tells the truth about it on the next open.
+        dialog = AppearanceDialog(
+            background_image=None,
+            overlay_alpha=restarted.get_overlay_alpha(),
+            playlist_alpha=restarted.get_playlist_alpha(),
+            controls_alpha=restarted.get_controls_alpha(),
+            theme_mode=restarted.get_theme(),
+        )
+        try:
+            checked = [name for name in ('themeAuto', 'themeLight', 'themeDark')
+                       if dialog.findChild(QRadioButton, name).isChecked()]
+            self.assertEqual(['themeDark'], checked)
+        finally:
+            dialog.deleteLater()
+
+    def test_main_qt_connects_the_signal_at_startup(self):
+        """Keep the wire from going dead again.
+
+        :func:`main.connect_theme_signal` only has a subscriber in production
+        once ``main_qt`` calls it; a dropped call would turn the signal back
+        into the unlistened-for API ``tests/test_dead_code_removed.py`` deletes.
+        Read off the AST rather than as a substring of the source, because
+        commented-out code keeps its text and loses its wiring -- and the whole
+        point of this test is wiring that silently stopped happening.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        import main as main_module
+
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(main_module.main_qt)))
+        calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, 'id', None) == 'connect_theme_signal'
+        ]
+        self.assertEqual(
+            1, len(calls),
+            'main_qt must connect the theme signal exactly once, at startup')
+        self.assertEqual(
+            ['config_service', 'theme_manager'],
+            [getattr(argument, 'id', None) for argument in calls[0].args],
+            'the objects wired together have to be the startup service and the '
+            'startup manager')
 
 
 if __name__ == '__main__':

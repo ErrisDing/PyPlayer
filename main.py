@@ -68,6 +68,36 @@ def build_theme_manager(app, config_service, mode: Optional[str] = None):
     return manager
 
 
+def connect_theme_signal(config_service, theme_manager) -> None:
+    """Subscribe ``theme_manager`` to the mode the config service persists.
+
+    ``main_qt`` calls this once, right after the manager is built, and it is the
+    only place a running theme is applied:
+
+        dialog -> presenter -> ConfigService.set_theme -> theme_changed(str)
+                                                      -> ThemeManager.set_mode
+
+    Doing the apply here rather than in the presenter slot is what keeps it a
+    single apply -- a second path from the presenter would restyle twice, and
+    the service signal would go back to being a wire nobody listens on.
+
+    The value on the wire is always resolvable, so the slot can be the bare
+    method and cannot raise: ``ConfigService.set_theme`` emits only after
+    ``SettingsManager.set_theme`` accepted a member of
+    ``core.config.THEME_MODES``, and that set is exactly the one
+    :func:`core.theme.resolve` renders.
+
+    Kept out of :func:`build_theme_manager` on purpose: that helper is also
+    called with a stand-in config (see ``StartupSeamTest``), and the theme layer
+    must not have to know about the service layer.
+
+    Args:
+        config_service: The ``ConfigService`` that owns the ``theme`` setting.
+        theme_manager: The manager built from that same service.
+    """
+    config_service.theme_changed.connect(theme_manager.set_mode)
+
+
 def main_qt():
     """Launch the PyQt-based GUI."""
     from PyQt6.QtWidgets import QApplication
@@ -116,6 +146,11 @@ def main_qt():
     # fallback inside the helper unreachable and meant a chosen theme never
     # survived a restart.
     theme_manager = build_theme_manager(app, config_service)
+
+    # The one direction a mode travels: the service persists and announces it,
+    # the theme layer answers. Connected here, once, so no other component can
+    # apply the same click a second time.
+    connect_theme_signal(config_service, theme_manager)
 
     # Create view
     view = MainWindow(theme_manager)

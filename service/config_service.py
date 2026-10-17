@@ -25,6 +25,9 @@ class ConfigService(QObject):
     libraries_reordered = pyqtSignal()    # emitted when library order changes
     config_saved = pyqtSignal()
     appearance_changed = pyqtSignal()     # emitted when appearance settings change
+    # Payload is the mode string ('auto'/'light'/'dark') -- NOT the ThemeTokens
+    # that the same-named ThemeManager.theme_changed emits on a different object.
+    # main.py subscribes ThemeManager.set_mode to this one.
     theme_changed = pyqtSignal(str)       # emitted with the new mode (auto/light/dark)
 
     def __init__(
@@ -170,9 +173,9 @@ class ConfigService(QObject):
 
         Returns:
             True if the mode was saved; False (and no signal) for a mode the
-            theme layer cannot resolve. The listener order matters here: the
-            presenter persists first and only then hands the mode to
-            ``ThemeManager.set_mode``, which raises on a bad value.
+            theme layer cannot resolve. The signal is the apply path: ``main.py``
+            connects it to ``ThemeManager.set_mode``, so a caller only writes and
+            nothing has to know who is listening.
         """
         result = self._manager.set_theme(mode)
         if result:

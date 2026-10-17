@@ -165,7 +165,9 @@ class ConfigServiceThemeTest(unittest.TestCase):
         self.assertEqual('auto', self.service.get_theme())
 
     def test_signal_carries_the_string_not_a_token_set(self):
-        """``theme_changed(str)`` is the mode, which is what the presenter needs."""
+        """``theme_changed(str)`` is the mode -- what ``ThemeManager.set_mode``
+        is connected to in ``main.py`` (``ThemeManager.theme_changed``, the same
+        name on a different object, is the one that carries ``ThemeTokens``)."""
         self.service.set_theme('light')
         self.service.set_theme('auto')
 

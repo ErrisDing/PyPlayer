@@ -21,7 +21,8 @@ from service.playback_service import PlaybackService
 if TYPE_CHECKING:
     # Type-only: ``view.theme_manager`` pulls in ``core.theme_qss`` and the
     # Qt gui module, and the presenter never needs it at runtime -- it holds the
-    # instance ``main.py`` already built and only calls ``set_mode`` on it.
+    # instance ``main.py`` already built, and the mode reaches that instance
+    # through ``ConfigService.theme_changed``, not from here.
     from view.theme_manager import ThemeManager
 from service.queue_service import QueueService, PlaybackPosition, DisplayEntry as QueueDisplayEntry
 from service.library_service import LibraryService
@@ -66,10 +67,12 @@ class MainPresenter(QObject):
         self._library = library_service
         self._metadata = metadata_service
         self._config = config_service
-        # The styling source ``main.py`` built from the same config service.
-        # Optional so a presenter without a theme (dialog-only tests, TUI-ish
-        # harnesses) can still persist the choice; ``_handle_theme_change``
-        # checks it before restyling.
+        # The styling source ``main.py`` built from this same config service,
+        # kept as the presenter's handle on it. Optional so a presenter without
+        # a theme (dialog-only tests, TUI-ish harnesses) still constructs.
+        # ``_handle_theme_change`` does not read it: the mode is applied by
+        # ``ConfigService.theme_changed`` -> ``ThemeManager.set_mode``, wired
+        # once in ``main.py``.
         self._theme = theme_manager
 
         # Current library tracking
@@ -351,19 +354,18 @@ class MainPresenter(QObject):
         dialog.exec()
 
     def _handle_theme_change(self, mode: str) -> None:
-        """Handle a theme mode choice from the dialog.
+        """Handle a theme mode choice from the dialog: persist it, nothing else.
 
-        Persist first, then restyle: the mode lives in ``settings.json`` and the
-        running theme is derived from it, so the order is what makes the choice
-        survive a restart instead of only painting this session. ``set_mode``
-        resolves the value and raises on anything outside auto/light/dark --
-        the dialog can only emit those three, and a refused ``set_theme`` (False)
-        still reaches that check on purpose: the UI and the file must not be
-        allowed to disagree.
+        Applying is the service's job. ``ConfigService.set_theme`` writes the
+        mode and emits ``theme_changed``, and ``main.py`` has that signal
+        connected to ``ThemeManager.set_mode``, so the flow is
+        view -> presenter -> service -> theme layer, one apply per click.
+        Calling ``set_mode`` from here too would be a second path, restyling
+        twice and looping back once anything else listens on the signal.
+        The write is what makes the choice survive a restart, and a write that
+        fails emits nothing, so the file and the running theme cannot disagree.
         """
         self._config.set_theme(mode)
-        if self._theme is not None:
-            self._theme.set_mode(mode)
 
     def _handle_background_change(self, dialog: AppearanceDialog, path: str) -> None:
         """Handle background image change from dialog."""
