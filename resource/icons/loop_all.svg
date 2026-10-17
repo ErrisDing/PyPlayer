@@ -1,8 +1,20 @@
-<!-- loop_all: the repeat ring in both states (Material repeat geometry). A top
-     band y 5..7 carrying a right-pointing arrowhead, a bottom band y 17..19
-     carrying a left-pointing one, joined by two stubs. Every stroke is 2 units,
-     the weight the volume arcs and the loop_off slash also use, and the shape
-     is symmetric under a half turn about (12, 12). -->
+<!-- loop_all: the repeat ring in both states, redrawn by the Task 10 render
+     matrix. A top band y 5..7 carrying a right-pointing arrowhead, a bottom
+     band y 17..19 carrying a left-pointing one, joined by two stubs, symmetric
+     under a half turn about (12, 12). Every stroke is 2 units, the weight the
+     volume arcs and the loop_off slash also use.
+
+     Why it was redrawn: the previous geometry (Material's own repeat path,
+     bands at y 5..7 / 17..19 but arrowheads reaching x 3 and x 21 and y 2 and
+     y 22) inked 19.2 x 19.2 units, against the transport family's 12 x 14.4.
+     In the row of equal 40px buttons (prev, play, stop, next, loop) that
+     made the loop mark 1.6x the linear size of its neighbours, and the render
+     matrix showed it reading as a different size class rather than as the
+     fifth button. The new bbox is 14 x 16, i.e. 1.0x wide and 1.11x tall
+     against the transport rhythm, with the stroke weight untouched (shrinking
+     the ring by scaling would have thinned the bands to 1.44 units and made
+     the glyph lighter as well as smaller, which is the opposite trade).
+     Guarded by tests/test_icons.py::IconGeometryTest. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <path fill="currentColor" d="M7 7h10v3l4 -4 -4 -4v3H5v6h2V7zM17 17H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+  <path fill="currentColor" d="M5 5h8v-1l6 3-6 3v-3H7v5H5V5zM11 17h6v-5h2v7H11v1L5 17l6-3v3z"/>
 </svg>

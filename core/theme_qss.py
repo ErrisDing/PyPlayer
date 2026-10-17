@@ -25,9 +25,10 @@ widgets (A1):
   because the brief's mapping table mandates those rules bare; per-widget
   scoping there is not what the table asks for. ``QMainWindow`` is the one
   genuinely single-instance member, listed for the same table-mandated reason
-  (its first table row is ``QMainWindow, #nowPlayingPanel``). The test lists
-  the exemption by name, so a new bare class has to be argued for rather than
-  slipped in.
+  (the mapping table's first row scopes it, and it is the one rule that carries
+  the window's own ``window_bg`` fill -- see the Task 10 note where it is
+  emitted). The test lists the exemption by name, so a new bare class has to be
+  argued for rather than slipped in.
 * **No colour literals.** Every colour resolves to a token field, so LIGHT
   and DARK can be asserted identical in structure and the palette stays the
   one contrast-checked source of truth (see ``tests/test_theme.py``).
@@ -189,9 +190,35 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     emit = rules.append
 
     # -- 窗口与面板 / window & panels --------------------------------------
-    # Background image + scrim are painted by the main window's paintEvent;
-    # the stylesheet keeps these containers transparent/translucent only.
-    emit(_rule(('QMainWindow', '#nowPlayingPanel'), [
+    # Ruling from the Task 10 render matrix, deviating from the mapping table's
+    # first row (``QMainWindow, #nowPlayingPanel`` -> both ``transparent``):
+    # ``window_bg`` belongs on the window, and only the panel stays transparent.
+    #
+    # The table's version was inherited verbatim from ``styles.qss``, whose own
+    # comment claimed "Fusion style provides the fallback for non-content
+    # areas". It does not. Once a sheet sets ``background-color`` on
+    # ``QMainWindow``, ``QStyleSheetStyle`` answers ``PE_Widget`` with that
+    # brush, and a transparent brush fills nothing -- so the central widget, the
+    # splitter and every margin of the window were left unpainted. Measured on a
+    # real Windows desktop (``QScreen.grabWindow``, i.e. the composited pixels a
+    # user sees, not ``grab()``): the whole now-playing column came back
+    # ``#000000`` in BOTH themes, and the two translucent panels composited
+    # against that black instead of against the window -- ``#playlistView``
+    # measured ``#bfbfbf`` where ``rgba(#ffffff, 0.75)`` over ``window_bg`` is
+    # ``#f7f7f7``, and ``#bottomPanel`` ``#d8d8d8`` where it should be
+    # ``#fbfbfb``. Dark mode hid the bug (``#000`` next to ``#1e1e1e`` reads as
+    # a deliberate gutter) and light mode wore it as a black slab.
+    #
+    # The background-image feature is untouched: ``MainWindow.paintEvent`` draws
+    # the pixmap and the scrim in its own handler, which runs after this fill
+    # and before the children paint, so a configured image still shows through
+    # the transparent panel and the two alpha-composited surfaces.
+    emit(_rule('QMainWindow', [
+        ('background-color', t.window_bg),
+    ]))
+    # This one stays transparent on purpose: it is the panel the background
+    # image has to show through when a user configures one.
+    emit(_rule('#nowPlayingPanel', [
         ('background-color', 'transparent'),
     ]))
     emit(_rule('#bottomPanel', [
@@ -337,7 +364,7 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     #   1. `accent_hover` on `accent_soft` would clear 4.5:1 (5.03 LIGHT /
     #      6.72 DARK), but it is a *state* token. Pinning it as the resting
     #      text colour collides with the chip's `:hover` rule emitted just
-    #      above and makes the hover state of a selected chip indistinguishable.
+    #      above.
     #   2. `accent_soft` is numerically identical to `playing_bg` in both
     #      themes (`#e3f2fd` LIGHT / `#1f3a52` DARK), so a filled `accent_soft`
     #      chip renders exactly like the "now playing" row -- a library
@@ -346,6 +373,20 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     # background to move: 4.03 LIGHT / 5.31 DARK, i.e. under the 4.5 text bar in
     # LIGHT. `accent` on `surface` is 4.60 LIGHT / 6.91 DARK. Guarded in
     # tests/test_theme_qss.py::SelectedChipContrastTest.
+    #
+    # Correction from the Task 10 render matrix: reason 1 as originally written
+    # claimed this keeps "the hover state of a selected chip" distinguishable.
+    # It does not. `[chip="true"]:hover` and `[chip="true"][selected="true"]`
+    # carry the same specificity (two attribute/pseudo-class terms each), so the
+    # later rule wins and a selected chip keeps `surface` under the pointer:
+    # a selected chip has no hover feedback at all. That is defensible --
+    # `LibrarySelector._on_button_click` returns early on the already-current
+    # library, so hovering a selected chip promises an action that does nothing
+    # -- but it is not what the comment said, and the comment now says what is
+    # true. (The hover state itself could not be photographed here: neither
+    # `WA_UnderMouse` nor a synthetic mouse-move drives QSS `State_MouseOver`,
+    # and this host's cursor is on a virtual display that will not hold a
+    # `QCursor.setPos`. See the task report.)
     emit(_rule(f'{chip}[selected="true"]', [
         ('background-color', t.surface),
         ('border-color', t.accent),

@@ -186,7 +186,17 @@ class AlphaSettings:
 # Shared geometry / typography tokens (theme independent, px units).
 RADIUS_SM = 4
 RADIUS_MD = 6
-RADIUS_PILL = 999
+
+# The media-library chip's pill radius. NOT a "big number that means pill":
+# Qt 6.11's QSS border-radius clamping does not clamp, it gives up. Measured on
+# a 122x29 chip, every radius from 15px upward (including 999px, and 50%, which
+# Qt does not parse as a radius at all) rasterises to *square* corners,
+# pixel-identical to emitting no border-radius at all; only 14 and below round.
+# The threshold is the pairwise one -- 2r must not exceed height-1 -- so a
+# radius that means "pill" has to be a real number, and 12 pills the chip's
+# actual 29px height (2x12 = 24 <= 28) with 4px of headroom before the corner
+# collapses. Verified through the render matrix (tests/tools/render_matrix.py).
+RADIUS_PILL = 12
 
 SPACE_1 = 4
 SPACE_2 = 8

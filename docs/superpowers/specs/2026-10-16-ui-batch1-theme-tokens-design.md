@@ -185,18 +185,30 @@ def icon(name, color_hex, size, dpr) -> QIcon   # 缓存键 (name, color, size, 
 
 ## 6. 测试
 
+> 本节在 Task 10 订正：原文低估了 `tests/test_theme.py` 与 `tests/test_theme_qss.py` 实际断言的内容，并把后者的 `build_qss` 断言误记在前者名下。以下按测试文件的现状重写。
+
 新增 `tests/test_theme.py`（纯函数，无 Qt）：
 
-- `LIGHT` 与 `DARK` 字段集合完全一致（防漏定义）。
-- `resolve` 真值表：`auto|light|dark` × `Dark|Light|Unknown` 共 9 种输入，`auto+Unknown → LIGHT`。
-- 对比度：对每套主题断言 `text_primary/text_secondary/text_muted` 对其实际背景（`surface`、`surface_alt`、`playing_bg`、`selection_bg`）≥4.5:1；`text_on_accent` 对 `accent` ≥4.5:1；`icon` 对 `surface` ≥3:1。测试内实现 WCAG 相对亮度计算。
-- `build_qss` 输出不含未替换的 `{`、不含 `styles.qss` 时代遗留的裸 `QPushButton {` 规则；alpha 越界输入被夹到 0..1。
+- `ThemeTokensTest.test_token_field_names_match_spec_4_1`：34 个 token 名按 §4.1 的字段分组顺序逐一钉死。期望值是**从 spec 手抄的字面量**，不从 `ThemeTokens` 派生，因此改名、换序、增删任一项都会失败。
+- `ThemeTokensTest.test_light_and_dark_define_identical_fields`：两套主题的字段集合完全一致（防漏定义），且每个字段都是小写 `#rrggbb` 字符串。
+- `ThemeTokensTest.test_resolve_truth_table`：`auto|light|dark` × `Dark|Light|Unknown` 共 9 种输入，`auto+Unknown → LIGHT`；断言的是 `LIGHT`/`DARK` 单例的**同一性**（`is`），不是相等。
+- `ThemeTokensTest.test_resolve_rejects_unknown_mode`：`neon`、`''`、`AUTO`、`Light`、`system` 一律 `ValueError`（大小写敏感是刻意设计）。
+- `ThemeContrastTest.test_contrast_requirements`：测试内实现 WCAG 2.1 相对亮度与对比度，对两套主题逐对断言，阈值不放宽、不达标就改色值。断言的对远多于原文所列：
+  - 文字类（4.5:1）：`text_primary`、`text_secondary`、`text_muted` 各自对 `surface`、`surface_alt`、`selection_bg`、`playing_bg` 共 12 对；另有 `text_on_accent`/`accent`、`playing_text`/`playing_bg`、`tooltip_text`/`tooltip_bg`。
+  - 非文字组件类（3:1，WCAG 1.4.11）：`icon`/`surface`、`icon_on_accent`/`accent`；`icon_muted` 对其四个真实渲染背景（`button_bg`、`button_hover`、`button_pressed`、`surface`）；Task 8 之后 `icon` 与 `accent` 各自对 transport/loop 按钮的三个背景也进入断言表。
+  - 结论是每套主题里 `text_muted` 与 `icon_muted` 是两种灰（4.5 类与 3 类的必然结果，见 §4.1、§4.6 D1）。
 
-新增 `tests/test_icons.py`：12 个 SVG 均存在、可 XML 解析、含 `viewBox="0 0 24 24"` 与 `currentColor`；`icon()` 在 dpr 1 与 2 下返回非空 pixmap（`QT_QPA_PLATFORM=offscreen`）。
+新增 `tests/test_theme_qss.py`（纯函数，无 Qt）：
 
-新增 `tests/test_view_smoke.py`：offscreen 下构造 `MainWindow`、`AppearanceDialog`，断言不抛异常且 `grab()` 非空。**这条就是本批次 0 那个启动崩溃的回归网**——它当时能直接拦住。无 PyQt6 时 `unittest.skipUnless` 跳过。
+- `SelectedChipContrastTest`：`QPushButton[chip="true"][selected="true"]` 必须是「描边态」——`background-color` 取 `surface`、`color` 与 `border-color` 取 `accent`（逐条比对生成表里该规则块的实际声明），且该前景/背景组合在两套主题下都过 4.5:1。这条守的是 §4.2 映射表被裁定改掉的那一格（表里的 `accent` on `accent_soft` 在 LIGHT 只有 4.03:1）。
+- `BuildQssTest`：对 `LIGHT|DARK` × 三组 alpha 共 6 份输出断言——无未替换的 `{placeholder}`、花括号配对；`QPushButton`/`QSlider`/`QListView`/`QLabel` 每条规则都带作用域（两道闸：行锚定的裸类正则，覆盖 `:disabled`、`:hover` 与逗号列表成员；以及逐 compound 的选择器解析，它连 `*` 和任何未登记裸类一起拒）；`EXEMPT_CHROME_CLASSES` 七项（`QMenuBar` `QMenu` `QScrollBar` `QToolTip` `QSplitter` `QGroupBox` `QMainWindow`）是**封闭清单**，多一个少一个都失败；对话框家族（`QDialog QPushButton`、`QDialog QListWidget` 及其 `::item` 状态）必须是祖先限定而非裸类；`REQUIRED_OBJECT_NAMES` 与 `REQUIRED_DYN_PROPERTIES` 每一项都出现在输出里；alpha 生效且越界被夹到 0..1；`hex_to_rgba` 的格式（含尾零裁剪）。
+- `PaletteOnlyColoursTest`：输出里每个 `#rrggbb` 必须等于某个 token 值、每个 `rgba(...)` 必须是「某 token + 某 alpha」，命名色只允许 `transparent` 与 `none`；并有一条元测试确认这套颜色扫描本身有牙。
 
-手动验证矩阵（离屏渲染，产出前后对比图）：`light|dark` × `空|有数据` × `820×520|1100×720`，共 8 张。注意离屏 harness 的中文字形会退化为方框，文字正确性须在真实 Windows 运行确认。
+新增 `tests/test_icons.py`：12 个 SVG 均存在、可 XML 解析、含 `viewBox="0 0 24 24"` 与 `currentColor`、无外部引用；`icon()` 在 dpr 1 与 2 下返回非空且真的填满了 `size*dpr` 那张图（HiDPI 断言量像素，不接受「调用过就行」）；缓存键含颜色、`clear_cache` 有效、资源缺失/坏 SVG 降级为 `QIcon()` 且只打一行警告；几何组用 2 px/unit 光栅化后的墨迹掩膜断言光学盒、transport 五连的高度节奏、prev/next 镜像一致、音量四级只增弧不移喇叭、loop 三态共用同一枚环、以及（Task 10 补）loop 图形不得跳出 transport 那一档尺寸级别。
+
+新增 `tests/test_view_smoke.py`：offscreen 下构造 `MainWindow`，断言不抛异常且 `grab()` 非空非零。**这条就是本批次 0 那个启动崩溃的回归网**——它当时能直接拦住。无 PyQt6 时 `unittest.skipUnless` 跳过。
+
+Task 10 另补 `tests/tools/render_matrix.py`：把上述断言看不见的部分交给眼睛。`--out DIR`，offscreen，真 `MainWindow` 灌假数据，产出 `light|dark` × `空|有数据` × `820×520|1100×720` 共 8 张 PNG，退出码 0。注意离屏 harness 的中文字形会退化为方框，文字正确性须在真实 Windows 运行确认；离屏也不驱动 `:hover`，弹窗与 chip 的悬停态需要真实指针。
 
 ## 7. 提交拆分
 

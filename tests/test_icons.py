@@ -294,6 +294,42 @@ class IconGeometryTest(unittest.TestCase):
                         'rhythm and one stray glyph reads as another size class',
                 )
 
+    def test_loop_glyph_stays_in_the_transport_row_size_class(self):
+        """The loop button is the fifth member of a row of equal 40px buttons.
+
+        Found by the Task 10 render matrix, not by any earlier check: Material's
+        own ``repeat`` path reaches x 3 and x 21 and y 2 and y 22, so the loop
+        ring inked 19.2 x 19.2 units against the transport family's 12 x 14.4.
+        Measured, that is 1.6x the linear size of prev / stop / next, and in the
+        rendered row the loop mark read as a different size class rather than as
+        the fifth button. The ring was redrawn onto a 14 x 16 box (stroke weight
+        kept at 2 units -- scaling the whole path down would have thinned it and
+        made the glyph lighter as well as smaller).
+
+        The bar is deliberately generous: this guards the *class*, not the exact
+        box, so a future re-author may retune the ring without touching this
+        test, and only a return to the "one glyph shouts" shape fails it.
+        """
+        transport = {name: self._extent(self._mask(name))
+                     for name in ('play', 'pause', 'prev', 'next')}
+        widest = max(x1 - x0 for x0, _y0, x1, _y1 in transport.values())
+        tallest = max(y1 - y0 for _x0, y0, _x1, y1 in transport.values())
+        for name in ('loop_off', 'loop_all', 'loop_one'):
+            with self.subTest(icon=name):
+                x0, y0, x1, y1 = self._extent(self._mask(name))
+                self.assertLessEqual(
+                    x1 - x0, widest * 1.30,
+                    msg=f'{name} inks {x1 - x0:.1f} units wide against the '
+                        f'transport family\'s {widest:.1f}; beside four 40px '
+                        'buttons it reads as a different size class',
+                )
+                self.assertLessEqual(
+                    y1 - y0, tallest * 1.30,
+                    msg=f'{name} inks {y1 - y0:.1f} units tall against the '
+                        f'transport family\'s {tallest:.1f}; beside four 40px '
+                        'buttons it reads as a different size class',
+                )
+
     def test_play_triangle_is_optically_not_geometrically_centred(self):
         """A right-pointing triangle looks left-heavy on its bbox centre.
 
