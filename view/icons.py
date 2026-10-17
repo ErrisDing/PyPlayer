@@ -135,18 +135,23 @@ def _render(name: str, color: str, size: int, dpr: float) -> QIcon:
     painter = QPainter(pixmap)
     try:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # The target rect is in device pixels: passing None would paint the
-        # renderer's own 24 px default into the corner of a larger sheet and
-        # leave the rest transparent. ``render``'s return value is not usable --
-        # PyQt6 drops the C++ bool (verified on Qt 6.11: it is always None), so
-        # ``isValid()`` above is the failure gate, as the brief specifies.
+        # The target rect is in device pixels, and it has to stay explicit. A
+        # rect in *logical* pixels paints the glyph into the top-left quarter of
+        # a HiDPI sheet; omitting the rect is a no-op on Qt 6.11 -- QSvgRenderer
+        # scales to the painter's viewport, measured 0 px of difference against
+        # the explicit rect -- which is why ``tests/test_icons.py`` pins this call
+        # site as well as the pixels it produces. ``render``'s return value is not
+        # usable either: PyQt6 drops the C++ bool (verified on Qt 6.11, it is
+        # always None), so ``isValid()`` above is the failure gate, as the brief
+        # specifies.
         renderer.render(painter, QRectF(0, 0, sheet, sheet))
     finally:
         painter.end()
 
     # Tag after painting, not before: a painter on a DPR-tagged pixmap works in
-    # logical coordinates, which would fill only the top-left quarter of the
-    # sheet.
+    # logical coordinates, so the glyph lands offset and clipped against the edge
+    # of the canvas instead of filling it (measured on Qt 6.11: at dpr 2 the ink
+    # starts at 16 units and runs off 23.5).
     pixmap.setDevicePixelRatio(dpr)
 
     result = QIcon()

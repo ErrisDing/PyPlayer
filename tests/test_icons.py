@@ -5,9 +5,12 @@ Three layers are pinned here, because each can break on its own:
 
 1. **The resources** -- twelve ``resource/icons/*.svg`` files: present,
    parseable, and following the authoring conventions (``viewBox="0 0 24 24"``,
-   ``fill="currentColor"``, no external references). Those two properties are
-   what the colouring pipeline and the rasteriser depend on, so they are
-   asserted from the file text rather than inferred from a render.
+   ``fill="currentColor"``, no external references, and no colour literal
+   *anywhere* -- not in a ``fill`` attribute, not in a ``style`` attribute, not
+   in an inline value, because the tint is a plain string replace of
+   ``currentColor`` and anything else is permanently off-palette). Those
+   properties are what the colouring pipeline and the rasteriser depend on, so
+   they are asserted from the file text rather than inferred from a render.
 2. **The geometry** -- the set has to look like one set: same ink extent, same
    rhythm, the play triangle optically (not geometrically) centred, and
    ``prev``/``next`` exact mirror images. Measured from rasterised masks, not
@@ -25,6 +28,7 @@ collect it.
 Run with an offscreen Qt platform:
     QT_QPA_PLATFORM=offscreen python -m unittest tests.test_icons -v
 """
+import re
 import sys
 import unittest
 import xml.etree.ElementTree as ET
@@ -54,6 +58,51 @@ FORBIDDEN_ELEMENTS = ('image', 'script', 'style', 'use', 'foreignObject', 'filte
 
 # The one URL every authored SVG legitimately carries.
 SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
+
+# Every spelling of a colour a hand-edit can hide in these files' vocabulary.
+# The pipeline's only colour source is the ``currentColor`` placeholder --
+# ``view.icons`` does a plain ``str.replace`` on it -- so a literal anywhere
+# else in the markup (a ``style`` attribute, ``stop-color``, an inline value)
+# is a colour no token can ever reach: it passes "contains currentColor", it
+# renders, and it stays off-palette permanently. ElementTree drops comments when
+# it parses, so scanning the tree (not the raw text) skips the prose.
+NAMED_COLOURS = (
+    'aliceblue', 'antiquewhite', 'aqua', 'aquamarine', 'azure', 'beige',
+    'bisque', 'black', 'blanchedalmond', 'blue', 'blueviolet', 'brown',
+    'burlywood', 'cadetblue', 'chartreuse', 'chocolate', 'coral',
+    'cornflowerblue', 'crimson', 'cyan', 'darkblue', 'darkcyan', 'darkgoldenrod',
+    'darkgray', 'darkgrey', 'darkgreen', 'darkkhaki', 'darkmagenta',
+    'darkolivegreen', 'darkorange', 'darkorchid', 'darkred', 'darksalmon',
+    'darkslateblue', 'darkslategray', 'darkturquoise', 'darkviolet', 'deeppink',
+    'deepskyblue', 'dimgray', 'dodgerblue', 'firebrick', 'floralwhite',
+    'forestgreen', 'fuchsia', 'gainsboro', 'ghostwhite', 'gold', 'goldenrod',
+    'gray', 'green', 'greenyellow', 'honeydew', 'hotpink', 'indianred', 'indigo',
+    'ivory', 'khaki', 'lavender', 'lavenderblush', 'lawngreen', 'lemonchiffon',
+    'lightblue', 'lightcoral', 'lightcyan', 'lightgoldenrodyellow', 'lightgray',
+    'lightgreen', 'lightpink', 'lightsalmon', 'lightseagreen', 'lightskyblue',
+    'lightslategray', 'lightsteelblue', 'lightyellow', 'lime', 'limegreen',
+    'linen', 'magenta', 'maroon', 'mediumaquamarine', 'mediumblue',
+    'mediumorchid', 'mediumpurple', 'mediumseagreen', 'mediumslateblue',
+    'mediumspringgreen', 'mediumturquoise', 'mediumvioletred', 'midnightblue',
+    'mintcream', 'mistyrose', 'moccasin', 'navajowhite', 'navy', 'oldlace',
+    'olive', 'olivedrab', 'orange', 'orangered', 'orchid', 'palegoldenrod',
+    'palegreen', 'paleturquoise', 'palevioletred', 'papayawhip', 'peachpuff',
+    'peru', 'pink', 'plum', 'powderblue', 'purple', 'red', 'rosybrown',
+    'royalblue', 'saddlebrown', 'salmon', 'sandybrown', 'seagreen', 'seashell',
+    'sienna', 'silver', 'skyblue', 'slateblue', 'slategray', 'snow',
+    'springgreen', 'steelblue', 'tan', 'teal', 'thistle', 'tomato',
+    'turquoise', 'violet', 'wheat', 'white', 'whitesmoke', 'yellow',
+    'yellowgreen',
+)
+
+# ``currentColor`` is the placeholder, not a colour; ``none`` and the geometry
+# keywords are not colours either. They are excluded so the pattern can be run
+# over every attribute value without special-casing the ones the set uses.
+COLOUR_PATTERN = re.compile(
+    r'#[0-9a-fA-F]{3,8}\b'                      # #rgb .. #rrggbbaa
+    r'|\b(?:rgb|rgba|hsl|hsla|color|device-cmyk)\s*\('
+    r'|\b(?:' + '|'.join(sorted(NAMED_COLOURS, key=len, reverse=True)) + r')\b',
+    re.IGNORECASE)
 
 
 def _local_name(tag: str) -> str:
@@ -110,6 +159,27 @@ class IconResourceTest(unittest.TestCase):
                             value, ('currentColor', 'none'),
                             f'<{tag}> {attr}="{value}" is an off-token colour; '
                             'only currentColor (and none) may be authored in',
+                        )
+
+                    # ...and the same rule for the places the attribute check
+                    # cannot see. ``style="fill:#e53935"`` next to a legal
+                    # ``fill="currentColor"`` keeps both checks above happy, and
+                    # the inline declaration wins at render time: a permanently
+                    # off-palette glyph that no token flip can ever recolour.
+                    for attr, value in sorted(element.attrib.items()):
+                        hidden = COLOUR_PATTERN.findall(value)
+                        self.assertEqual(
+                            [], hidden,
+                            f'<{tag}> {attr}="{value}" hardcodes {hidden}: only '
+                            'the currentColor placeholder may carry a colour, '
+                            'wherever it is spelled (attribute, style, inline '
+                            'value) -- view.icons substitutes currentColor alone',
+                        )
+                    for text in (element.text, element.tail):
+                        hidden = COLOUR_PATTERN.findall(text or '')
+                        self.assertEqual(
+                            [], hidden,
+                            f'<{tag}> has character data carrying {hidden}',
                         )
 
                 # No fetch of any kind. The SVG namespace URI is the one URL an
@@ -328,27 +398,160 @@ class IconPipelineTest(unittest.TestCase):
         clear_cache()
         self.addCleanup(clear_cache)
 
+    def _ink_box(self, pixmap):
+        """Ink extent of a rasterised sheet, in ``viewBox`` units, + ink pixel count.
+
+        Returns ``(x0, y0, x1, y1, count)`` with the coordinates normalised by
+        the *sheet width*, so a 24 px and a 48 px sheet are directly comparable
+        and the numbers are the same 24-unit geometry
+        :class:`IconGeometryTest` measures. Normalising is what gives this teeth:
+        a sheet that only inks the top-left quadrant of its canvas, or gets
+        clipped against its edge, has a bbox that disagrees with the 1x one even
+        though a pixmap exists and is non-null.
+        """
+        image = pixmap.toImage()
+        scale = 24.0 / image.width()
+        points = [(x, y)
+                  for y in range(image.height())
+                  for x in range(image.width())
+                  if image.pixelColor(x, y).alpha() > 128]
+        self.assertTrue(points,
+                        f'a {image.width()} px sheet rasterised to no ink at all')
+        xs = [x for x, _y in points]
+        ys = [y for _x, y in points]
+        return (min(xs) * scale, min(ys) * scale,
+                max(xs) * scale, max(ys) * scale, len(points))
+
     def test_icon_renders_at_1x_and_2x(self):
+        """The hi-dpi ask really rasterised -- and filled -- a 48 px sheet.
+
+        Two things have to be pinned, and neither is pinned by "a pixmap exists":
+
+        * the sheet is requested **with** the ratio. ``icon.pixmap(QSize(24,24))``
+          answers at the caller's default ratio and hands back a 24x24,
+          ``devicePixelRatio == 1.0`` *downscale* of whatever is cached (verified
+          on Qt 6.11), so it cannot distinguish a filled 48 px canvas from a
+          corner-painted one;
+        * the ink inside that canvas has the 1x glyph's extent and 4x the pixel
+          count, i.e. the high-resolution box is actually painted.
+
+        That is the regression surface of ``view.icons._render``: a target rect
+        that loses the device scale paints the glyph into the top-left quarter of
+        the sheet, and a ``setDevicePixelRatio`` moved before the paint makes the
+        painter work in logical coordinates and clips the glyph against the edge.
+        Both leave a non-null, correctly sized, half-empty sheet -- and both were
+        invisible to a test that only looked at ``availableSizes()``.
+        """
         from PyQt6.QtCore import QSize
         from view.icons import icon
 
+        measured = {}
         for dpr in (1.0, 2.0):
             with self.subTest(dpr=dpr):
                 ic = icon('play', '#1976d2', 24, dpr)
-                self.assertFalse(
-                    ic.pixmap(QSize(24, 24)).isNull(),
-                    f'a dpr-{dpr} play icon must paint something')
+
                 # The sheet is registered at ``size * dpr`` device pixels and
-                # tagged with the DPR. Qt denominates ``availableSizes()`` in
-                # device pixels for such a sheet (verified: dpr=2 lists
-                # QSize(48, 48)), so at dpr 1 this is the brief's "contains 24"
-                # and at dpr 2 it is the proof the hi-dpi ask really rasterised
-                # a 48 px sheet rather than reusing the 24 px one.
+                # tagged with the DPR, so Qt denominates ``availableSizes()`` in
+                # device pixels for it (verified: dpr=2 lists QSize(48, 48)).
+                # Necessary, not sufficient: it says a sheet exists, not that
+                # anything was painted into it.
                 sheet = QSize(int(24 * dpr), int(24 * dpr))
                 self.assertIn(sheet, ic.availableSizes())
-                self.assertEqual(
-                    24, ic.pixmap(QSize(24, 24)).width(),
-                    'a logical 24 px request must return a 24 px pixmap')
+
+                pixmap = ic.pixmap(QSize(24, 24), dpr)
+                self.assertFalse(
+                    pixmap.isNull(), f'a dpr-{dpr} play icon must paint something')
+                self.assertEqual(sheet.width(), pixmap.width())
+                self.assertEqual(sheet.height(), pixmap.height())
+                self.assertAlmostEqual(dpr, pixmap.devicePixelRatio(), places=3,
+                                       msg='the sheet must carry the ratio it was '
+                                           'rasterised for, or Qt scales it again')
+
+                box = self._ink_box(pixmap)
+                measured[dpr] = box
+                x0, y0, x1, y1, _count = box
+                # The set's authored ink margin, at both ratios: the glyph must
+                # sit inside 1..23 units of its own sheet. A pre-tagged DPR pushes
+                # the ink to 23.5 (clipped by the canvas edge); a logical-size
+                # target rect instead leaves the far half of the box empty, which
+                # the extent floors below catch.
+                self.assertGreaterEqual(x0, 1.0,
+                                        f'dpr {dpr}: ink starts at {x0:.2f} units, '
+                                        'the glyph does not fill its sheet')
+                self.assertGreaterEqual(y0, 1.0,
+                                        f'dpr {dpr}: ink starts at {y0:.2f} units, '
+                                        'the glyph does not fill its sheet')
+                self.assertLessEqual(x1, 23.0,
+                                     f'dpr {dpr}: ink reaches {x1:.2f} units, i.e. '
+                                     'it is clipped by the sheet edge')
+                self.assertLessEqual(y1, 23.0,
+                                     f'dpr {dpr}: ink reaches {y1:.2f} units, i.e. '
+                                     'it is clipped by the sheet edge')
+                # play is authored 11 x 14 units (the transport rhythm); the mask
+                # loses the antialiased tip pixel, so 1x measures 9.0 x 13.0 and
+                # 2x 10.0 x 13.5. A logical-size target rect measures 4.5 x 6.5
+                # (half the box, in the corner) and a pre-tagged DPR 7.5 x 13.5
+                # pushed against the edge, so these floors bite.
+                self.assertGreaterEqual(
+                    x1 - x0, 8.5,
+                    f'dpr {dpr}: ink spans {x1 - x0:.2f} units wide; a glyph '
+                    'painted into part of the sheet measures about half that')
+                self.assertGreaterEqual(
+                    y1 - y0, 12.5,
+                    f'dpr {dpr}: ink spans {y1 - y0:.2f} units tall')
+
+        # A logical 24 px request without a ratio answers at 24 px. That is Qt
+        # downscaling the cached sheet, not evidence about the hi-dpi render --
+        # kept only to pin the caller-visible contract, and deliberately not the
+        # one labelled "the proof" (see the docstring).
+        with self.subTest('plain logical ask'):
+            plain = icon('play', '#1976d2', 24, 2.0).pixmap(QSize(24, 24))
+            self.assertEqual(24, plain.width())
+            self.assertEqual(1.0, plain.devicePixelRatio())
+
+        if len(measured) == 2:
+            one_x, two_x = measured[1.0], measured[2.0]
+            for i, edge in enumerate(('left', 'top', 'right', 'bottom')):
+                self.assertAlmostEqual(
+                    one_x[i], two_x[i], delta=1.5,
+                    msg=f'the 2x sheet\'s {edge} ink edge sits at {two_x[i]:.2f} '
+                        f'units but the 1x sheet\'s at {one_x[i]:.2f}: the two '
+                        'ratios rasterised different glyphs, so one of them is '
+                        'not filling its canvas',
+                )
+            # Same shape, four times the pixels -- an upscale of the 1x sheet or
+            # a corner-paint cannot satisfy this and a correct 2x paint does
+            # (measured 306 vs 4 x 76 = 304, the slack is antialiasing).
+            self.assertAlmostEqual(
+                two_x[4], 4 * one_x[4], delta=0.15 * 4 * one_x[4],
+                msg=f'the 48 px sheet holds {two_x[4]} ink pixels against the '
+                    f'24 px sheet\'s {one_x[4]}: a hi-dpi sheet must hold ~4x, '
+                    'not the same count (corner-painted) or a clipped surplus',
+            )
+
+        # And the spelling that Qt 6.11 makes pixel-identical to the correct call
+        # -- ``QSvgRenderer.render(painter)`` scales to the painter's viewport,
+        # measured 0 px of difference against the explicit rect -- still has to
+        # pass its target rect, because the device-pixel scale of that rect is
+        # the whole contract and the rendering gives no signal about it.
+        with self.subTest('the render call keeps an explicit device-pixel rect'):
+            import view.icons as icons_module
+
+            code = '\n'.join(
+                line for line in Path(icons_module.__file__).read_text(
+                    encoding='utf-8').splitlines()
+                if not line.strip().startswith('#'))
+            calls = [line.strip() for line in code.splitlines()
+                     if 'renderer.render(' in line]
+            self.assertEqual(1, len(calls),
+                             'exactly one rasterisation call is expected')
+            for call in calls:
+                self.assertRegex(
+                    call, r'renderer\.render\(painter,\s*QRectF\([^)]*(?:sheet|dpr)',
+                    f'{call} drops the device-pixel target rect: the sheet is '
+                    'size * dpr, so a rect in logical pixels (or none at all) '
+                    'paints the glyph into part of the canvas',
+                )
 
     def test_icon_is_recoloured_from_the_requested_colour(self):
         """``currentColor`` is substituted, so two asks give two glyphs."""
