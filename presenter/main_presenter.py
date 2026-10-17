@@ -414,8 +414,13 @@ class MainPresenter(QObject):
             self._view.highlight_current_track(-1)
             return
 
-        # Update UI with track info
-        title = track.title if track.title else "Unknown Title"
+        # Update UI with track info. The unknown title stays *empty* here:
+        # ``NowPlayingPanel.update_track_info`` maps an empty title to
+        # ``i18n.get('metadata.unknown_title')``. Pre-filling that copy in the
+        # presenter used to jump over the view's fallback, so a zh_CN user saw
+        # English in the headline (review finding 1: the view owns the
+        # fallback, the presenter passes the raw data through).
+        title = track.title if track.title else ""
         artist = track.artist if track.artist else ""
         album = track.album if track.album else ""
 
@@ -429,8 +434,11 @@ class MainPresenter(QObject):
         if position.display_index >= 0:
             self._view.highlight_current_track(position.display_index)
 
-        # Update status
-        self._view.set_status_message(f"Now playing: {title}")
+        # Update status. The status line is presenter-owned text, so it cannot
+        # reuse the view's fallback; the label still comes from the same key.
+        self._view.set_status_message(
+            f"Now playing: {title or i18n.get('metadata.unknown_title')}"
+        )
 
     @pyqtSlot()
     def _on_track_ended(self) -> None:
