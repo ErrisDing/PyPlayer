@@ -1,0 +1,7 @@
+<!-- loop_one: the same ring, unchanged, plus a "1" in the open middle. The
+     digit keeps the set's 2-unit stroke weight (stem x 12.4..14.4) and is
+     bbox-centred on x=12 together with its flag, so it does not lean. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M7 7h10v3l4 -4 -4 -4v3H5v6h2V7zM17 17H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+  <path fill="currentColor" d="M14.4 8.5V15.5H12.4V10.9L10.8 12.1 9.6 10.5 12.8 8.5Z"/>
+</svg>

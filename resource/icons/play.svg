@@ -1,0 +1,7 @@
+<!-- play: right-pointing triangle, 14 units tall on the transport rhythm
+     (y 5..19). Optically, not geometrically, centred: the ink bbox runs 8..19,
+     so its centre sits at 13.5 while the area centroid lands near 11.7. A
+     triangle balanced on its bounding box reads as leaning left. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M8 5v14l11-7z"/>
+</svg>

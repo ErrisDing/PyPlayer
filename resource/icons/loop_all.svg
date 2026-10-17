@@ -1,0 +1,8 @@
+<!-- loop_all: the repeat ring in both states (Material repeat geometry). A top
+     band y 5..7 carrying a right-pointing arrowhead, a bottom band y 17..19
+     carrying a left-pointing one, joined by two stubs. Every stroke is 2 units,
+     the weight the volume arcs and the loop_off slash also use, and the shape
+     is symmetric under a half turn about (12, 12). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M7 7h10v3l4 -4 -4 -4v3H5v6h2V7zM17 17H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+</svg>

@@ -1,0 +1,6 @@
+<!-- stop: 12x12 square, one unit inset from the 14-unit rhythm the triangles
+     and bars stand on. A filled square of equal bbox reads larger than an
+     equal-height triangle, so the smaller box is the optical match. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M6 6h12v12H6z"/>
+</svg>

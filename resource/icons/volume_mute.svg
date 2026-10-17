@@ -1,0 +1,6 @@
+<!-- volume_mute: the cone alone (0 arcs). Ink x 2..12, y 4..20. The louder
+     levels repeat this cone unchanged and add arcs concentric about (11, 12),
+     the mouth of the cone, so only the right-hand edge of the glyph moves. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M2 9v6h4l6 5V4L6 9H2z"/>
+</svg>

@@ -8,13 +8,30 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider, QLabel
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QMouseEvent, QIcon, QPixmap, QPainter, QColor
+from PyQt6.QtGui import QMouseEvent
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from core import i18n
+from core.theme import PLAY_SIZE, TRANSPORT_SIZE
+from view.icons import icon
+
+# Glyph sizes, both derived from the geometry tokens so a button and its glyph
+# cannot drift apart. ``TRANSPORT_SIZE // 2`` is the 20 px the transport row has
+# always shown; ``PLAY_SIZE // 2 - 1`` keeps the play disc's 24 px glyph (an
+# even size, so the triangle's apex lands on a whole pixel at dpr 1).
+TRANSPORT_ICON_SIZE = TRANSPORT_SIZE // 2
+PLAY_ICON_SIZE = PLAY_SIZE // 2 - 1
+
+# Loop mode -> glyph. OFF is drawn with ``icon_muted`` and the two active modes
+# with ``accent``: a mode that is not on must not compete for attention.
+_LOOP_GLYPHS = {
+    'OFF': 'loop_off',
+    'ONE': 'loop_one',
+    'ALL': 'loop_all',
+}
 
 
 def format_time(seconds: float) -> str:
@@ -32,153 +49,19 @@ def format_time(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-def create_colored_icon(icon: QIcon, color: QColor, size: int = 32) -> QIcon:
-    """Create a colored version of an icon."""
-    pixmap = icon.pixmap(size, size)
-    colored_pixmap = QPixmap(size, size)
-    colored_pixmap.fill(Qt.GlobalColor.transparent)
+def volume_glyph(volume: float) -> str:
+    """The speaker glyph for a 0.0-1.0 level: 0/1/2/3 arcs.
 
-    painter = QPainter(colored_pixmap)
-    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-    painter.drawPixmap(0, 0, pixmap)
-    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    painter.fillRect(colored_pixmap.rect(), color)
-    painter.end()
-
-    return QIcon(colored_pixmap)
-
-
-def draw_play_icon(painter: QPainter, rect) -> None:
-    """Draw a play triangle icon centered at visual center."""
-    from PyQt6.QtCore import QPointF
-    from PyQt6.QtGui import QPolygonF
-
-    cx, cy = rect.center().x(), rect.center().y()
-    size = min(rect.width(), rect.height())
-    w = size * 0.35  # half width
-    h = size * 0.38  # half height
-
-    # Offset to the right for visual centering (triangle points right, feels left-heavy)
-    visual_offset = size * 0.08
-    cx += visual_offset
-
-    points = [
-        QPointF(cx - w, cy - h),
-        QPointF(cx + w, cy),
-        QPointF(cx - w, cy + h)
-    ]
-    painter.drawPolygon(QPolygonF(points))
-
-
-def draw_pause_icon(painter: QPainter, rect) -> None:
-    """Draw a pause icon (two vertical bars) centered."""
-    cx, cy = rect.center().x(), rect.center().y()
-    size = min(rect.width(), rect.height())
-    bar_w = size * 0.18
-    bar_h = size * 0.6
-    gap = size * 0.16
-
-    # Two bars centered
-    painter.drawRect(int(cx - gap/2 - bar_w), int(cy - bar_h/2), int(bar_w), int(bar_h))
-    painter.drawRect(int(cx + gap/2), int(cy - bar_h/2), int(bar_w), int(bar_h))
-
-
-def draw_stop_icon(painter: QPainter, rect) -> None:
-    """Draw a stop icon (square) centered."""
-    cx, cy = rect.center().x(), rect.center().y()
-    size = min(rect.width(), rect.height())
-    sq_size = size * 0.55
-
-    painter.drawRect(int(cx - sq_size/2), int(cy - sq_size/2), int(sq_size), int(sq_size))
-
-
-def draw_prev_icon(painter: QPainter, rect) -> None:
-    """Draw a previous track icon (vertical bar + triangle pointing left)."""
-    from PyQt6.QtCore import QPointF
-    from PyQt6.QtGui import QPolygonF
-
-    cx, cy = rect.center().x(), rect.center().y()
-    size = min(rect.width(), rect.height())
-
-    bar_w = size * 0.12
-    bar_h = size * 0.55
-    tri_w = size * 0.35  # triangle half-width
-    tri_h = size * 0.32  # triangle half-height
-
-    # Total width = bar_w + tri_w
-    total_half_w = (bar_w + tri_w) / 2
-
-    # Vertical bar on left side
-    bar_x = cx - total_half_w
-    painter.drawRect(int(bar_x), int(cy - bar_h/2), int(bar_w), int(bar_h))
-
-    # Triangle pointing left, touching the bar
-    points = [
-        QPointF(cx + total_half_w, cy - tri_h),
-        QPointF(cx - total_half_w + bar_w, cy),
-        QPointF(cx + total_half_w, cy + tri_h)
-    ]
-    painter.drawPolygon(QPolygonF(points))
-
-
-def draw_next_icon(painter: QPainter, rect) -> None:
-    """Draw a next track icon (triangle pointing right + vertical bar)."""
-    from PyQt6.QtCore import QPointF
-    from PyQt6.QtGui import QPolygonF
-
-    cx, cy = rect.center().x(), rect.center().y()
-    size = min(rect.width(), rect.height())
-
-    bar_w = size * 0.12
-    bar_h = size * 0.55
-    tri_w = size * 0.35  # triangle half-width
-    tri_h = size * 0.32  # triangle half-height
-
-    # Total width = bar_w + tri_w
-    total_half_w = (bar_w + tri_w) / 2
-
-    # Triangle pointing right, touching the bar
-    points = [
-        QPointF(cx - total_half_w, cy - tri_h),
-        QPointF(cx + total_half_w - bar_w, cy),
-        QPointF(cx - total_half_w, cy + tri_h)
-    ]
-    painter.drawPolygon(QPolygonF(points))
-
-    # Vertical bar on right side
-    bar_x = cx + total_half_w - bar_w
-    painter.drawRect(int(bar_x), int(cy - bar_h/2), int(bar_w), int(bar_h))
-
-
-def create_vector_icon(draw_func, color: QColor, size: int = 32, dpr: float = 2.0) -> QIcon:
-    """Create a vector icon using a draw function for smooth scaling.
-
-    Args:
-        draw_func: Function that draws the icon shape given (painter, rect).
-        color: Fill color for the icon.
-        size: Logical pixel size of the icon.
-        dpr: Device pixel ratio for the target display (default 2.0 for backward compat).
+    Quartiles rather than the old three-step thresholds, because the set has
+    four levels and ``volume_mute`` is only ever shown at exactly zero.
     """
-    render_size = int(size * dpr)
-    pixmap = QPixmap(render_size, render_size)
-    pixmap.setDevicePixelRatio(dpr)
-    pixmap.fill(Qt.GlobalColor.transparent)
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-
-    from PyQt6.QtCore import QRectF
-    from PyQt6.QtGui import QBrush, QPen
-    painter.setBrush(QBrush(color))
-    painter.setPen(QPen(Qt.PenStyle.NoPen))
-
-    rect = QRectF(0, 0, render_size, render_size)
-    draw_func(painter, rect)
-
-    painter.end()
-
-    return QIcon(pixmap)
+    if volume <= 0.0:
+        return 'volume_mute'
+    if volume < 1 / 3:
+        return 'volume_low'
+    if volume < 2 / 3:
+        return 'volume_mid'
+    return 'volume_high'
 
 
 class ClickableSlider(QSlider):
@@ -216,9 +99,10 @@ class BottomPanel(QWidget):
 
     Styling is the application sheet's job (``#bottomPanel``, ``#progressSlider``
     / ``#volumeSlider``, ``[role="transport"]``, ``#playButton``,
-    ``#loopButton``, ``#timeLabel``). The only thing left here is the colour of
-    the hand-drawn icons, which QSS cannot reach: :meth:`recolor` regenerates
-    them from the theme tokens until the SVG pipeline replaces them in Task 8.
+    ``#loopButton``, ``#timeLabel``, ``#volumeLabel``). What QSS cannot reach is
+    the *glyphs*: every one of them is an SVG from ``resource/icons`` rasterised
+    through :func:`view.icons.icon` with a theme token, which is why
+    :meth:`recolor` still exists and why no widget here owns a stylesheet.
     """
 
     # Signals
@@ -242,34 +126,38 @@ class BottomPanel(QWidget):
         self._generate_icons()
 
     def _generate_icons(self) -> None:
-        """(Re)draw the transport glyphs in the current theme's icon colours.
+        """(Re)rasterise every glyph from the SVG set in the current tokens.
 
-        Still hand-drawn polygons -- the SVG set and its colouring pipeline
-        land in Task 8 -- but the colours now come from the tokens, so a theme
-        flip cannot leave a light-grey glyph on a dark button.
+        One colour per role, no literals anywhere: ``icon`` for the transport
+        buttons and the volume speaker, ``icon_on_accent`` for the play disc,
+        ``accent`` / ``icon_muted`` for the loop button's on / off states. Each
+        colour is what the WCAG guards in ``tests/test_theme.py`` measured
+        against the background the widget actually paints it on.
         """
         tokens = self._theme.tokens
-        icon_color = QColor(tokens.icon)
-        accent_icon_color = QColor(tokens.icon_on_accent)
         dpr = self.devicePixelRatioF()
 
-        self._prev_btn.setIcon(create_vector_icon(draw_prev_icon, icon_color, 20, dpr))
-        self._stop_btn.setIcon(create_vector_icon(draw_stop_icon, icon_color, 20, dpr))
-        self._next_btn.setIcon(create_vector_icon(draw_next_icon, icon_color, 20, dpr))
-        self._set_play_icon(accent_icon_color)
+        self._prev_btn.setIcon(
+            icon('prev', tokens.icon, TRANSPORT_ICON_SIZE, dpr))
+        self._stop_btn.setIcon(
+            icon('stop', tokens.icon, TRANSPORT_ICON_SIZE, dpr))
+        self._next_btn.setIcon(
+            icon('next', tokens.icon, TRANSPORT_ICON_SIZE, dpr))
+        self._set_play_icon(tokens.icon_on_accent)
+        self._set_loop_icon(tokens)
+        self._set_volume_icon(self.get_volume(), tokens)
 
-    def _set_play_icon(self, color: QColor) -> None:
-        """Draw the play or pause glyph for the current state in ``color``."""
-        draw = draw_pause_icon if self._is_playing else draw_play_icon
+    def _set_play_icon(self, color: str) -> None:
+        """Rasterise the play or pause glyph for the current state in ``color``."""
+        name = 'pause' if self._is_playing else 'play'
         self._play_btn.setIcon(
-            create_vector_icon(draw, color, 24, self.devicePixelRatioF())
-        )
+            icon(name, color, PLAY_ICON_SIZE, self.devicePixelRatioF()))
 
     def _setup_ui(self) -> None:
         """Set up the UI components."""
         # Style scopes for the theme sheet (core/theme_qss.py selects on
         # #bottomPanel / #progressSlider / #volumeSlider / #playButton /
-        # #loopButton / #timeLabel and on [role="transport"]).
+        # #loopButton / #timeLabel / #volumeLabel and on [role="transport"]).
         self.setObjectName("bottomPanel")
 
         # Enable transparency for the widget
@@ -314,16 +202,16 @@ class BottomPanel(QWidget):
         controls_layout = QHBoxLayout()
         controls_layout.setSpacing(10)
 
-        # The glyphs are drawn by ``_generate_icons``, called at the end of
-        # ``__init__`` and again from ``recolor``; that keeps every button's
-        # icon colour anchored to the theme tokens instead of a local literal.
+        # The glyphs are rasterised by ``_generate_icons``, called at the end of
+        # ``__init__`` and again from ``recolor``; that keeps every icon colour
+        # anchored to the theme tokens instead of a local literal.
         # Previous button
         self._prev_btn = QPushButton()
         # QSS matches dynamic properties as strings, so the transport scope is
         # the literal "transport" (QPushButton[role="transport"]).
         self._prev_btn.setProperty("role", "transport")
-        self._prev_btn.setFixedSize(40, 40)
-        self._prev_btn.setIconSize(QSize(20, 20))
+        self._prev_btn.setFixedSize(TRANSPORT_SIZE, TRANSPORT_SIZE)
+        self._prev_btn.setIconSize(QSize(TRANSPORT_ICON_SIZE, TRANSPORT_ICON_SIZE))
         self._prev_btn.setToolTip(i18n.get('button.prev') if hasattr(i18n, 'get') else "Previous")
         self._prev_btn.clicked.connect(self.prev_clicked.emit)
         controls_layout.addWidget(self._prev_btn)
@@ -331,34 +219,38 @@ class BottomPanel(QWidget):
         # Play/Pause button
         self._play_btn = QPushButton()
         self._play_btn.setObjectName("playButton")
-        self._play_btn.setFixedSize(50, 50)
-        self._play_btn.setIconSize(QSize(24, 24))
+        self._play_btn.setFixedSize(PLAY_SIZE, PLAY_SIZE)
+        self._play_btn.setIconSize(QSize(PLAY_ICON_SIZE, PLAY_ICON_SIZE))
         self._play_btn.clicked.connect(self.play_pause_clicked.emit)
         controls_layout.addWidget(self._play_btn)
 
         # Stop button
         self._stop_btn = QPushButton()
         self._stop_btn.setProperty("role", "transport")
-        self._stop_btn.setFixedSize(40, 40)
-        self._stop_btn.setIconSize(QSize(20, 20))
+        self._stop_btn.setFixedSize(TRANSPORT_SIZE, TRANSPORT_SIZE)
+        self._stop_btn.setIconSize(QSize(TRANSPORT_ICON_SIZE, TRANSPORT_ICON_SIZE))
         self._stop_btn.clicked.connect(self.stop_clicked.emit)
         controls_layout.addWidget(self._stop_btn)
 
         # Next button
         self._next_btn = QPushButton()
         self._next_btn.setProperty("role", "transport")
-        self._next_btn.setFixedSize(40, 40)
-        self._next_btn.setIconSize(QSize(20, 20))
+        self._next_btn.setFixedSize(TRANSPORT_SIZE, TRANSPORT_SIZE)
+        self._next_btn.setIconSize(QSize(TRANSPORT_ICON_SIZE, TRANSPORT_ICON_SIZE))
         self._next_btn.clicked.connect(self.next_clicked.emit)
         controls_layout.addWidget(self._next_btn)
 
         # Spacer
         controls_layout.addSpacing(20)
 
-        # Loop mode button
-        self._loop_btn = QPushButton("↺")
+        # Loop mode button. The glyph is the button's *icon*, never its text:
+        # a character would be coloured by the palette (and be at the mercy of
+        # whatever font on the platform has that codepoint), which is what the
+        # old loop character was.
+        self._loop_btn = QPushButton()
         self._loop_btn.setObjectName("loopButton")
-        self._loop_btn.setFixedSize(40, 40)
+        self._loop_btn.setFixedSize(TRANSPORT_SIZE, TRANSPORT_SIZE)
+        self._loop_btn.setIconSize(QSize(TRANSPORT_ICON_SIZE, TRANSPORT_ICON_SIZE))
         self._loop_btn.setToolTip("Loop: OFF")
         self._loop_btn.clicked.connect(self._on_loop_clicked)
         controls_layout.addWidget(self._loop_btn)
@@ -366,8 +258,12 @@ class BottomPanel(QWidget):
         # Spacer
         controls_layout.addStretch()
 
-        # Volume icon (using text character ♪ not emoji, for consistent cross-platform rendering)
-        self._volume_icon = QLabel("♪♪")
+        # Volume indicator: one of the four speaker glyphs. Named so the tree
+        # can find it, deliberately unstyled by the sheet: it holds a pixmap
+        # already painted from ``tokens.icon``, so there is no colour left for a
+        # rule to reach (see the report for the full reasoning).
+        self._volume_icon = QLabel()
+        self._volume_icon.setObjectName("volumeIcon")
         controls_layout.addWidget(self._volume_icon)
 
         # Volume slider
@@ -379,8 +275,10 @@ class BottomPanel(QWidget):
         self._volume_slider.valueChanged.connect(self._on_volume_changed)
         controls_layout.addWidget(self._volume_slider)
 
-        # Volume label
+        # Volume percentage: text, so it does need the sheet's reach
+        # (``#volumeLabel`` in core/theme_qss.py).
         self._volume_label = QLabel("100%")
+        self._volume_label.setObjectName("volumeLabel")
         self._volume_label.setFixedWidth(45)
         controls_layout.addWidget(self._volume_label)
 
@@ -423,24 +321,41 @@ class BottomPanel(QWidget):
         self.volume_changed.emit(volume)
 
     def _update_volume_icon(self, volume: float) -> None:
-        """Update volume icon based on level."""
-        if volume == 0:
-            self._volume_icon.setText("♪")  # muted: single note
-        elif volume < 0.5:
-            self._volume_icon.setText("♪♪")  # medium: two notes
-        else:
-            self._volume_icon.setText("♪♪♪")  # high: three notes
+        """Switch the speaker glyph for the level (0/1/2/3 arcs)."""
+        self._set_volume_icon(volume, self._theme.tokens)
+
+    def _set_volume_icon(self, volume: float, tokens) -> None:
+        """Put the level's glyph on the volume label in ``tokens.icon``.
+
+        The pixmap is requested *with the panel's device pixel ratio*, so a
+        HiDPI screen gets the 2x sheet rather than a 1x one upscaled by the
+        label: ``QIcon.pixmap(size)`` alone would answer in the caller's default
+        ratio and quietly throw the ``dpr`` argument away.
+        """
+        dpr = self.devicePixelRatioF()
+        glyph = icon(volume_glyph(volume), tokens.icon, TRANSPORT_ICON_SIZE, dpr)
+        self._volume_icon.setPixmap(glyph.pixmap(
+            QSize(TRANSPORT_ICON_SIZE, TRANSPORT_ICON_SIZE), dpr))
+
+    def _set_loop_icon(self, tokens) -> None:
+        """Rasterise the current loop mode's glyph in its state colour."""
+        colour = (tokens.icon_muted if self._loop_mode == 'OFF'
+                  else tokens.accent)
+        self._loop_btn.setIcon(
+            icon(_LOOP_GLYPHS[self._loop_mode], colour, TRANSPORT_ICON_SIZE,
+                 self.devicePixelRatioF()))
 
     def _update_loop_button(self) -> None:
-        """Update loop button appearance based on mode.
+        """Update loop button glyph and tooltip for the mode.
 
-        Only the tooltip changes: the per-mode colours were inline stylesheets
-        (``#999`` / ``#2196F3`` / ``#4CAF50``, none of them in the token set),
-        and the glyph itself is still the same ``↺`` character. State colours
-        and the distinct loop glyphs arrive with Task 8 (SVG icon set) and
-        Task 9 (state tokens) -- until then the modes are distinguished by
-        tooltip only, which is the deliberate hand-off recorded in the plan.
+        Three glyphs, two colours: OFF is muted because a mode that is not
+        active must not compete with the two that are, ONE and ALL take
+        ``accent``, the state colour the plan reserves for "this is on". Both
+        are icons, so no palette colour and no inline stylesheet can reach them
+        -- the per-mode ``#999`` / ``#2196F3`` / ``#4CAF50`` literals Task 6
+        deleted have no successor here.
         """
+        self._set_loop_icon(self._theme.tokens)
         tips = {
             "OFF": "Loop: OFF",
             "ONE": "Loop: ONE",
@@ -448,30 +363,21 @@ class BottomPanel(QWidget):
         }
         self._loop_btn.setToolTip(tips[self._loop_mode])
 
-    def set_bg_alpha(self, alpha: float) -> None:
-        """Set bottom panel background transparency through the theme manager.
-
-        Kept as a public alias because the panel is the widget the slider
-        visually belongs to; the value itself is the manager's, so the sheet
-        and every other consumer agree on it.
-        """
-        self._theme.set_alpha('controls', alpha)
-
     # === Public API ===
 
     def recolor(self, tokens) -> None:
-        """Regenerate the transport icons for a new theme.
+        """Regenerate every glyph for a new theme.
 
         Called from ``MainWindow.recolor`` on every ``theme_changed``. The
-        button chrome itself is QSS's business; only the hand-drawn glyphs are
-        painted here, so they are the only thing to redraw.
+        button chrome itself is QSS's business; the glyphs are the one thing
+        here that QSS cannot restyle, so they are the one thing redrawn.
         """
         self._generate_icons()
 
     def set_playing_state(self, is_playing: bool, is_paused: bool = False) -> None:
         """Update the play/pause button state."""
         self._is_playing = is_playing and not is_paused
-        self._set_play_icon(QColor(self._theme.tokens.icon_on_accent))
+        self._set_play_icon(self._theme.tokens.icon_on_accent)
 
     def set_volume(self, volume: float) -> None:
         """Set the volume level (0.0-1.0)."""

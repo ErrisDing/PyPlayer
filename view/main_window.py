@@ -34,8 +34,9 @@ class MainWindow(QMainWindow):
     Styling: the window owns no stylesheet. ``view.theme_manager.ThemeManager``
     pushes one application-wide sheet and palette; this class only reacts to
     ``theme_changed`` for the things QSS cannot restyle by itself -- the
-    hand-drawn transport icons, the delegate-painted playlist rows and the
-    background scrim -- through :meth:`recolor`.
+    token-coloured SVG glyphs of the bottom panel (``view.icons``), the
+    delegate-painted playlist rows and the background scrim -- through
+    :meth:`recolor`.
     """
 
     # === User Action Signals ===
@@ -327,8 +328,9 @@ class MainWindow(QMainWindow):
         """React to ``ThemeManager.theme_changed``.
 
         The application sheet and palette are already re-pushed by the manager;
-        what is left are the things it cannot reach: the hand-drawn transport
-        icons, the delegate-painted playlist rows, and this window's scrim.
+        what is left are the things it cannot reach: the bottom panel's SVG
+        glyphs (rasterised from the tokens, so they need re-rasterising), the
+        delegate-painted playlist rows, and this window's scrim.
         """
         self._overlay_alpha = self._theme.alphas.overlay
         self._bottom_panel.recolor(tokens)

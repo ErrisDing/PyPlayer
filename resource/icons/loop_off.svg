@@ -1,0 +1,9 @@
+<!-- loop_off: the ring is drawn first and unchanged, then crossed by a 2-unit
+     slash on the top-left to bottom-right diagonal, long enough that both tails
+     clearly stick out past the ring. That diagonal is the only one which meets
+     the ring at its two corner bends while touching neither arrowhead (x 21,
+     y 6 and x 3, y 18): a slash through an arrowhead reads as a new arrowhead. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M7 7h10v3l4 -4 -4 -4v3H5v6h2V7zM17 17H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+  <path fill="currentColor" d="M2.9 1.5L22.5 21.1l-1.4 1.4L1.5 2.9Z"/>
+</svg>

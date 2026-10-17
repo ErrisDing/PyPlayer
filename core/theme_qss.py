@@ -77,6 +77,12 @@ REQUIRED_OBJECT_NAMES: tuple[str, ...] = (
     'playButton',
     'loopButton',
     'timeLabel',
+    # The volume percentage read-out. Task 8 gave it a name because it is the
+    # one label in the bottom row that is still *text* (the speaker beside it is
+    # an icon rasterised from ``tokens.icon`` and needs no rule at all); left
+    # unnamed it would inherit the palette's ButtonText instead of the sheet's
+    # secondary colour, sitting brighter than the two time labels it pairs with.
+    'volumeLabel',
     'appearanceDialog',
     'bgPathLabel',
     # The three transparency sliders of the appearance dialog. Task 5 named
@@ -368,7 +374,11 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
         ('color', t.text_muted),
         ('font-size', _px(FONT_SIZE_MD)),
     ]))
-    emit(_rule('#timeLabel', [
+    # The three read-outs of the bottom row share one rule: elapsed time, total
+    # duration and the volume percentage are the same kind of small secondary
+    # text, and giving the third its own copy of the declarations is how the
+    # progress and volume sliders ended up looking different in the first place.
+    emit(_rule(('#timeLabel', '#volumeLabel'), [
         ('color', t.text_secondary),
         ('font-size', _px(FONT_SIZE_SM)),
     ]))

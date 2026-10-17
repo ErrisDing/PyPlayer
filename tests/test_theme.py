@@ -153,6 +153,32 @@ class ThemeContrastTest(unittest.TestCase):
         ('icon_muted', 'button_hover', 3.0),
         ('icon_muted', 'button_pressed', 3.0),
         ('icon_muted', 'surface', 3.0),
+        # Task 8 made the six pairs below real rather than hypothetical. An SVG
+        # glyph is rasterised with a token *before* it is painted, so QSS can no
+        # longer be trusted to keep it legible the way it keeps text legible:
+        # the pairing has to be pinned here, on the same 3:1 non-text-component
+        # bar (WCAG 1.4.11).
+        #   * prev / stop / next carry ``icon`` and sit on the three
+        #     ``QPushButton[role="transport"]`` backgrounds the sheet emits.
+        #   * the volume speaker carries ``icon`` too, but on the panel itself,
+        #     whose ``rgba(surface, controls)`` is the ``icon``/``surface`` pair
+        #     above (measured: ``icon`` on the composited LIGHT panel is 9.66:1,
+        #     within 0.1 of the 9.74:1 that pin reports).
+        #   * loop_one / loop_all carry ``accent`` on the loop button's three
+        #     states -- the tightest margin in the set, 3.49:1 on LIGHT
+        #     button_pressed, so it is listed rather than folded into
+        #     accent-on-surface.
+        ('icon', 'button_bg', 3.0),
+        ('icon', 'button_hover', 3.0),
+        ('icon', 'button_pressed', 3.0),
+        ('accent', 'button_bg', 3.0),
+        ('accent', 'button_hover', 3.0),
+        ('accent', 'button_pressed', 3.0),
+        # The ``icon_muted`` / ``surface`` pair above is a deliberate superset:
+        # the loop-off glyph paints on the button, never on the panel. It stays
+        # because #loopButton's fill is one QSS edit away from transparent (the
+        # sheet already emits ``transparent`` for #nowPlayingPanel), and a guard
+        # must not be the thing that notices such a change.
     )
 
     @staticmethod
