@@ -81,8 +81,10 @@ REQUIRED_OBJECT_NAMES: tuple[str, ...] = (
     # The volume percentage read-out. Task 8 gave it a name because it is the
     # one label in the bottom row that is still *text* (the speaker beside it is
     # an icon rasterised from ``tokens.icon`` and needs no rule at all); left
-    # unnamed it would inherit the palette's ButtonText instead of the sheet's
-    # secondary colour, sitting brighter than the two time labels it pairs with.
+    # unnamed it would take its colour from the palette -- ``QLabel`` asks
+    # ``QWidget::foregroundRole()``, which is ``WindowText`` and maps to
+    # ``text_primary`` -- instead of the sheet's secondary colour, so it would
+    # sit brighter than the two time labels it pairs with.
     'volumeLabel',
     'appearanceDialog',
     'bgPathLabel',
@@ -169,7 +171,8 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     # Surfaces the two panels composite from `surface` at the user's alpha.
     playlist_bg = hex_to_rgba(t.surface, _clamp_alpha(alphas.playlist))
     controls_bg = hex_to_rgba(t.surface, _clamp_alpha(alphas.controls))
-    # Both sliders share this groove so they finally render identically (A1).
+    # Every slider in the app composites its groove from this one value, so the
+    # progress and volume bars can only render identically (A1).
     groove_bg = hex_to_rgba(t.border_strong, 0.5)
 
     transport = 'QPushButton[role="transport"]'
@@ -204,15 +207,24 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     # user sees, not ``grab()``): the whole now-playing column came back
     # ``#000000`` in BOTH themes, and the two translucent panels composited
     # against that black instead of against the window -- ``#playlistView``
-    # measured ``#bfbfbf`` where ``rgba(#ffffff, 0.75)`` over ``window_bg`` is
-    # ``#f7f7f7``, and ``#bottomPanel`` ``#d8d8d8`` where it should be
-    # ``#fbfbfb``. Dark mode hid the bug (``#000`` next to ``#1e1e1e`` reads as
-    # a deliberate gutter) and light mode wore it as a black slab.
+    # measured ``#bfbfbf`` and ``#bottomPanel`` ``#d8d8d8``, i.e. exactly
+    # ``rgba(#ffffff, 0.75)`` and ``rgba(#ffffff, 0.85)`` over ``#000000``.
+    # Over ``window_bg`` (``#fafafa``) those two alphas both land on
+    # ``#fefefe`` (253.75 and 254.25), which is what a live window grab of the
+    # repaired sheet measures; the ``#f7f7f7`` / ``#fbfbfb`` this note used to
+    # quote as the expected pair was arithmetic, not a measurement, and both
+    # numbers were wrong. Dark mode hid the bug (``#000`` next to ``#1e1e1e``
+    # reads as a deliberate gutter) and light mode wore it as a black slab.
     #
     # The background-image feature is untouched: ``MainWindow.paintEvent`` draws
     # the pixmap and the scrim in its own handler, which runs after this fill
     # and before the children paint, so a configured image still shows through
     # the transparent panel and the two alpha-composited surfaces.
+    #
+    # The value below is pinned by ``tests/test_theme_qss.py::MainWindowFillTest``:
+    # "is the window filled at all" is invisible to a structural gate, since a
+    # sheet that keeps the selector, the scope exemption and the token palette
+    # passes every guard in that suite while filling the window with nothing.
     emit(_rule('QMainWindow', [
         ('background-color', t.window_bg),
     ]))
@@ -278,12 +290,21 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
         ('background-color', playlist_bg),
         ('border', f'1px solid {t.border}'),
     ]))
-    # Row height comes from PlaylistItemDelegate.sizeHint() (ROW_HEIGHT);
-    # setting height here would fight the delegate.
-    emit(_rule('#playlistView::item', [
-        ('padding', f'0 {_px(SPACE_2)}'),
-        ('border-bottom', f'1px solid {t.divider}'),
-    ]))
+    # No ``#playlistView::item`` rule here, on purpose. The view carries
+    # PlaylistItemDelegate, which overrides ``paint()`` and never asks the
+    # style to draw the item sub-control, so ``padding`` and ``border-bottom``
+    # written here cannot reach a pixel: Task 4 emitted the mapping table's row,
+    # and the branch shipped 0 pixels of ``divider`` inside a live viewport
+    # (measured -- a window grab with and without the rule is pixel-identical).
+    # The delegate now paints both, the ``SPACE_2`` side inset and the 1px
+    # ``divider`` at the row bottom, from the same two tokens, so the value the
+    # table asked for is on screen while this sheet stops claiming pixels it does
+    # not produce. Contrast ``QDialog QListWidget::item`` at the bottom of this
+    # file: that list has no delegate, so its row padding and divider must live
+    # here or they vanish (measured: 956 ``divider`` pixels in that viewport).
+    #
+    # Row height is the delegate's too (``ROW_HEIGHT`` via ``sizeHint``);
+    # setting ``height`` here would fight it.
 
     # -- 滑块 / sliders ------------------------------------------------------
     # One rule set for every slider in the app: same groove, same accent

@@ -115,8 +115,9 @@ def _rule_block(qss: str, selector_pattern: str) -> str:
     """Return the declaration body of the rule whose selector matches.
 
     ``selector_pattern`` is matched literally against the text preceding
-    ``{``, so callers pin the exact rule (``#playlistView {``) instead of the
-    first substring hit (``#playlistView::item {``).
+    ``{``, so callers pin the exact rule (``#playlistView {``) rather than a
+    bare selector that is also the prefix of a variant rule (``#playlistView:focus``,
+    ``QDialog QListWidget::item:selected``).
     """
     match = re.search(re.escape(selector_pattern) + r'\s*\{([^}]*)\}', qss)
     assert match, f'no rule block found for {selector_pattern!r}'
@@ -175,6 +176,11 @@ def _colour_declarations(qss: str):
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     return tuple(int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def _declarations(block: str) -> list[tuple[str, str]]:
+    """Every ``(property, value)`` of one rule body, in declaration order."""
+    return [(prop, value.strip()) for prop, value in DECLARATION_RE.findall(block)]
 
 
 def _colour_declaration(block: str, prop: str) -> str:
@@ -256,6 +262,106 @@ class SelectedChipContrastTest(unittest.TestCase):
                     f'needs 4.5:1')
 
         self.assertEqual([], failures, '\n'.join(failures))
+
+
+class MainWindowFillTest(unittest.TestCase):
+    """Whole-branch review finding 2: the window fill is pinned by *value*.
+
+    Everything the suite already had about ``QMainWindow`` is structural: the
+    class is in the chrome exemption, its selector appears in the output, its
+    colour is a token. All of that stays green with the fill set back to
+    ``transparent`` -- the exact defect Task 10 caught by eye in the render
+    matrix (the main window never painted, both themes measured ``#000000`` on a
+    real desktop grab, and the two alpha-composited panels settled against that
+    black instead of against ``window_bg``). A rule can be present, scoped,
+    token-coloured and still paint nothing, so this reads the declaration out of
+    the emitted block and compares it to the token.
+
+    ``#nowPlayingPanel`` is pinned in the same breath from the other side: its
+    ``transparent`` is a decision (it is what lets a configured background image
+    show through), not an oversight, so a later "consistency" pass that fills it
+    fails here instead of quietly killing the feature.
+    """
+
+    def _blocks(self):
+        from core.theme import DARK, LIGHT, AlphaSettings
+        from core.theme_qss import build_qss
+
+        for name, tokens in (('LIGHT', LIGHT), ('DARK', DARK)):
+            qss = build_qss(tokens, AlphaSettings())
+            yield (name, tokens,
+                   _rule_block(qss, 'QMainWindow'),
+                   _rule_block(qss, '#nowPlayingPanel'))
+
+    def test_window_is_filled_with_the_window_bg_token(self):
+        for name, tokens, block, _panel in self._blocks():
+            with self.subTest(theme=name):
+                self.assertNotIn(
+                    'transparent', block,
+                    f'{name}: `QMainWindow` lost its fill again. A transparent '
+                    f'brush makes QStyleSheetStyle answer PE_Widget with nothing, '
+                    f'so the central widget, the splitter and every window margin '
+                    f'go unpainted and the translucent panels composite against '
+                    f'black -- the rule passes every structural gate in this '
+                    f'suite while rendering nothing',
+                )
+                self.assertEqual(
+                    tokens.window_bg, _colour_declaration(block, 'background-color'),
+                    f'{name}: the window must be filled with `window_bg` '
+                    f'({tokens.window_bg}), because that is the colour the '
+                    f'`playlist`/`controls` alphas composite against',
+                )
+
+    def test_now_playing_panel_stays_transparent(self):
+        for name, _tokens, _block, panel in self._blocks():
+            with self.subTest(theme=name):
+                self.assertEqual(
+                    ['transparent'],
+                    [value for prop, value in _declarations(panel)
+                     if prop == 'background-color'],
+                    f'{name}: `#nowPlayingPanel` must keep no fill of its own -- '
+                    f'that is how a configured background image reaches the user '
+                    f'through the panel (core/theme_qss.py, the Task 10 ruling)',
+                )
+
+    def test_delegated_view_carries_no_item_rule(self):
+        """Finding 4: a rule that cannot render must not be shipped.
+
+        ``PlaylistItemDelegate.paint()`` overrides the item sub-control and never
+        asks the style to draw it, so ``#playlistView::item`` was parsed and
+        discarded: Task 10 measured 0 pixels of ``divider`` in a live viewport,
+        and deleting the rule left a window grab byte-identical. The delegate
+        paints the divider and the ``SPACE_2`` side inset itself now -- guarded
+        on the pixels by ``tests/test_theme_manager.py`` -- and this guard keeps
+        the sheet from re-growing the dead half of the claim.
+
+        The control case is asserted in the same test rather than left to memory:
+        ``QDialog QListWidget::item`` carries the same two declarations and *is*
+        drawn, because that list has no delegate. Requirement, not coincidence.
+        """
+        from core.theme import DARK, LIGHT, AlphaSettings
+        from core.theme_qss import build_qss
+
+        for name, tokens in (('LIGHT', LIGHT), ('DARK', DARK)):
+            qss = build_qss(tokens, AlphaSettings())
+            with self.subTest(theme=name):
+                self.assertNotIn(
+                    '#playlistView::item', qss,
+                    f'{name}: `#playlistView::item` is back. The delegate owns '
+                    f'every pixel of that row, so nothing written here can '
+                    f'render -- put padding/divider/height in '
+                    f'view/delegates/playlist_delegate.py instead',
+                )
+                self.assertIn(
+                    f'\n#playlistView {{', qss,
+                    f'{name}: the guard above must not be satisfied by dropping '
+                    f'the view rule itself (background + border do render)',
+                )
+                self.assertIn(
+                    f'\nQDialog QListWidget::item {{', qss,
+                    f'{name}: the delegate-less dialog list still needs its row '
+                    f'padding and divider from the sheet',
+                )
 
 
 class BuildQssTest(unittest.TestCase):

@@ -9,8 +9,15 @@ them:
      ._on_background_image_changed (its only emitters were deleted here);
   3. ``view.models.DisplayEntry`` is the service DTO, not a copy of it;
   4. the background route that IS alive still works end to end:
-     AppearanceDialog.background_image_changed (a different signal with the
-     same *name*) -> MainPresenter._handle_background_change -> MainWindow.
+     MainWindow.manage_appearance_requested (emitted by the File menu) ->
+     MainPresenter._on_manage_appearance -> AppearanceDialog.background_image_changed
+     (a different signal with the same *name* as the dead MainWindow one) ->
+     MainPresenter._handle_background_change -> MainWindow.
+     Whole-branch review finding 5 moved the first half of that chain into the
+     test: the menu signal is the only way a user can reach the appearance/theme
+     dialog, and calling the presenter's slot straight from the helper skipped the
+     action connection and the presenter's ``connect``, so the live route could be
+     deleted with this file still green.
 
 ``context_menu_requested`` is the batch-3 right-click interface: it is declared
 but never emitted on purpose, so it must survive this cleanup.
@@ -181,7 +188,18 @@ class AppearanceBackgroundPathTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def _open_dialog(self, *actions):
-        """Open the appearance dialog the way the menu does, then apply actions."""
+        """Open the appearance dialog the way the menu does, then apply actions.
+
+        Whole-branch review finding 5: this fires
+        ``MainWindow.manage_appearance_requested`` instead of reaching into the
+        presenter. The menu action's ``triggered`` connection
+        (``view/main_window.py:140``) plus the presenter's connect of that signal
+        to ``_on_manage_appearance`` (``presenter/main_presenter.py:100``) is the
+        *only* route from the UI to the theme/appearance dialog, and calling the
+        slot directly skipped both -- the route could be deleted and this file
+        stayed green. Now a dropped connect means no dialog, no ``fake_exec``, no
+        assertions.
+        """
         from unittest.mock import patch
 
         from PyQt6.QtWidgets import QFileDialog
@@ -194,7 +212,17 @@ class AppearanceBackgroundPathTest(unittest.TestCase):
 
         with patch.object(QFileDialog, 'getOpenFileName', return_value=(self.bg_path, '')), \
                 patch.object(AppearanceDialog, 'exec', fake_exec):
-            self.presenter._on_manage_appearance()
+            opened = []
+            # Connected after the presenter, so its ``_on_manage_appearance``
+            # runs first: this only records that the signal has a listener and
+            # that the emit below is what opens the dialog.
+            self.view.manage_appearance_requested.connect(lambda: opened.append(True))
+            self.view.manage_appearance_requested.emit()
+            self.assertTrue(
+                opened,
+                'nothing listens to manage_appearance_requested: the menu item is '
+                'a dead control',
+            )
 
     def test_dialog_select_background_reaches_view(self):
         """Select button -> dialog signal -> presenter -> config + view paint."""

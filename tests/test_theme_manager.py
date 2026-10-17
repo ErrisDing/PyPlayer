@@ -502,6 +502,128 @@ class ThemeManagerTest(unittest.TestCase):
             window.close()
             window.deleteLater()
 
+    def test_delegate_paints_the_row_divider_and_inset(self):
+        """Whole-branch review finding 4: the row's divider is pixels, not a rule.
+
+        ``#playlistView::item`` was dropped from the generated sheet because a
+        delegate that overrides ``paint()`` never asks the style to draw the item
+        sub-control, so its ``padding`` and ``border-bottom`` could not render (a
+        live viewport measured 0 ``divider`` pixels, and deleting the rule left a
+        window grab pixel-identical). The two values the mapping table asked for
+        are therefore asserted here, where they are actually produced: a 1px
+        ``divider`` on each row's bottom edge, and a ``SPACE_2`` side inset for
+        the name and the position read-out.
+
+        Before this test the inset was 5px and nothing drew a divider at all, so
+        both halves bite: the inset assertions fail at 5, and the divider
+        assertions fail when the ``fillRect`` is removed. The playing row is
+        included because the layer order (divider, then the accent bar) is what
+        keeps the 3px marker unbroken at the row's bottom edge.
+        """
+        from core.theme import DARK, LIGHT, ROW_HEIGHT, SPACE_2
+        from view.delegates.playlist_delegate import PLAYING_BAR_WIDTH
+
+        from service.queue_service import DisplayEntry
+        from view.main_window import MainWindow
+
+        mgr = self._manager('light')
+        mgr.apply_to(self.app)
+        window = MainWindow(mgr)
+        try:
+            window.set_playlist_entries([
+                DisplayEntry(display_text='Album/Track 01.mp3', node_idx=0,
+                             is_folder=False, path='/lib/Album/Track 01.mp3',
+                             relative_position='Album', sub_index=0),
+                DisplayEntry(display_text='Album/Track 02.mp3', node_idx=0,
+                             is_folder=False, path='/lib/Album/Track 02.mp3',
+                             relative_position='Album', sub_index=1,
+                             is_playing=True),
+            ])
+            list_view = window._playlist_view._list_view
+            list_view.resize(420, 120)
+            list_view.show()
+            self.app.processEvents()
+
+            def image():
+                self.app.processEvents()
+                return list_view.viewport().grab().toImage()
+
+            def row_rect(row):
+                return list_view.visualRect(list_view.model().index(row))
+
+            ink = LIGHT.text_primary
+            divider = LIGHT.divider
+            shot = image()
+
+            for row in (0, 1):
+                rect = row_rect(row)
+                with self.subTest(row=row):
+                    # The divider is one pixel tall, on the row's own bottom edge.
+                    self.assertEqual(
+                        divider,
+                        shot.pixelColor(rect.left() + 40, rect.bottom()).name().lower(),
+                        f'row {row} draws no divider on its bottom edge')
+                    self.assertNotEqual(
+                        divider,
+                        shot.pixelColor(rect.left() + 40, rect.bottom() - 1).name().lower(),
+                        f'row {row}: the divider is more than 1px, or the row '
+                        f'background is being mis-read as a divider')
+
+            # The playing row's accent bar survives the divider it crosses:
+            # ``PLAYING_BAR_WIDTH`` covers the row's left edge, bottom included.
+            rect = row_rect(1)
+            self.assertEqual(
+                LIGHT.playing_bar,
+                shot.pixelColor(rect.left() + PLAYING_BAR_WIDTH - 1,
+                                rect.bottom()).name().lower(),
+                'the accent bar must be painted over the divider, not notched by it')
+
+            # Left inset: nothing of the name may live inside the SPACE_2 gutter.
+            rect = row_rect(0)
+            columns = [
+                x for x in range(rect.left(), rect.right())
+                if any(shot.pixelColor(x, y).name().lower() == ink
+                       for y in range(rect.top(), rect.bottom()))]
+            self.assertTrue(columns, 'the name painted no ink at all')
+            self.assertGreaterEqual(
+                columns[0] - rect.left(), SPACE_2,
+                f'the name starts {columns[0] - rect.left()}px in; the row inset '
+                f'is the delegate\'s own SPACE_2 (8px), not the old 5px')
+            self.assertLessEqual(
+                columns[0] - rect.left(), SPACE_2 + 2,
+                'the inset drifted away from SPACE_2 rather than following it')
+
+            # Right gutter: the position read-out is right-aligned inside the
+            # same inset, so its last ink column sits at least SPACE_2 in from
+            # the row edge (the bracket's side bearing makes an exact figure
+            # font-dependent, so only the containment is pinned here -- the left
+            # inset above is the measurement with teeth, since 5px put ink
+            # demonstrably inside the gutter).
+            muted = LIGHT.text_muted
+            right_columns = [
+                x for x in range(rect.left(), rect.right())
+                if any(shot.pixelColor(x, y).name().lower() == muted
+                       for y in range(rect.top(), rect.bottom()))]
+            self.assertTrue(right_columns, 'the position read-out painted no ink')
+            self.assertGreaterEqual(
+                rect.right() - max(right_columns), SPACE_2,
+                'the right-hand read-out is drawn inside the SPACE_2 gutter, so '
+                'it is not using the delegate\'s shared text rectangle')
+
+            # The divider follows the theme, so it is a token and not a literal.
+            mgr.set_mode('dark')
+            shot = image()
+            for row in (0, 1):
+                rect = row_rect(row)
+                self.assertEqual(
+                    DARK.divider,
+                    shot.pixelColor(rect.left() + 40, rect.bottom()).name().lower(),
+                    'a dark row must draw the dark `divider` token')
+            list_view.hide()
+        finally:
+            window.close()
+            window.deleteLater()
+
     def test_playlist_row_metrics_come_from_the_delegate(self):
         """``ROW_HEIGHT`` is the row height, and the row still spans the view.
 
@@ -911,7 +1033,13 @@ class PresenterThemeFlowTest(unittest.TestCase):
         self.app.setPalette(self._saved_palette)
 
     def _pick(self, object_name):
-        """Open the dialog the way the menu does and click one mode radio."""
+        """Open the dialog the way the menu does and click one mode radio.
+
+        The emit below goes through ``MainWindow.manage_appearance_requested`` ->
+        ``MainPresenter._on_manage_appearance``, i.e. the only route the menu has
+        (whole-branch review finding 5; ``ThemeRestartIntegrationTest._pick`` and
+        ``tests/test_dead_code_removed.py`` emit it for the same reason).
+        """
         from unittest.mock import patch
 
         from PyQt6.QtWidgets import QRadioButton
@@ -925,7 +1053,7 @@ class PresenterThemeFlowTest(unittest.TestCase):
             return AppearanceDialog.DialogCode.Accepted
 
         with patch.object(AppearanceDialog, 'exec', fake_exec):
-            self.presenter._on_manage_appearance()
+            self.view.manage_appearance_requested.emit()
 
     def test_choosing_a_mode_persists_it_and_applies_nothing_itself(self):
         """The slot writes; only the service signal may restyle.
@@ -1063,7 +1191,18 @@ class ThemeRestartIntegrationTest(unittest.TestCase):
             Path(self.settings_file).read_text(encoding='utf-8'))['theme']
 
     def _pick(self, object_name):
-        """Click one mode radio in the dialog the way the menu opens it."""
+        """Click one mode radio in the dialog the way the menu opens it.
+
+        Whole-branch review finding 5: the emit below is the route, not a
+        convenience. ``MainWindow``'s menu action (``view/main_window.py:140``)
+        and ``MainPresenter``'s connect of ``manage_appearance_requested``
+        (``presenter/main_presenter.py:100``) are the only path from the UI to
+        the theme dialog; this class used to call ``_on_manage_appearance``
+        directly, so deleting that connect left the suite green while taking the
+        feature off the menu for real. Emitting from the view means a dropped
+        connect never opens the dialog, never runs ``fake_exec``, and leaves the
+        persisted-mode assertions below unsatisfied.
+        """
         from unittest.mock import patch
 
         from PyQt6.QtWidgets import QRadioButton
@@ -1077,7 +1216,7 @@ class ThemeRestartIntegrationTest(unittest.TestCase):
             return AppearanceDialog.DialogCode.Accepted
 
         with patch.object(AppearanceDialog, 'exec', fake_exec):
-            self.presenter._on_manage_appearance()
+            self.view.manage_appearance_requested.emit()
 
     def test_the_service_signal_is_what_applies_the_mode(self):
         """``theme_changed`` is a live wire, not decoration.

@@ -59,6 +59,16 @@ FORBIDDEN_ELEMENTS = ('image', 'script', 'style', 'use', 'foreignObject', 'filte
 # The one URL every authored SVG legitimately carries.
 SVG_NAMESPACE = 'http://www.w3.org/2000/svg'
 
+# ``view.icons._render``'s two degradation branches, by the wording each one
+# prints. Finding 1: the tests have to say *which* branch a fixture reached, or a
+# stub that points at a non-existent path turns the malformed-SVG test into a
+# second copy of the missing-file test -- which is exactly what happened here.
+# Checked in this order, and the two markers are mutually exclusive by wording.
+_DEGRADATION_BRANCHES = (
+    ('malformed', 'is not valid SVG'),
+    ('missing', 'not found'),
+)
+
 # Every spelling of a colour a hand-edit can hide in these files' vocabulary.
 # The pipeline's only colour source is the ``currentColor`` placeholder --
 # ``view.icons`` does a plain ``str.replace`` on it -- so a literal anywhere
@@ -635,11 +645,18 @@ class IconPipelineTest(unittest.TestCase):
             ic = icon('does_not_exist', '#000000', 24)
 
         self.assertTrue(ic.isNull(), 'a missing SVG must degrade to a null QIcon')
+        warning = buffer.getvalue()
         self.assertIn(
-            'does_not_exist', buffer.getvalue(),
+            'does_not_exist', warning,
             'the failure has to be reported, not swallowed: an icon set that '
             'silently stops drawing is invisible in the UI',
         )
+        # Finding 1: which of the two downgrade branches was taken is part of the
+        # contract. ``not found`` is the not-found branch; if the invalid-SVG
+        # wording ever appears here, the fixture stopped being a missing file and
+        # this test silently became a duplicate of the malformed one below.
+        self.assertIn('not found', warning, f'wrong branch: {warning!r}')
+        self.assertNotIn('is not valid SVG', warning, f'wrong branch: {warning!r}')
 
     def test_frozen_resource_path_resolves_the_icons_subdirectory(self):
         """Packaging: a bundled tree resolves ``resource/icons/`` like ``resource/``.
@@ -666,38 +683,118 @@ class IconPipelineTest(unittest.TestCase):
             # new subdirectory: that is what "ships the same way" means.
             self.assertEqual(cover.parent / 'icons', icons.parent)
 
-    def test_broken_svg_degrades_too(self):
-        """A file that exists but is not valid SVG follows the same path.
+    def _render_from_temp_dir(self, name, svg_text=None):
+        """``icon(name)`` against a stand-in ``resource/icons`` directory.
 
-        ``QSvgRenderer.isValid()`` is False on truncated markup, and rendering
-        it anyway yields an empty pixmap -- the failure mode a user would see
-        as a blank button with no clue why.
+        ``svg_text=None`` leaves the file absent; a string writes it as
+        ``<name>.svg``. Returns ``(qicon, captured_warning)``.
+
+        The patch maps the *basename* of the resource path, and that is the whole
+        point: ``view.icons._icon_path`` asks for
+        ``get_resource_path('resource/icons/<name>.svg')``, so a stub that appends
+        ``.svg`` to what it was handed answers a path with a doubled extension,
+        which does not exist, and the malformed-SVG branch is never taken -- the
+        bug this helper exists to make impossible (whole-branch review finding 1).
         """
+        import shutil
         import tempfile
         from io import StringIO
         from contextlib import redirect_stdout
         from unittest import mock
 
-        from PyQt6.QtCore import QSize
-        from view.icons import icon
         import view.icons as icons_module
+        from view.icons import clear_cache, icon
 
-        with tempfile.TemporaryDirectory() as tmp:
-            broken = Path(tmp) / 'icons'
-            broken.mkdir()
-            (broken / 'play.svg').write_text(
-                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
-                '<path d="M0 0"/', encoding='utf-8')
-            buffer = StringIO()
-            with mock.patch.object(
-                    icons_module, 'get_resource_path',
-                    side_effect=lambda name: broken / f'{name}.svg'):
-                with redirect_stdout(buffer):
-                    ic = icon('play', '#1976d2', 24)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        icons = tmp / 'icons'
+        icons.mkdir()
+        if svg_text is not None:
+            (icons / f'{name}.svg').write_text(svg_text, encoding='utf-8')
+
+        clear_cache()
+        buffer = StringIO()
+        with mock.patch.object(
+                icons_module, 'get_resource_path',
+                side_effect=lambda requested: icons / Path(requested).name):
+            with redirect_stdout(buffer):
+                rendered = icon(name, '#1976d2', 24)
+        return rendered, buffer.getvalue()
+
+    def test_broken_svg_degrades_too(self):
+        """Finding 1: the *malformed* branch, not the missing-file one.
+
+        ``QSvgRenderer.isValid()`` is False on truncated markup, and rendering it
+        anyway yields an empty pixmap -- the failure mode a user would see as a
+        blank button with no clue why. The fixture is asserted present *and*
+        invalid before the call, so this test cannot quietly slide back into the
+        not-found path the way the old ``lambda name: broken / f'{name}.svg'``
+        stub did (that doubled the extension and the file was never found).
+        """
+        from PyQt6.QtCore import QByteArray, QSize
+        from PyQt6.QtSvg import QSvgRenderer
+        from view.icons import icon
+
+        malformed = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+            '<path fill="currentColor" d="M0 0"/'      # truncated mid-attribute
+        )
+
+        # The fixture is what it claims: parseable-as-bytes, present, invalid.
+        self.assertFalse(
+            QSvgRenderer(QByteArray(
+                malformed.replace('currentColor', '#1976d2').encode('utf-8'))
+            ).isValid(),
+            'the "malformed" fixture is valid SVG, so the branch under test '
+            'would not be the malformed one',
+        )
+
+        ic, warning = self._render_from_temp_dir('play', malformed)
 
         self.assertTrue(ic.isNull(), 'unparseable markup must give a null QIcon')
         self.assertTrue(ic.pixmap(QSize(24, 24)).isNull())
-        self.assertIn('play', buffer.getvalue(), 'and say so, once')
+        self.assertIn('is not valid SVG', warning, f'wrong branch: {warning!r}')
+        self.assertNotIn('not found', warning, f'wrong branch: {warning!r}')
+        self.assertEqual(
+            ['Warning: icon play is not valid SVG'],
+            [line.split(' (')[0] for line in warning.splitlines() if line],
+            'the malformed file must report exactly the invalid-SVG line: a '
+            'second warning means the fixture also lost its currentColor '
+            'placeholder (a different contract, covered by the authored-set '
+            'tests), and spec §6 promises one warning line per failure',
+        )
+
+    def test_missing_and_malformed_svg_degrade_on_distinguishable_branches(self):
+        """Finding 1: the two downgrade paths say different things.
+
+        ``_render`` has one degradation contract and two branches (file absent,
+        file present but not valid SVG). Asserting only "``isNull()`` and one
+        warning" cannot tell them apart, which is how the malformed half of the
+        contract ended up with zero coverage: both tests were running the
+        not-found branch. This pins which branch each fixture reaches, and that
+        neither warning quotes both reasons.
+        """
+        def branch(warning):
+            """The ``_render`` branch the captured warning came from."""
+            hits = [name for name, needle in _DEGRADATION_BRANCHES if needle in warning]
+            self.assertEqual(
+                1, len(hits),
+                f'expected exactly one branch marker, got {hits} for {warning!r}',
+            )
+            return hits[0]
+
+        missing_icon, missing_warning = self._render_from_temp_dir('play')
+        broken_icon, broken_warning = self._render_from_temp_dir(
+            'play', '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M0 0"/')
+
+        self.assertTrue(missing_icon.isNull() and broken_icon.isNull())
+        self.assertEqual('missing', branch(missing_warning))
+        self.assertEqual('malformed', branch(broken_warning))
+        self.assertNotEqual(
+            branch(missing_warning), branch(broken_warning),
+            'the two degradations are indistinguishable, so one of the branches '
+            'is not being taken (they differ by "not found" vs "is not valid SVG")',
+        )
 
 
 class BundledResourceTest(unittest.TestCase):
@@ -809,6 +906,170 @@ class BottomPanelIconTest(unittest.TestCase):
                          'recolor() must regenerate the SVG glyphs from the new tokens')
         self.assertEqual(_token(DARK.icon_on_accent),
                          self._button_colour(panel._play_btn))
+
+    def test_every_glyph_name_lands_on_the_button_that_owns_it(self):
+        """Finding 3: the name→button wiring, pinned at the call site.
+
+        ``prev`` and ``next`` are authored as exact mirrors of equal extent and
+        equal colour, and ``play``/``pause`` share a size and a colour, so swapping
+        either pair keeps every non-null-and-colour assertion in this file green --
+        including the mirror test, which measures the *rasterised set* and so
+        cannot tell a swapped call site from a swapped resource file. This pins the
+        name instead of its pixels: ``view.widgets.bottom_panel.icon`` is replaced
+        for the duration of the test by a factory that records the ordered sequence
+        of names the panel asks for and tags each name onto the ``QIcon`` it
+        returns, while per-widget ``setIcon``/``setPixmap`` spies report which name
+        actually landed on which widget. A name swap fails here, and so does wiring
+        a glyph to the wrong state (pause while resting, ``loop_all`` on ONE, an
+        off-by-one step).
+
+        Chosen over pixel-differencing the mirrors because the defect lives in the
+        wiring, not in the artwork: an ink-mask comparison would only re-test
+        ``IconGeometryTest``'s mirror claim, would break on any redraw of the SVGs,
+        and would still not name the glyph the call site asked for. Reading the name
+        back *through pixels* -- the first attempt here, one stamped colour per glyph
+        recovered with ``_dominant_colour`` -- is rejected for the same reason: it
+        puts ``QColor`` round-tripping and the modal-colour step on the critical
+        path, so it re-tests the renderer instead of the wiring and reports any
+        raster artefact (a stale ``__pycache__`` did exactly this, showing
+        ``next`` on ``_prev_btn``) as a swapped button. Asserting the requested
+        sequence and its landing point depends on neither.
+        """
+        from unittest import mock
+
+        from PyQt6.QtGui import QIcon
+
+        import view.widgets.bottom_panel as bottom_panel_module
+        from core.theme import DARK, LIGHT
+        from view.widgets.bottom_panel import BottomPanel
+
+        # ``_generate_icons`` asks for the resting-state glyphs in this order:
+        # the three transport buttons, then the play disc, then the loop and
+        # volume indicators. The names are the contract; the pixels are not.
+        RESTING = ['prev', 'stop', 'next', 'play', 'loop_off', 'volume_high']
+
+        requested = []
+        landed = []
+
+        class TaggedIcon(QIcon):
+            """A ``QIcon`` that carries the glyph name it was asked for.
+
+            ``pixmap`` is overridden because one call site -- ``_set_volume_icon``
+            -- never hands the icon to a widget: it rasterises first and puts the
+            resulting *pixmap* on the label, so the tag has to travel through that
+            call too. The icon itself stays empty: this test is about names, and an
+            empty ``QIcon`` cannot fail for a rendering reason.
+            """
+
+            def __init__(self, name):
+                super().__init__()
+                self.requested_name = name
+
+            def pixmap(self, *args, **kwargs):
+                sheet = super().pixmap(*args, **kwargs)
+                sheet.requested_name = self.requested_name
+                return sheet
+
+        def tagging_icon(name, color, size, dpr=1.0):
+            self.assertIn(
+                name, ICON_NAMES,
+                f'{name!r} is not in the authored set; a call site that invents a '
+                f'glyph name silently degrades to a null icon in production')
+            requested.append(name)
+            return TaggedIcon(name)
+
+        def spy(widget, label, setter):
+            """Record the tag of whatever ``widget`` is handed by ``setter``."""
+            original = getattr(widget, setter)
+
+            def record(tagged):
+                landed.append((label, getattr(tagged, 'requested_name', None)))
+                return original(tagged)
+
+            setattr(widget, setter, record)
+
+        def landing(action, description):
+            """Run ``action``, which must put exactly one glyph on one widget."""
+            landed.clear()
+            action()
+            self.assertEqual(
+                1, len(landed),
+                f'{description} must set one glyph, observed {landed}')
+            return landed[0]
+
+        manager = make_manager('light')
+        manager.apply_to(self.app)
+        with mock.patch.object(bottom_panel_module, 'icon', tagging_icon):
+            panel = BottomPanel(manager)
+            self.addCleanup(panel.deleteLater)
+
+            # Construction: every resting glyph asked for, by name, once.
+            self.assertEqual(
+                RESTING, requested,
+                'constructing the panel must request exactly the resting glyphs')
+
+            for widget, label in ((panel._prev_btn, '_prev_btn'),
+                                  (panel._play_btn, '_play_btn'),
+                                  (panel._stop_btn, '_stop_btn'),
+                                  (panel._next_btn, '_next_btn'),
+                                  (panel._loop_btn, '_loop_btn'),
+                                  (panel._volume_icon, '_volume_icon')):
+                spy(widget, label,
+                    'setPixmap' if label == '_volume_icon' else 'setIcon')
+
+            # Resting state: one glyph per widget, and each mirror on its own
+            # side. Re-running ``_generate_icons`` (the same path ``recolor``
+            # takes) is what feeds the spies; the tokens are the live ones, so
+            # nothing but the name is under test here.
+            landed.clear()
+            panel.recolor(LIGHT)
+            self.assertEqual(
+                6, len(landed), f'one glyph per widget, observed {landed}')
+            self.assertEqual(
+                {'_prev_btn': 'prev', '_play_btn': 'play', '_stop_btn': 'stop',
+                 '_next_btn': 'next', '_loop_btn': 'loop_off',
+                 '_volume_icon': 'volume_high'},
+                dict(landed),
+                'a glyph name landed on the wrong widget')
+
+            self.assertEqual(
+                ('_play_btn', 'pause'),
+                landing(lambda: panel.set_playing_state(True), 'playing'),
+                'a playing player must show pause, not play')
+            self.assertEqual(
+                ('_play_btn', 'play'),
+                landing(lambda: panel.set_playing_state(False), 'stopped'),
+                'the pause glyph must leave when playback stops')
+
+            for mode, glyph in (('OFF', 'loop_off'), ('ONE', 'loop_one'),
+                                ('ALL', 'loop_all')):
+                self.assertEqual(
+                    ('_loop_btn', glyph),
+                    landing(lambda mode=mode: panel.set_loop_mode(mode),
+                            f'loop mode {mode}'),
+                    f'loop mode {mode} must show {glyph}')
+
+            for volume, glyph in ((0.0, 'volume_mute'), (0.2, 'volume_low'),
+                                  (0.5, 'volume_mid'), (0.9, 'volume_high')):
+                self.assertEqual(
+                    ('_volume_icon', glyph),
+                    landing(lambda volume=volume: panel.set_volume(volume),
+                            f'volume {volume}'),
+                    f'volume {volume} must show {glyph}')
+
+            # A theme flip re-asks for the same names, not a subset of them.
+            panel.set_playing_state(False)
+            panel.set_loop_mode('OFF')
+            panel.set_volume(0.5)
+            requested.clear()
+            panel.recolor(DARK)
+            self.assertEqual(
+                ['prev', 'stop', 'next', 'play', 'loop_off', 'volume_mid'],
+                requested,
+                'recolor() must regenerate every glyph by name for the state the '
+                'panel is in; a dropped or renamed request on the recolor path is '
+                'invisible to the colour tests above because they all read the '
+                'same warm cache')
 
     def test_loop_button_carries_icons_on_its_own_three_states(self):
         """``icon_muted``'s contrast guard is only honest if the glyph sits here.

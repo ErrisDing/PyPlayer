@@ -31,21 +31,36 @@ class PlaylistItemDelegate(QStyledItemDelegate):
     """
     Custom delegate for playlist items.
 
-    Paint order (Task 9, audit A5/D1), each layer in full:
+    This method, not ``QStyle``, owns every pixel of the row, so the sheet has
+    no ``#playlistView::item`` rule at all (see the note in
+    ``core/theme_qss.py``): anything written there would be parsed and then
+    thrown away. The row's own geometry tokens -- ``ROW_HEIGHT``, ``SPACE_2``
+    and ``divider`` -- are therefore consumed here.
+
+    Paint order (Task 9, audit A5/D1, plus the row divider), each layer in full:
 
     1. Background: ``playing_bg`` on the playing row, else ``selection_bg``
        when selected -- playing wins over selection so the playing row never
        looks merely selected.
-    2. A 3px ``playing_bar`` strip down the left edge of the playing row.
-    3. The file name, left-aligned: ``playing_text`` on the playing row,
-       ``text_primary`` elsewhere; folder rows bold.
-    4. ``[relative_position]`` on the right in ``text_muted``. The name's
-       available width already excludes the position plus ``SPACE_2`` before
-       eliding, so the two can never collide in a narrow window (and the
-       muted text is the contrast-checked token, not the old
-       ``QColor(136,136,136,160)``).
+    2. 1px ``divider`` along the bottom edge of the row: the only thing that
+       separates two rows that are neither selected nor playing.
+    3. A 3px ``playing_bar`` strip down the left edge of the playing row, drawn
+       *over* the divider so the marker stays unbroken where the two meet.
+    4. The file name, left-aligned at ``SPACE_2`` from the row edge:
+       ``playing_text`` on the playing row, ``text_primary`` elsewhere; folder
+       rows bold.
+    5. ``[relative_position]`` on the right in ``text_muted``, at ``SPACE_2``
+       from the right edge. The name's available width already excludes the
+       position plus one ``SPACE_2`` before eliding, so the two can never
+       collide in a narrow window (and the muted text is the contrast-checked
+       token, not the old ``QColor(136,136,136,160)``).
 
-    Hover background is batch 3 (C2) and deliberately absent here.
+    Hover background is batch 3 (C2) and deliberately absent here. The
+    alternating row tint is *not* painted by this class either: ``PlaylistView``
+    asks ``QListView`` for alternating rows and the view fills them from the
+    palette's ``AlternateBase`` (mapped to ``surface_alt`` by ``ThemeManager``,
+    measured ``#f5f5f5`` on odd rows in the render matrix), which is why the
+    layers below are drawn over a band that is already tinted.
 
     Row height comes from the shared ``ROW_HEIGHT`` token via ``sizeHint``.
 
@@ -63,8 +78,9 @@ class PlaylistItemDelegate(QStyledItemDelegate):
 
         The width is deliberately 0: ``QListView`` defaults to
         ``ResizeMode.Fixed``, so the item rect spans the viewport and only the
-        height is taken from here. The generated sheet sets the item padding
-        and divider but never ``height``, which is why the delegate has to.
+        height is taken from here. The delegate owns the row and the sheet sets
+        no ``::item`` rule (not even ``height``), so this is the only place the
+        row height exists.
         (Pinned by tests/test_theme_manager.py.)
         """
         return QSize(0, ROW_HEIGHT)
@@ -72,8 +88,8 @@ class PlaylistItemDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option, index: QModelIndex) -> None:
         """Custom paint method for playlist items.
 
-        Layers in the order the class docstring lists: backgrounds, playing
-        bar, text, then the right-aligned position.
+        Layers in the order the class docstring lists: background, divider,
+        playing bar, text, then the right-aligned position.
         """
         tokens = self._manager.tokens
 
@@ -93,18 +109,33 @@ class PlaylistItemDelegate(QStyledItemDelegate):
         elif option.state & QStyle.StateFlag.State_Selected:
             painter.fillRect(option.rect, QColor(tokens.selection_bg))
 
-        # 2. Left 3px bar on the playing row only -- the second, orthogonal
-        # cue for "playing", readable even where the tint washes out.
+        # 2. Row divider: the bottom pixel of the row in ``divider``. This is
+        # the layer that makes the "separates two rows that are neither selected
+        # nor playing" claim above true -- and it has to be painted here because
+        # a ``::item`` border-bottom in the sheet is never drawn for a view whose
+        # delegate overrides ``paint()`` (whole-branch review finding 4: 0 pixels
+        # of ``divider`` in a live ``#playlistView`` viewport, against 956 in the
+        # delegate-less library list).
+        divider = QRect(option.rect)
+        divider.setTop(divider.bottom())
+        painter.fillRect(divider, QColor(tokens.divider))
+
+        # 3. Left 3px bar on the playing row only -- the second, orthogonal
+        # cue for "playing", readable even where the tint washes out. Painted
+        # after the divider so the marker is not notched by it at the row's
+        # bottom edge.
         if is_playing:
             bar = QRect(option.rect)
             bar.setWidth(PLAYING_BAR_WIDTH)
             painter.fillRect(bar, QColor(tokens.playing_bar))
 
-        # Text rectangle: the row's existing 5px left padding already clears
-        # the 3px bar, so the name never collides with the marker.
-        text_rect = option.rect.adjusted(5, 0, -5, 0)
+        # Text rectangle: ``SPACE_2`` in from each edge -- the inset the sheet's
+        # deleted ``::item`` padding used to claim, now actually applied. It
+        # clears the 3px bar, so the name never collides with the marker, and it
+        # keeps the right-hand position read-out off the viewport border.
+        text_rect = option.rect.adjusted(SPACE_2, 0, -SPACE_2, 0)
 
-        # 3. Font and the row's own text colour (playing rows take
+        # 4. Font and the row's own text colour (playing rows take
         # playing_text; folders stay text_primary but bold).
         font = QFont(option.font)
         if is_folder:
@@ -120,7 +151,7 @@ class PlaylistItemDelegate(QStyledItemDelegate):
             painter.restore()
             return
 
-        # 4. Position on the right, name on the left. The name's available
+        # 5. Position on the right, name on the left. The name's available
         # width is computed *before* eliding and already excludes the
         # position plus one SPACE_2 of breathing room, so a long name gets
         # an ellipsis instead of painting over the muted path (the old
