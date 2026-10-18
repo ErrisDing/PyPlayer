@@ -166,10 +166,19 @@ class ActionRail(QWidget):
 
         The action carries the tooltip, the icon and (for open-file) the
         shortcut, and it is attached to *this* widget with
-        :meth:`QWidget.addAction` so the shortcut works wherever the focus is;
-        ``setDefaultAction`` then mirrors all of it onto the button, including
-        the enabled state, which is what makes :meth:`set_progress` able to
-        disable a button without touching the button itself.
+        :meth:`QWidget.addAction` so the shortcut is reachable wherever the
+        focus is; ``setDefaultAction`` then mirrors all of it onto the button,
+        including the enabled state, which is what makes :meth:`set_progress`
+        able to disable a button without touching the button itself.
+
+        ``action.triggered`` is the one emission point, and it has to be the one
+        that is connected. Attaching the action only *delivers* the shortcut to
+        ``QAction.trigger()`` -- nothing reaches this widget's signals unless
+        ``triggered`` itself is listened to, so a ``button.clicked`` connect
+        leaves ``Ctrl+O`` inert while every mouse test stays green. Wiring the
+        action instead costs nothing on the mouse path, because a click on a
+        default-action button triggers the action before ``clicked`` is emitted;
+        connecting both would emit twice.
         """
         button = QToolButton(self)
         button.setObjectName('railButton')
@@ -196,7 +205,11 @@ class ActionRail(QWidget):
         self.addAction(action)
 
         button.setDefaultAction(action)
-        button.clicked.connect(lambda checked=False: self._on_clicked(action_id))
+        # The action, never the button: one connection serves both the mouse and
+        # the keyboard (see :meth:`_make_button`), and it is the reason
+        # :meth:`set_progress` disabling the action also silences the shortcut --
+        # ``QAction.activate()`` returns before emitting on a disabled action.
+        action.triggered.connect(lambda checked=False: self._on_clicked(action_id))
 
         self._buttons[action_id] = button
         self._actions[action_id] = action

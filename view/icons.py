@@ -20,8 +20,9 @@ Two pieces make the pipeline work:
 
 The substitution is why no icon can drift off-palette: the only colour in the
 resources is a placeholder, so a glyph is as light/dark-correct as the token the
-caller passed, and ``ThemeManager.theme_changed`` -> ``BottomPanel.recolor`` is
-the one place those calls live.
+caller passed. The cost is that a theme flip has to reach the caller:
+``ThemeManager.theme_changed`` -> ``BottomPanel.recolor`` and, since batch 2,
+``ActionRail.recolor`` are the places those calls live.
 
 Rendering goes through ``QSvgRenderer`` rather than ``QIcon(path)``: Qt's own
 SVG icon engine has no colour hook, and a ``QIcon`` built from a file path would
@@ -36,9 +37,24 @@ from PyQt6.QtSvg import QSvgRenderer
 
 from core.resource_utils import get_resource_path
 
-# The set, as the brief pins it. Kept here for callers that want to enumerate
-# the glyphs (``tests/test_icons.py`` deliberately carries its own literal, so a
-# rename on either side fails a test instead of following itself).
+# Batch 1's twelve transport glyphs: the play/pause/prev/next/stop row, the
+# three loop states and the four volume levels -- every name
+# ``view/widgets/bottom_panel.py`` asks for. This is *not* the shipped
+# inventory, and says so rather than implying one: ``resource/icons`` holds 19
+# files since batch 2 Task 3 added the seven rail glyphs (``file``, ``folder``,
+# ``refresh``, ``refresh_all``, ``settings``, ``info``, ``add``), six of which
+# the rail calls and none of which is listed here. Batch 2 authorises no
+# further files -- Task 4 reuses ``add`` for its panel footer.
+#
+# Kept as the transport set (rather than extended to 19) because that is what it
+# lists, because ``tests/test_icons.py`` carries its own literals on purpose
+# (deriving them would make its comparison true by construction), and because an
+# extended copy of the directory here would have nothing keeping it in sync --
+# which is how this comment went stale in the first place. The inventory with a
+# guard behind it is the directory itself:
+# ``tests/test_icons.py::test_icon_names_are_the_shipped_files`` pins the disk
+# against the union of both batches. Nothing in the product reads this constant;
+# Tasks 4 and 7 should glob ``_ICON_SUBDIR`` if they need every name.
 ICON_NAMES: tuple[str, ...] = (
     'play', 'pause', 'prev', 'next', 'stop',
     'loop_off', 'loop_all', 'loop_one',
@@ -76,7 +92,11 @@ def icon(name: str, color: str, size: int, dpr: float = 1.0) -> QIcon:
     """Rasterise ``name`` in ``color`` at ``size`` logical pixels (``dpr`` scale).
 
     Args:
-        name: one of :data:`ICON_NAMES`.
+        name: stem of a file in ``resource/icons`` -- ``'play'`` for
+            ``play.svg``. The directory, not :data:`ICON_NAMES`, is the
+            inventory: that tuple lists batch 1's twelve transport glyphs, and
+            the rail (batch 2 Task 3) calls six names it does not contain. An
+            unknown stem takes the same downgrade as a missing file.
         color: ``#rrggbb`` -- a ``core.theme.ThemeTokens`` field, never a
             literal at the call site.
         size: logical (device-independent) pixels.

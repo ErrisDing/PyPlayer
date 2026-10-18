@@ -8,6 +8,13 @@ about *text and state* rather than pixels:
 * the seven action ids are the interface the presenter dispatches on, so they
   are pinned as a literal transcription of the brief, never derived from the
   module (a rename on the widget side would otherwise follow itself);
+* every emission is driven through the ``QAction``, not only through the button.
+  ``QAction.triggered`` is the single connection point, because that is what both
+  a click and ``Ctrl+O`` reach: wiring ``button.clicked`` instead leaves the
+  shortcut inert while the mouse tests stay green, and wiring both emits twice.
+  One test therefore calls ``activate(Trigger)`` (the reason Qt's own shortcut
+  machinery uses) and another asserts that a *disabled* action emits nothing, so
+  the progress blocking covers the keyboard as well as the pointer;
 * every action has a non-empty tooltip in **both** locales -- spec §6 makes a
   missing tooltip a defect, not a nicety, because once ``_setup_menu()`` is gone
   in Task 7 the tooltip is the only textual affordance these icons will ever
@@ -190,7 +197,13 @@ class ActionRailContractTest(unittest.TestCase):
                         'the tooltip fell back to its own key')
 
     def test_click_emits_action_triggered(self):
-        """Six actions emit their id; the library button opens the panel instead."""
+        """Six actions emit their id; the library button opens the panel instead.
+
+        The single-element assertions here are also the double-emit guard: the
+        click path reaches the presenter through ``QAction.trigger()``, so a
+        second connect on ``button.clicked`` -- the wiring this fix replaced --
+        would deliver every id twice.
+        """
         from view.widgets.action_rail import ACTION_LIBRARY
 
         rail, _manager = self._rail()
@@ -232,6 +245,11 @@ class ActionRailContractTest(unittest.TestCase):
         The ``QAction`` has to be attached to the rail itself, not only to the
         button: a button that is not focused never delivers its shortcut, which
         is what ``self.addAction`` is for.
+
+        This pins the *carrier* only -- a key sequence on an action nothing
+        listens to is inert, and it is exactly what the mouse-only wiring left
+        behind. :meth:`test_activating_an_action_emits_what_its_button_emits`
+        pins the emission, by driving the action instead of the button.
         """
         from PyQt6.QtGui import QKeySequence
 
@@ -245,6 +263,104 @@ class ActionRailContractTest(unittest.TestCase):
             1, sum(1 for action in rail.actions() if action.shortcuts()),
             'only open-file inherits a standard shortcut here; Ctrl+Q stays with '
             'the window in Task 7 because Exit is not on the rail (spec §6)')
+
+    def _action_for(self, rail, action_id: str):
+        """The ``QAction`` behind ``action_id``, found the way the sheet does.
+
+        Deliberately not ``rail._actions``: the actions are public children of
+        the rail (that is what makes their shortcuts reachable), so the test can
+        reach one without a private lookup, and the objectName key is the same
+        one ``test_open_file_action_carries_the_standard_open_shortcut`` uses.
+        """
+        actions = {action.objectName(): action for action in rail.actions()}
+        self.assertIn(action_id, actions, f'{action_id} has no QAction on the rail')
+        return actions[action_id]
+
+    def test_activating_an_action_emits_what_its_button_emits(self):
+        """The keyboard path, driven as Qt drives it. ``activate(Trigger)`` is
+        what a real shortcut call reaches (Qt 6.11: ``QAction.ActionEvent`` has
+        only ``Trigger`` and ``Hover``, and the shortcut machinery uses the
+        first), so this is the Ctrl+O path measured end to end rather than a
+        claim about it.
+
+        Every action is driven, because the wiring is one line per button and
+        the mouse test cannot see it: connecting ``button.clicked`` instead of
+        ``action.triggered`` kept all seven ``click()`` assertions green while
+        ``activate(Trigger)`` emitted nothing at all (measured, and re-run as a
+        mutation in the task report).
+        """
+        from PyQt6.QtGui import QAction
+
+        from view.widgets.action_rail import ACTION_LIBRARY
+
+        rail, _manager = self._rail()
+        for action_id in ACTION_IDS:
+            with self.subTest(action=action_id):
+                triggered, panels = [], []
+                rail.action_triggered.connect(triggered.append)
+                rail.library_panel_requested.connect(lambda: panels.append(True))
+
+                self._action_for(rail, action_id).activate(
+                    QAction.ActionEvent.Trigger)
+
+                if action_id == ACTION_LIBRARY:
+                    self.assertEqual(
+                        [], triggered,
+                        'the library action is a panel toggle, not a presenter '
+                        'dispatch (same rule as the mouse path)')
+                    self.assertEqual([True], panels)
+                else:
+                    self.assertEqual(
+                        [action_id], triggered,
+                        'the shortcut path emitted nothing, or emitted twice')
+                    self.assertEqual([], panels)
+
+    def test_a_disabled_action_emits_nothing_even_through_the_shortcut(self):
+        """Blocking reaches the keyboard for free -- asserted, not assumed.
+
+        :meth:`ActionRail.set_progress` disables the *action*, and
+        ``QAction.activate()`` returns before emitting when the action is
+        disabled, so the in-flight and mutual-exclusion rules cover Ctrl+O
+        without a keyboard-specific line in the widget. Each case puts one
+        action out of reach (its own running state, or its partner's), drives
+        the action rather than the button, then releases it and drives it again:
+        a connect that ignored the enabled state -- or a button-only connect that
+        emitted while the action was disabled -- fails the first half.
+        """
+        from PyQt6.QtGui import QAction
+
+        Trigger = QAction.ActionEvent.Trigger
+        # (action driven, id put into its running state to block it)
+        cases = (
+            ('open_file', 'open_file'),        # in flight itself
+            ('refresh', 'refresh_all'),       # blocked by its partner
+            ('refresh_all', 'refresh'),       # the mirror case
+        )
+
+        rail, _manager = self._rail()
+        for action_id, started in cases:
+            with self.subTest(action=action_id, blocked_by=started):
+                triggered, panels = [], []
+                rail.action_triggered.connect(triggered.append)
+                rail.library_panel_requested.connect(lambda: panels.append(True))
+                action = self._action_for(rail, action_id)
+
+                rail.set_progress(started, True)
+                self.assertFalse(
+                    action.isEnabled(),
+                    'set_progress must disable the action, not only the button, '
+                    'or the keyboard path stays open while the mouse is closed')
+                action.activate(Trigger)
+                self.assertEqual([], triggered,
+                                 'a disabled action fired; its shortcut reaches '
+                                 'the presenter during a scan')
+                self.assertEqual([], panels)
+
+                rail.set_progress(started, False)
+                self.assertTrue(action.isEnabled())
+                action.activate(Trigger)
+                self.assertEqual([action_id], triggered,
+                                 'the action stayed disabled after the scan ended')
 
     def test_buttons_carry_the_declared_object_names(self):
         """The sheet selects ``#actionRail`` and ``#railButton``; both must exist."""
@@ -442,19 +558,46 @@ class ActionRailProgressStateTest(unittest.TestCase):
         The presenter can report the same progress twice (a retried scan); the
         second call may not overwrite the saved resting icon with the spinner,
         or the button never returns to its own glyph.
+
+        Driven on ``appearance``, never on ``refresh``. ``refresh`` rests on the
+        progress glyph itself, so its resting and running fingerprints are the
+        same bytes (measured: identical), and all three comparisons below would
+        be a value against itself -- green under the saved-icon implementation
+        this test exists to exclude, which is the same blind spot
+        :meth:`test_running_state_swaps_the_glyph_on_a_non_refresh_button`
+        closes for mutation D. ``appearance`` rests on ``settings``, so the two
+        states can be told apart, and the first assertion below is that
+        distinguishability itself: without it the test could quietly regress to
+        the vacuous form.
         """
-        from view.widgets.action_rail import ACTION_REFRESH
+        from view.widgets.action_rail import ACTION_APPEARANCE
 
         rail, _manager = self._rail()
-        button = rail.button_for(ACTION_REFRESH)
+        button = rail.button_for(ACTION_APPEARANCE)
         size = button.iconSize()
         resting = _fingerprint(button.icon().pixmap(size))
-        rail.set_progress(ACTION_REFRESH, True)
+
+        rail.set_progress(ACTION_APPEARANCE, True)
         running = _fingerprint(button.icon().pixmap(size))
-        rail.set_progress(ACTION_REFRESH, True)
-        self.assertEqual(running, _fingerprint(button.icon().pixmap(size)))
-        rail.set_progress(ACTION_REFRESH, False)
-        self.assertEqual(resting, _fingerprint(button.icon().pixmap(size)))
+        self.assertNotEqual(
+            resting, running,
+            'appearance must be able to show the spinner at all, or "idempotent" '
+            'has no second state to be idempotent about')
+        self.assertTrue(rail.is_running(ACTION_APPEARANCE))
+
+        rail.set_progress(ACTION_APPEARANCE, True)
+        self.assertEqual(running, _fingerprint(button.icon().pixmap(size)),
+                         'the retry changed the glyph; only one state is running')
+        self.assertTrue(rail.is_running(ACTION_APPEARANCE))
+        self.assertFalse(button.isEnabled())
+
+        rail.set_progress(ACTION_APPEARANCE, False)
+        self.assertEqual(
+            resting, _fingerprint(button.icon().pixmap(size)),
+            'the second set_progress overwrote the resting glyph and the spinner '
+            'is stuck on the appearance button')
+        self.assertFalse(rail.is_running(ACTION_APPEARANCE))
+        self.assertTrue(button.isEnabled(), 'the retry left the button disabled')
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
@@ -489,7 +632,10 @@ class ActionRailIconTest(unittest.TestCase):
                 self.assertEqual(
                     _token(LIGHT.icon), _dominant_colour(pixmap),
                     'a resting rail glyph is tokens.icon, on the rail whose '
-                    'sheet fill is surface_alt (both >= 3:1 in tests/test_theme.py)')
+                    'sheet fill is surface_alt; that pairing is pinned as '
+                    "('icon', 'surface_alt', 3.0) in test_theme.py's EXTRA_PAIRS "
+                    'and its presence is asserted by '
+                    'test_the_rail_glyph_pairings_are_pinned_in_the_contrast_set')
 
         manager.set_mode('dark')
         rail.recolor(manager.tokens)
@@ -687,6 +833,46 @@ class ActionRailSheetTest(unittest.TestCase):
                 self.assertIn(
                     f'background-color: {tokens.button_disabled_bg};',
                     _block(sheet, '#railButton:disabled'))
+
+    def test_the_rail_glyph_pairings_are_pinned_in_the_contrast_set(self):
+        """The four fills a rail glyph paints on are contrast-guarded by name.
+
+        ``tests/test_theme.py`` states the rule at its Task 8 comment: an SVG
+        glyph is rasterised from a token *before* it is painted, so QSS can no
+        longer be trusted to keep it legible and the pairing has to be pinned in
+        ``ThemeContrastTest.EXTRA_PAIRS`` at the 3:1 non-text bar (WCAG 1.4.11).
+        The rail introduces four such pairings, and
+        :meth:`ActionRailIconTest.test_rail_icons_are_recolored` points a reader
+        at that pin -- so this is the test that makes the pointer true rather
+        than a claim about a guard that does not exist.
+
+        The ratios themselves are evaluated by
+        ``ThemeContrastTest.test_contrast_requirements`` over both themes
+        (measured at authoring: LIGHT 8.53-9.09, DARK 7.63-9.29 -- a missing pin,
+        not a legibility failure). What is asserted here is presence at the 3.0
+        bar, because deleting a tuple un-guards a pairing silently while the
+        ratio still passes.
+
+        The three names below are the tokens ``test_rail_rules_are_generated_from
+        _tokens`` pins into the sheet, and the resting fill is the rail's own: if
+        a rule moves to a different token, that test fails and this tuple has to
+        follow. ``:pressed`` is absent on purpose -- it emits ``button_pressed``,
+        already pinned for batch 1's transport row.
+        """
+        from tests.test_theme import ThemeContrastTest
+
+        expected = (
+            ('icon', 'surface_alt', 3.0),         # resting: #actionRail's fill
+            ('icon', 'hover_bg', 3.0),            # #railButton:hover
+            ('icon', 'button_disabled_bg', 3.0),  # #railButton:disabled
+            ('icon', 'accent_soft', 3.0),         # #railButton[running="true"]
+        )
+        pinned = set(ThemeContrastTest.EXTRA_PAIRS)
+        missing = [pair for pair in expected if pair not in pinned]
+        self.assertEqual(
+            [], missing,
+            'a glyph/background pairing the rail paints is not pinned in '
+            f'ThemeContrastTest.EXTRA_PAIRS at the 3.0 bar: {missing}')
 
     def test_rail_buttons_have_no_widget_level_stylesheet(self):
         """The one-stylesheet rule of the whole theme layer (spec §1.6)."""

@@ -174,6 +174,25 @@ class ThemeContrastTest(unittest.TestCase):
         ('accent', 'button_bg', 3.0),
         ('accent', 'button_hover', 3.0),
         ('accent', 'button_pressed', 3.0),
+        # Batch 2 Task 3's icon rail: seven 20 px glyphs rasterised from
+        # ``tokens.icon`` over the four ``#railButton`` fills the sheet emits.
+        # Same rule as the transport row above -- QSS paints the background and
+        # the pipeline paints the glyph, so nothing but this tuple keeps the two
+        # on speaking terms.
+        #   * resting: the button is transparent, so the glyph lands on
+        #     ``#actionRail``'s ``surface_alt`` fill;
+        #   * hover: ``hover_bg``;
+        #   * blocked: ``button_disabled_bg``, the fill a running action's
+        #     partner wears;
+        #   * running: ``accent_soft``, the progress fill under the spinner.
+        # ``:pressed`` is deliberately not repeated: it emits ``button_pressed``,
+        # already pinned three lines up for the transport buttons.
+        # Measured at authoring: LIGHT 8.53-9.09, DARK 7.63-9.29, so this pin
+        # records pairings that hold rather than ones that need a colour change.
+        ('icon', 'surface_alt', 3.0),
+        ('icon', 'hover_bg', 3.0),
+        ('icon', 'button_disabled_bg', 3.0),
+        ('icon', 'accent_soft', 3.0),
         # The ``icon_muted`` / ``surface`` pair above is a deliberate superset:
         # the loop-off glyph paints on the button, never on the panel. It stays
         # because #loopButton's fill is one QSS edit away from transparent (the
