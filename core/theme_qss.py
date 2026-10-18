@@ -43,11 +43,11 @@ contract with the widget tree: Task 5 guarantees the widgets carry these
 names/properties, and ``build_qss`` guarantees every one of them is styled.
 The reverse implication does not hold in batch 2: ``#actionRail``/``#railButton``
 (Task 3), ``#librarySidebar``/``#sidebarTitle``/``#libraryRow``/``#sidebarEmpty``
-(Task 4) and ``#nowPlayingStrip``/``#stripArt``/``#stripTitle``/``#stripArtist``
-(Task 5) are emitted here before they are registered there, because the tuple is
-asserted against the live ``MainWindow`` tree and those widgets only enter it in
-Task 7. See the action-rail, library-sidebar and now-playing-strip sections for
-the full ruling.
+(Task 4), ``#nowPlayingStrip``/``#stripArt``/``#stripTitle``/``#stripArtist``
+(Task 5) and ``#toast``/``#toastText`` (Task 6) are emitted here before they are
+registered there, because the tuple is asserted against the live ``MainWindow``
+tree and those widgets only enter it in Task 7. See the action-rail,
+library-sidebar, now-playing-strip and toast sections for the full ruling.
 """
 
 from core.theme import (
@@ -582,6 +582,27 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     ]))
     emit(_rule('#stripArtist', [
         ('color', t.text_secondary),
+        ('font-size', _px(FONT_SIZE_SM)),
+    ]))
+
+    # -- 限时反馈浮层 / toast (batch 2, Task 6) ---------------------------------
+    # Registration ruling as above: two names, styled now, registered in Task 7.
+    #
+    # ``tooltip_bg`` / ``tooltip_text`` on purpose (brief Step 4): the toast is the
+    # same kind of object as a tooltip -- a transient, high-contrast annotation that
+    # is not part of the surface it floats over -- and batch 1 already established
+    # that pair as the floating language, contrast-pinned at 4.5:1 in
+    # ``tests/test_theme.py``. ``RADIUS_MD`` rather than the tooltip's ``RADIUS_SM``
+    # because a toast is a card with a line of text in it, not a label.
+    emit(_rule('#toast', [
+        ('background-color', t.tooltip_bg),
+        ('color', t.tooltip_text),
+        ('border', 'none'),
+        ('border-radius', _px(RADIUS_MD)),
+        ('padding', f'{_px(SPACE_1)} {_px(SPACE_3)}'),
+    ]))
+    emit(_rule('#toastText', [
+        ('color', t.tooltip_text),
         ('font-size', _px(FONT_SIZE_SM)),
     ]))
 
