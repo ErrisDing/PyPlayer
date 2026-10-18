@@ -206,7 +206,19 @@ SPACE_4 = 16
 ROW_HEIGHT = 28
 TRANSPORT_SIZE = 40
 PLAY_SIZE = 50
-ART_SIZE = 200
+
+# Batch 2 (icon rail + full-width list + floating library panel) retired
+# ``ART_SIZE``: the 200 px cover box belonged to the left panel, and the left
+# panel is gone. The three replacements are sized for the shells that do exist.
+# ``STRIP_ART_SIZE`` is the now-playing strip's cover box (one row tall, next to
+# the transport buttons, hence 48 against ``TRANSPORT_SIZE`` 40); ``RAIL_WIDTH``
+# is the icon rail's fixed width -- 56 px holds a 40 px button with 8 px of
+# gutter on each side, so a rail button and a transport button are the same
+# object on screen; ``SIDEBAR_WIDTH`` is the floating library panel's preferred
+# width, clamped by the window as ``min(SIDEBAR_WIDTH, window - RAIL_WIDTH)``.
+STRIP_ART_SIZE = 48
+RAIL_WIDTH = 56
+SIDEBAR_WIDTH = 240
 
 FONT_SIZE_SM = 12
 FONT_SIZE_MD = 13

@@ -222,5 +222,39 @@ class ThemeContrastTest(unittest.TestCase):
         self.assertEqual([], failures, '\n'.join(failures))
 
 
+class Batch2GeometryTest(unittest.TestCase):
+    """Batch 2's size tokens: the rail, the strip and the floating panel.
+
+    ``core/theme.py`` is the only place a geometry value may be written down, so
+    the three new constants are pinned by *value* here (a widget that invents its
+    own 56 would not fail any other test) and the retired one is pinned by
+    absence: ``ART_SIZE`` sized the left panel's cover box, and the left panel is
+    what batch 2 deletes, so the constant must not survive into a theme that no
+    longer has a consumer for it.
+    """
+
+    def test_batch2_sizes_are_the_planned_values(self):
+        from core.theme import RAIL_WIDTH, SIDEBAR_WIDTH, STRIP_ART_SIZE
+
+        self.assertEqual(48, STRIP_ART_SIZE)
+        self.assertEqual(56, RAIL_WIDTH)
+        self.assertEqual(240, SIDEBAR_WIDTH)
+
+    def test_art_size_is_gone(self):
+        """``ART_SIZE`` must not come back as a re-export or a renamed alias.
+
+        The one remaining reader (``NowPlayingPanel``) is deleted in Task 9; it
+        holds a literal 200 until then, so nothing may reach back to this module
+        for the value.
+        """
+        import core.theme as theme
+
+        self.assertFalse(
+            hasattr(theme, 'ART_SIZE'),
+            'ART_SIZE still lives in core.theme; batch 2 replaced it with '
+            'STRIP_ART_SIZE / RAIL_WIDTH / SIDEBAR_WIDTH',
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

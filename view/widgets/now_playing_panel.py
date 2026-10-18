@@ -19,7 +19,6 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 
 from core.resource_utils import get_resource_path
 from core import i18n
-from core.theme import ART_SIZE as THEME_ART_SIZE
 DEFAULT_COVER_PATH = get_resource_path("resource/default_cover.png")
 
 from view.widgets.library_selector import LibrarySelector
@@ -48,9 +47,12 @@ class NowPlayingPanel(QWidget):
     art_clicked = pyqtSignal()
     library_selected = pyqtSignal(str)  # library path
 
-    # Default art size: the shared geometry token, so the sheet and this widget
-    # cannot disagree about how big the cover box is.
-    ART_SIZE = THEME_ART_SIZE
+    # Temporary literal. ``core.theme.ART_SIZE`` was deleted in batch 2 Task 2
+    # (the left panel it sized no longer exists), but this file still lives until
+    # Task 9, so the value it used to read from the token layer is inlined here
+    # at exactly the same 200 rather than left as an ImportError.
+    # Task 9 随本文件一并删除。
+    ART_SIZE = 200
 
     # Class-level cache for default cover
     _default_pixmap: Optional[QPixmap] = None
