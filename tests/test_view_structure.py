@@ -8,6 +8,21 @@ tuples are the contract; this module is the widget side of it, so a rename on
 either end fails a test instead of silently dropping a rule onto Fusion
 defaults.
 
+Three directions are pinned across the two files:
+
+* **tuple -> sheet** (``tests/test_theme_qss.py``): everything registered is
+  styled, in both themes;
+* **tree -> tuple** (:meth:`ViewStructureTest.test_every_required_object_name_exists`):
+  a built ``MainWindow`` really carries every registered name;
+* **sheet -> tree** (:class:`StyleSheetSelectorsHaveWearersTest`, added for
+  batch-2 review finding 3): read the *generated* sheet back and demand a wearer
+  for every selector token, or an explicit entry in
+  :data:`core.theme_qss.KNOWN_DEAD_SELECTORS`.
+
+Only the third makes Task 9's deletions permanent. The first two look at what is
+declared, so re-emitting a rule for ``#albumArt`` -- a name no widget can carry
+any more -- kept them both green; the report admits exactly that at §A.6.
+
 Two deliberate deviations from the original plan text, both recorded in
 ``.superpowers/sdd/2026-10-16-ui-batch1-theme-tokens/progress.md``:
 
@@ -46,6 +61,7 @@ recorded in ``.superpowers/sdd/2026-10-18-ui-batch2-layout/task-7-report.md``:
 Run with an offscreen Qt platform:
     QT_QPA_PLATFORM=offscreen python -m unittest tests.test_view_structure -v
 """
+import re
 import sys
 import unittest
 from collections import Counter
@@ -57,7 +73,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.test_view_smoke import QT_AVAILABLE, make_app, make_manager
 
-from core.theme_qss import REQUIRED_DYN_PROPERTIES, REQUIRED_OBJECT_NAMES
+# The sheet's own selector splitter, imported rather than re-implemented: two
+# parsers of one format is how the sheet -> tree guard and the tree -> sheet guard
+# start disagreeing about what a selector is.
+from tests.test_theme_qss import _selector_members
+
+from core.theme_qss import (
+    KNOWN_DEAD_SELECTORS,
+    REQUIRED_DYN_PROPERTIES,
+    REQUIRED_OBJECT_NAMES,
+)
 
 try:
     from PyQt6.QtCore import QObject
@@ -98,6 +123,53 @@ def collect_names(widget) -> list:
     return [widget.objectName()] + [
         child.objectName() for child in widget.findChildren(QObject)
     ]
+
+
+# The two token kinds a QSS rule can scope itself by -- the same two the
+# generator is allowed to use (``core/theme_qss.py`` module header, rule 1).
+# Pseudo-classes, sub-controls and bare classes are not tokens: ``#railButton``
+# and ``#railButton:hover:pressed`` want the *same* wearer, and
+# ``QDialog QPushButton`` wants none (it is ancestor-scoped by decision).
+SELECTOR_NAME_RE = re.compile(r'#([A-Za-z_][A-Za-z0-9_]*)')
+SELECTOR_PROPERTY_RE = re.compile(r'\[([a-z_]+)="([^"]*)"\]')
+
+
+def worn_properties(*trees) -> set:
+    """Every ``(property, value)`` pair the given widget trees actually carry.
+
+    Read off ``dynamicPropertyNames()`` rather than from a fixed list of
+    properties to probe, so a widget that grows a new state is visible to the
+    sheet -> tree guard without that guard being edited first. ``QByteArray``
+    names are decoded because Qt hands them back as bytes.
+    """
+    from PyQt6.QtCore import QObject
+
+    worn = set()
+    for tree in trees:
+        for widget in [tree] + list(tree.findChildren(QObject)):
+            for raw in widget.dynamicPropertyNames():
+                worn.add((bytes(raw).decode('utf-8'),
+                          str(widget.property(raw))))
+    return worn
+
+
+def selector_offenders(member: str, names: set, properties: set) -> list:
+    """The tokens of one selector member that no widget in the tree wears.
+
+    ``[]`` means every ``#name`` is an objectName in the tree and every
+    ``[prop="value"]`` is a pair some widget currently holds -- i.e. the rule can
+    paint something. A non-empty answer is dead paint, and the only legal reasons
+    for it are the two halves of :data:`KNOWN_DEAD_SELECTORS`'s contract: the whole
+    member is listed there, or it should not be emitted at all.
+    """
+    offenders = []
+    for name in SELECTOR_NAME_RE.findall(member):
+        if name not in names:
+            offenders.append(f'#{name}')
+    for pair in SELECTOR_PROPERTY_RE.findall(member):
+        if pair not in properties:
+            offenders.append('[%s="%s"]' % pair)
+    return offenders
 
 
 def multiplicity_failures(counts) -> list:
@@ -166,12 +238,19 @@ class ViewStructureTest(unittest.TestCase):
 
         The literals below are the contract; assert the tuple first so an edit
         there fails here rather than in an ``in`` test that would silently
-        shrink to zero buttons to check. ``('chip', 'true')`` is the one pair no
-        live widget wears since Task 9 deleted the chip row: the floating
-        sidebar uses ``#libraryRow`` + ``[current="true"]`` instead, and the chip
-        rule, its registration and Task 4's contrast pin are left standing for
-        Task 10 to rule on with a render matrix in hand -- this test therefore
-        pins the *declaration*, not the wearing, for that one pair.
+        shrink to zero buttons to check.
+
+        Three of the four pairs are *worn* here (``role``/``current``/``running``,
+        by the transport buttons, the sidebar rows and the rail).
+        ``('chip', 'true')`` is the fourth and is the one entry this test can only
+        pin as *declared*: Task 9 deleted the chip row, so nothing constructs a
+        ``chip="true"`` widget any more. That asymmetry is not hidden here any
+        more either -- it is written down in
+        :data:`core.theme_qss.KNOWN_DEAD_SELECTORS` and enforced by
+        :class:`StyleSheetSelectorsHaveWearersTest`, whose whole job is wearing,
+        so this class can keep its job (the tree carries what the sheet selects on)
+        without pretending the chip family still has a wearer. Task 10 owns that
+        family's fate; see the hand-off note in the batch report.
         ``('current', 'true')`` and ``('running', 'true')`` are the Task 7
         registrations: the sheet has styled them since Tasks 3/4, and they enter
         the tree with this shell.
@@ -616,6 +695,114 @@ class ViewStructureTest(unittest.TestCase):
         finally:
             window.close()
             window.deleteLater()
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class StyleSheetSelectorsHaveWearersTest(unittest.TestCase):
+    """Review finding 3: the sheet's other direction -- sheet -> live tree.
+
+    ``tests/test_theme_qss.py::test_declares_every_required_selector`` proves
+    that every *registered* selector is styled, and
+    :meth:`ViewStructureTest.test_every_required_object_name_exists` proves that
+    every registered name is *present*. Neither one looks at what the generator
+    emits beyond the registration, so after Task 9 deleted the five left-panel
+    rules nothing at all stood between them and their return: re-emit
+    ``#albumArt`` into the sheet and the suite stayed green (the report concedes
+    this at §A.6). A rule no widget can wear is inert rather than wrong, but it is
+    also invisible -- a reader cannot tell dead paint from live, and the render
+    matrix cannot photograph a widget that does not exist.
+
+    The rule this class enforces: every ``#name`` and every ``[prop="value"]``
+    token of every selector member in the generated sheet must have a wearer in a
+    constructed tree, or the member must be named by
+    :data:`core.theme_qss.KNOWN_DEAD_SELECTORS`.
+
+    Two details the test has to get right, because a guard that fails for the
+    wrong reason gets deleted:
+
+    * **the tree must be driven, not just built.** ``[current="true"]`` and
+      ``[running="true"]`` are *states* -- at rest every sidebar row says
+      ``current="false"`` and no rail button spins -- so a tree of newly
+      constructed widgets reports two live rules as dead. ``setUp`` therefore
+      feeds two libraries, marks one current, and puts one button in flight.
+    * **``#bgPathLabel`` is on the dialog, not the window**, exactly as
+      :func:`make_appearance_dialog` documents: the union of the two trees is the
+      live surface the sheet is allowed to select on.
+    """
+
+    def setUp(self):
+        from view.main_window import MainWindow
+        from view.widgets.action_rail import ACTION_REFRESH
+
+        self.app = make_app()
+        self.window = MainWindow(make_manager())
+        self.dialog = make_appearance_dialog()
+        self.window.set_libraries([
+            SimpleNamespace(name='Rock', path='/media/rock'),
+            SimpleNamespace(name='Jazz', path='/media/jazz'),
+        ])
+        self.window.set_current_library('/media/rock')
+        self.window.set_action_progress(ACTION_REFRESH, True)
+        self.addCleanup(self.dialog.deleteLater)
+        self.addCleanup(self.window.deleteLater)
+        # Added last, so it runs first (cleanups are LIFO): the rail must not be
+        # handed to the next test still spinning.
+        self.addCleanup(self.window.set_action_progress, ACTION_REFRESH, False)
+
+    def _sheets(self):
+        """``(theme, qss)`` for both themes.
+
+        The selector sets are theme-independent by contract, so a typo only DARK
+        commits is still a typo, and it is caught by this pass.
+        """
+        from core.theme import DARK, LIGHT, AlphaSettings
+        from core.theme_qss import build_qss
+
+        for label in ('LIGHT', 'DARK'):
+            tokens = LIGHT if label == 'LIGHT' else DARK
+            yield label, build_qss(tokens, AlphaSettings())
+
+    def _live_tokens(self):
+        """The ``(names, properties)`` the driven trees wear."""
+        names = set(collect_names(self.window)) | set(collect_names(self.dialog))
+        return names, worn_properties(self.window, self.dialog)
+
+    def test_every_emitted_selector_has_a_wearer_or_is_listed(self):
+        names, properties = self._live_tokens()
+
+        offenders = []
+        for label, qss in self._sheets():
+            for member in _selector_members(qss):
+                if member in KNOWN_DEAD_SELECTORS:
+                    continue
+                missing = selector_offenders(member, names, properties)
+                if missing:
+                    offenders.append(f'{label}: {member} selects {missing}')
+
+        self.assertEqual(
+            [], offenders,
+            'the sheet styles widgets nobody can construct. Give the name a real '
+            'widget, delete the rule, or -- only with a render-matrix decision '
+            f'behind it -- list it in KNOWN_DEAD_SELECTORS: {offenders}',
+        )
+
+    def test_the_dead_family_is_still_the_dead_family(self):
+        """No listed selector may quietly regain a wearer.
+
+        The other half of the allowlist: a chip-wearing widget coming back (the
+        batch-4 column is the plausible candidate) turns this red, which is the
+        point -- Task 10 has to remove the name on purpose, not discover it later
+        in a matrix that photographs a chip nobody remembers deciding for.
+        """
+        names, properties = self._live_tokens()
+
+        alive = [member for member in KNOWN_DEAD_SELECTORS
+                 if not selector_offenders(member, names, properties)]
+        self.assertEqual(
+            [], alive,
+            f'{alive} is listed as dead paint but every token of it is worn again '
+            '-- remove it from KNOWN_DEAD_SELECTORS now that it has a wearer',
+        )
 
 
 if __name__ == '__main__':

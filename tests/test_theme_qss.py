@@ -218,6 +218,12 @@ class SelectedChipContrastTest(unittest.TestCase):
     This lives here, not in Task 3's ``ThemeContrastTest.EXTRA_PAIRS``, because
     it is an invariant of the *mapping*, not of the palette: ``core/theme.py``
     is untouched and Task 3's file stays as it shipped.
+
+    Review finding 4, stated so the two documents agree: since Task 9 deleted the
+    chip row, **no widget wears these colours** -- this class pins the declaration
+    of a family that is listed in :data:`core.theme_qss.KNOWN_DEAD_SELECTORS` and
+    whose fate (delete the five rules and this class, or bring a chip-wearing
+    widget back) is Task 10's to decide.
     """
 
     def _blocks(self):
@@ -262,6 +268,71 @@ class SelectedChipContrastTest(unittest.TestCase):
                     f'needs 4.5:1')
 
         self.assertEqual([], failures, '\n'.join(failures))
+
+
+class KnownDeadSelectorsTest(unittest.TestCase):
+    """Batch-2 review finding 4: the dead-paint allowlist is chip-only, and pinned.
+
+    ``core.theme_qss.KNOWN_DEAD_SELECTORS`` is the exception list of the sheet ->
+    tree guard, so it decides which rules may survive with no wearer. Left as an
+    open list it would be a way to *hide* dead paint: add a name here and the
+    reverse guard stops complaining about it. These two tests are what make the
+    list a decision instead of an escape hatch -- the contents are re-spelled here
+    as literals (not derived from the module, which is the thing under test), and
+    every entry has to still be emitted.
+
+    Task 10 owns the only legal edit: either the five chip rules and this list
+    both go, or a chip-wearing widget comes back and the list empties while the
+    rules stay. Either way the change is made here, in review.
+    """
+
+    #: Re-spelled, deliberately: ``core/theme_qss.py`` owns the strings, this owns
+    #: the claim that *only* these are dead.
+    CHIP_FAMILY = (
+        'QPushButton[chip="true"]',
+        'QPushButton[chip="true"]:hover',
+        'QPushButton[chip="true"][selected="true"]',
+        'QPushButton[chip="true"]:disabled',
+        'QPushButton[chip="true"]:focus',
+    )
+
+    def _emitted(self):
+        """Yield ``(theme, {selector member})`` for both themes."""
+        from core.theme import DARK, LIGHT, AlphaSettings
+        from core.theme_qss import build_qss
+
+        for name in ('LIGHT', 'DARK'):
+            tokens = LIGHT if name == 'LIGHT' else DARK
+            yield name, set(_selector_members(build_qss(tokens, AlphaSettings())))
+
+    def test_allowlist_is_exactly_the_chip_family(self):
+        """Nothing else may join the list -- and no duplicate entries."""
+        from core.theme_qss import KNOWN_DEAD_SELECTORS
+
+        self.assertEqual(
+            set(self.CHIP_FAMILY), set(KNOWN_DEAD_SELECTORS),
+            f'KNOWN_DEAD_SELECTORS changed: {sorted(KNOWN_DEAD_SELECTORS)} -- a '
+            'new dead selector is a Task 10 decision (delete the rule), not an '
+            'allowlist entry',
+        )
+        self.assertEqual(
+            len(KNOWN_DEAD_SELECTORS), len(set(KNOWN_DEAD_SELECTORS)),
+            'a duplicated allowlist entry means the list was edited blind',
+        )
+
+    def test_every_allowlisted_selector_is_still_emitted(self):
+        """An entry may not outlive the rule it excuses (the five chip rules)."""
+        from core.theme_qss import KNOWN_DEAD_SELECTORS
+
+        for theme, members in self._emitted():
+            unemitted = [entry for entry in KNOWN_DEAD_SELECTORS if entry not in members]
+            with self.subTest(theme=theme):
+                self.assertEqual(
+                    [], unemitted,
+                    f'{unemitted} still sit in KNOWN_DEAD_SELECTORS but are no '
+                    'longer emitted -- an allowlist entry cannot outlive the rule '
+                    'it excuses, or the list hides whatever replaces it',
+                )
 
 
 class MainWindowFillTest(unittest.TestCase):
@@ -520,7 +591,16 @@ class BuildQssTest(unittest.TestCase):
             )
 
     def test_declares_every_required_selector(self):
-        """The selector inventory is the Task 5 contract, one for one."""
+        """The selector inventory is the Task 5 contract, one for one.
+
+        Direction: tuple -> sheet, i.e. nothing registered goes unstyled. The
+        other direction (sheet -> live tree: no emitted selector may name a name or
+        property nobody can construct, unless it is listed in
+        ``KNOWN_DEAD_SELECTORS``) lives in
+        ``tests/test_view_structure.py::StyleSheetSelectorsHaveWearersTest``,
+        because it needs a built ``MainWindow`` and this module deliberately runs
+        without PyQt6.
+        """
         from core.theme import DARK, LIGHT, AlphaSettings
         from core.theme_qss import (
             REQUIRED_DYN_PROPERTIES,

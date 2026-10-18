@@ -38,18 +38,32 @@ widgets (A1):
 The module is pure Python (no Qt import), so its output can be unit-tested
 without a display (see ``tests/test_theme_qss.py``).
 
-:data:`REQUIRED_OBJECT_NAMES` and :data:`REQUIRED_DYN_PROPERTIES` are the
-contract with the widget tree: Task 5 guarantees the widgets carry these
-names/properties, and ``build_qss`` guarantees every one of them is styled.
-Every batch-2 name was emitted here one task before it was registered there,
-because the tuple is asserted against the live ``MainWindow`` tree and those
-widgets only entered it in Task 7: ``#actionRail``/``#railButton`` (Task 3),
-``#librarySidebar``/``#sidebarTitle``/``#libraryRow``/``#sidebarEmpty`` (Task 4),
-``#nowPlayingStrip``/``#stripArt``/``#stripTitle``/``#stripArtist`` (Task 5) and
-``#toast``/``#toastText`` (Task 6). The deferral is closed -- Task 7 registered
-all twelve. The reverse direction (a rule whose name no live widget can carry)
-is what Task 9 removed the five left-panel rules for; see the window-and-panel
-section.
+Three directions are enforced, and the wording here describes exactly those
+three -- it used to claim a tidy two-way "widgets guarantee they wear these,
+``build_qss`` guarantees they are styled" contract, which stopped being true when
+Task 9 deleted the widget that wore ``chip="true"``:
+
+* **tuple -> sheet**: ``tests/test_theme_qss.py::test_declares_every_required_selector``
+  -- every name in :data:`REQUIRED_OBJECT_NAMES` and every pair in
+  :data:`REQUIRED_DYN_PROPERTIES` is styled, in LIGHT and in DARK.
+* **tree -> tuple**: ``tests/test_view_structure.py::test_every_required_object_name_exists``
+  -- a constructed ``MainWindow`` (plus the appearance dialog, which owns two of
+  the names) really carries each registered name.
+* **sheet -> tree**: ``tests/test_view_structure.py::StyleSheetSelectorsHaveWearersTest``
+  -- every ``#name`` and every ``[prop="value"]`` token the *generated* sheet
+  mentions has a wearer in that same live tree, or the selector is named in
+  :data:`KNOWN_DEAD_SELECTORS`. This is the direction that made removing the five
+  left-panel names safe, and it is what keeps a rule for a widget nobody can
+  construct from coming back silently.
+
+:data:`REQUIRED_OBJECT_NAMES` is therefore the live-tree half of the second
+bullet: the batch-2 names it registers (``#actionRail``/``#railButton`` from
+Task 3, ``#librarySidebar``/``#sidebarTitle``/``#libraryRow``/``#sidebarEmpty``
+from Task 4, ``#nowPlayingStrip``/``#stripArt``/``#stripTitle``/``#stripArtist``
+from Task 5, ``#toast``/``#toastText`` from Task 6) were each emitted here one
+task before Task 7 put the widget in the tree, and the five left-panel names left
+the tuple with the panel -- Task 9 then deleted the two widget files along with
+the five rules that scoped them.
 """
 
 from core.theme import (
@@ -89,6 +103,8 @@ from core.theme import (
 #   cannot tell dead paint from live, and the sheet is the one place the whole
 #   widget contract is written down. The strip's four names replaced them.
 #   ``#playlistHeader``/``#playlistView`` stay: the playlist never left.
+#   Re-emitting one of the five now fails the sheet -> tree guard rather than
+#   waiting for a human to notice it in the render matrix.
 # ``#playlistContainer`` is deliberately absent from both sides: layout host
 # only (ledger R2).
 REQUIRED_OBJECT_NAMES: tuple[str, ...] = (
@@ -128,17 +144,54 @@ REQUIRED_OBJECT_NAMES: tuple[str, ...] = (
 # Dynamic properties used to scope rules for repeated elements (media-library
 # chips and sidebar rows, transport-group buttons, rail buttons in flight)
 # where objectNames would not scale. Task 7 added the two batch-2 state pairs
-# whose widgets are now in the live tree. ``('chip', 'true')`` is the one entry
-# no live widget carries since Task 9: the floating sidebar rows use
-# ``#libraryRow`` + ``[current="true"]`` instead, and the chip family -- rule,
-# registration and the ``tests/test_theme_qss.py`` contrast pin that came with
-# Task 4 -- is deliberately left standing for Task 10 to rule on with a render
-# matrix in hand, rather than deleted inside a structural cleanup.
+# whose widgets are now in the live tree.
+#
+# ``('chip', 'true')`` is the one entry **declared but not worn**: since Task 9
+# deleted the chip row, nothing constructs a ``chip="true"`` widget, and the
+# floating sidebar's rows use ``#libraryRow`` + ``[current="true"]`` instead.
+# Registration still buys something -- the sheet-side half of the contract,
+# ``test_declares_every_required_selector``, keeps those five rules colour-checked
+# and present in both themes -- but it no longer asserts anything about the tree,
+# and :data:`KNOWN_DEAD_SELECTORS` is where that is written down instead. The chip
+# family -- rules, registration, and Task 4's contrast pin in
+# ``tests/test_theme_qss.py`` -- is deliberately left standing for Task 10 to rule
+# on with a render matrix in hand, rather than deleted inside a structural cleanup.
 REQUIRED_DYN_PROPERTIES: tuple[tuple[str, str], ...] = (
-    ('chip', 'true'),
+    ('chip', 'true'),    # declared only: see KNOWN_DEAD_SELECTORS
     ('role', 'transport'),
     ('current', 'true'),    # #libraryRow's marker for the current library
     ('running', 'true'),    # #railButton's in-flight state
+)
+
+#: Selector members the generated sheet emits that **no live widget can wear**.
+#:
+#: This is the exception list of the sheet -> tree guard
+#: (``tests/test_view_structure.py::StyleSheetSelectorsHaveWearersTest``): every
+#: ``#name`` / ``[prop="value"]`` token of every emitted selector must have a
+#: wearer in the constructed ``MainWindow`` (plus the appearance dialog) unless
+#: the whole selector appears here. Dead paint is inert rather than wrong, but a
+#: reader cannot tell dead paint from live, so it has to be *named*, not merely
+#: tolerated -- the same reason Task 9 deleted the five left-panel rules instead
+#: of leaving them behind.
+#:
+#: Two further assertions keep the list honest, and they are why a name cannot
+#: join or leave it quietly: every entry must still be emitted by the sheet (so an
+#: entry cannot outlive the rule it excuses), and a listed selector must still
+#: have *no* wearer (so a chip-wearing widget coming back turns the list red until
+#: Task 10 clears it). The contents themselves are pinned literally by
+#: ``tests/test_theme_qss.py::KnownDeadSelectorsTest``.
+#:
+#: **The whole list is one family** -- the media-library chip -- and it is
+#: Task 10's decision to close: either delete the five rules plus the
+#: ``('chip', 'true')`` registration plus the contrast pin and leave this tuple
+#: empty, or give the family a wearer and remove it from here. Nothing else may
+#: be added to it.
+KNOWN_DEAD_SELECTORS: tuple[str, ...] = (
+    'QPushButton[chip="true"]',
+    'QPushButton[chip="true"]:hover',
+    'QPushButton[chip="true"][selected="true"]',
+    'QPushButton[chip="true"]:disabled',
+    'QPushButton[chip="true"]:focus',
 )
 
 
@@ -403,6 +456,9 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     ]))
     # Media-library chips: pill buttons; [selected="true"] is set by the
     # widget side with unpolish/polish, no per-widget stylesheet involved.
+    # DEAD FAMILY: nothing wears ``chip="true"`` since Task 9 deleted the chip
+    # row, so all five rules emitted from ``chip`` below are named in
+    # :data:`KNOWN_DEAD_SELECTORS` and are Task 10's to close.
     emit(_rule(chip, [
         ('background-color', t.button_bg),
         ('border', f'1px solid {t.border}'),

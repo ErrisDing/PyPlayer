@@ -31,9 +31,17 @@ services are ``MagicMock``\\ s. Two consequences shape the helpers below:
   spins -- an assertion about a call list cannot pass on a channel that was
   quietly rewired to nowhere.
 
+The two structural guards read the modules' **AST**, not their lines
+(:func:`status_channel_violations`). They have to: four of the nine routed toast
+sites are written as ``show_toast(`` + newline + ``i18n.get(...)``, so a line-based
+marker scan is satisfied by the very style the file it guards is written in, and a
+retired key looked up across the same line break resurrected deleted copy with the
+suite green (batch-2 review findings 1 and 2).
+
 Run with an offscreen Qt platform:
     QT_QPA_PLATFORM=offscreen python -m unittest tests.test_presenter_status -v
 """
+import ast
 import contextlib
 import sys
 import unittest
@@ -71,6 +79,190 @@ STATUS_KEYS = (
 #: and the strip, and the two progress strings became a button state.
 RETIRED_KEYS = ('status.playing', 'status.paused', 'status.now_playing',
                 'status.refreshing', 'status.refresh_all')
+
+#: The i18n entry points a user-visible string may come from. Anything else that
+#: reaches :func:`show_toast` is copy built in code.
+I18N_LOOKUP_ATTRS = ('get', 'interface')
+
+#: The violation kinds :func:`status_channel_violations` reports. The two source
+#: guards below ask for different subsets of one shared pass, which is why the
+#: kind travels with every finding instead of living in two separate scanners.
+COPY_CONCERNS = ('hardcoded-copy', 'progress-text', 'status-default')
+RETIREMENT_CONCERNS = ('retired-key',)
+
+
+def _call_name(node: ast.Call) -> str:
+    """The method/function name a call node is invoking (``''`` when dynamic)."""
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    return ''
+
+
+def _is_i18n_lookup(node) -> bool:
+    """``i18n.get(...)`` / ``i18n.interface(...)`` -- the only legal copy source."""
+    return (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in I18N_LOOKUP_ATTRS
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == 'i18n')
+
+
+def _string_literals(node) -> list:
+    """Every string constant under ``node``, f-string fragments included."""
+    return [child.value for child in ast.walk(node)
+            if isinstance(child, ast.Constant) and isinstance(child.value, str)]
+
+
+def _lookup_key(node: ast.Call) -> str:
+    """The looked-up key as far as it is *literal* text; ``''`` when computed.
+
+    ``f'status.{name}'`` contributes the ``'status.'`` prefix, which is all the
+    ``status-default`` rule needs; it can never name a whole retired key, which is
+    what the ``retired-key`` rule reads the literals for.
+    """
+    argument = node.args[0] if node.args else next(
+        (kw.value for kw in node.keywords if kw.arg in ('keyword', 'key')), None)
+    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+        return argument.value
+    if isinstance(argument, ast.JoinedStr):
+        return ''.join(value.value for value in argument.values
+                       if isinstance(value, ast.Constant)
+                       and isinstance(value.value, str))
+    return ''
+
+
+def _rail_action_ids() -> tuple:
+    """The ids ``set_action_progress`` may address, read from the rail itself."""
+    try:
+        from view.widgets.action_rail import ACTION_IDS
+    except ImportError:  # pragma: no cover - environment without PyQt6
+        return ()
+    return tuple(ACTION_IDS)
+
+
+def _show_toast_violations(node: ast.Call, where: str) -> list:
+    """Every shape of ``show_toast`` call that builds copy in code."""
+    message = node.args[0] if node.args else next(
+        (kw.value for kw in node.keywords if kw.arg == 'message'), None)
+    if message is None:
+        return [('hardcoded-copy', f'{where}: show_toast() carries no message')]
+    if _is_i18n_lookup(message):
+        # ``show_toast(i18n.get('k'), 'and some more copy')`` -- the second
+        # positional slot is the *duration*, so a string here is copy with nowhere
+        # to be translated.
+        smuggled = [literal for extra in node.args[1:]
+                    for literal in _string_literals(extra)]
+        if smuggled:
+            return [('hardcoded-copy',
+                     f'{where}: show_toast() passes copy beside its key lookup: '
+                     f'{smuggled}')]
+        return []
+    return [('hardcoded-copy',
+             f'{where}: show_toast() is handed {type(message).__name__}, not an '
+             'i18n key lookup -- user-visible copy has to come from a key that '
+             'substitutes its parameters')]
+
+
+def _progress_violations(node: ast.Call, where: str) -> list:
+    """``set_action_progress`` is a state channel: ``(action id, bool)``, nothing else.
+
+    spec §5's progress row produces **no text**, so every shape that smuggles some
+    in -- a third argument, a keyword, a message where the bool belongs -- is one
+    defect: a spinner that also carries a sentence. And ``running`` is reported at
+    the start of a ``try`` and cleared in its ``finally``, so a computed value
+    rather than a literal means a call site the ruling never covered.
+    """
+    if len(node.args) != 2 or node.keywords:
+        return [('progress-text',
+                 f'{where}: set_action_progress() must be called as '
+                 f'(action id, True/False) -- got '
+                 f'{ast.unparse(node)}[{len(node.args)} positional, '
+                 f'{len(node.keywords)} keyword(s)]')]
+    action, running = node.args
+    failures = []
+    ids = _rail_action_ids()
+    if isinstance(action, ast.Constant):
+        if not isinstance(action.value, str) or (ids and action.value not in ids):
+            failures.append(
+                f'{where}: {action.value!r} is not a rail action id')
+    elif not isinstance(action, (ast.Name, ast.Attribute)):
+        failures.append(
+            f'{where}: the progress channel is addressed by {type(action).__name__}, '
+            'not by one of the rail\'s ACTION_* ids')
+    if not (isinstance(running, ast.Constant)
+            and isinstance(running.value, bool)):
+        failures.append(
+            f'{where}: the running state must be a bool literal, got '
+            f'{ast.dump(running)[:60]} -- progress carries state, spec §5, never text')
+    return [('progress-text', text) for text in failures]
+
+
+def _lookup_violations(node: ast.Call, where: str) -> list:
+    """The two invariants of one ``i18n`` lookup in the status channels."""
+    failures = []
+    key = _lookup_key(node)
+    if key.startswith('status.') and any(kw.arg == 'default' for kw in node.keywords):
+        failures.append(('status-default',
+                         f'{where}: {key} looked up with a hardcoded default -- '
+                         'every status key ships in both locales'))
+    # Every string the lookup is handed, exactly as the line scan read the whole
+    # line: the key, its parameters, and any fallback.
+    literals = _string_literals(node)
+    for literal in literals:
+        for retired in RETIRED_KEYS:
+            if retired in literal:
+                failures.append(('retired-key',
+                                 f'{where}: {retired} is looked up again -- spec §5 '
+                                 'deleted this copy (it duplicates the transport '
+                                 'button or the strip, or it is progress that is now '
+                                 'a button state)'))
+    return failures
+
+
+def status_channel_violations(*paths: Path) -> list:
+    """One AST pass per source file over every ``ast.Call`` node it contains.
+
+    Returns ``(kind, message)`` pairs; see ``COPY_CONCERNS`` / ``RETIREMENT_CONCERNS``
+    for the kinds. Both structural guards in this module consume this, so the two
+    concerns cannot drift apart into two scanners with two blind spots.
+
+    Why it parses instead of scanning lines (batch-2 review findings 1 and 2): four
+    of the nine toast sites Task 8 shipped in *this very file* are written as
+    ``show_toast(\\n    i18n.get(...))``. A marker that has to share a line with its
+    opening parenthesis is therefore satisfied by the dominant style of the file it
+    guards -- ``show_toast(\\n    f"Refreshed {n}")`` passed it, and so did a
+    ``default=`` on the call's second line. The retired-key scan had the identical
+    hole, which is the revival path it exists to close: ``i18n.get(\\n`` plus
+    ``    'status.playing')`` resurrected deleted copy with the suite green. The
+    four ``set_action_progress`` sites happen to fit on one line today, which is
+    precisely the accident a guard must not rest on. Reading ``ast.Call`` nodes
+    takes the line boundary out of the question -- a call is a call however it is
+    wrapped, and its arguments have shapes.
+    """
+    violations = []
+    for path in paths:
+        relative = path.relative_to(ROOT)
+        tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            where = f'{relative}:{node.lineno}'
+            name = _call_name(node)
+            if name == 'show_toast':
+                violations += _show_toast_violations(node, where)
+            elif name == 'set_action_progress':
+                violations += _progress_violations(node, where)
+            if _is_i18n_lookup(node):
+                violations += _lookup_violations(node, where)
+    return violations
+
+
+def _source_guard(paths, concerns) -> list:
+    """The violations of one concern set, as ``kind: where`` lines for the message."""
+    return sorted(f'{kind}: {text}' for kind, text in
+                  status_channel_violations(*paths) if kind in concerns)
 
 
 def _media(count, prefix='/media/rock'):
@@ -689,48 +881,44 @@ class PresenterStatusTest(PresenterHarness, unittest.TestCase):
         The runtime tests can only see the paths this suite happens to drive, and a
         literal passed straight to ``show_toast`` stops being translatable the
         moment it is written -- which is how four of the fourteen sites got there.
-        """
-        source = (ROOT / 'presenter' / 'main_presenter.py').read_text(encoding='utf-8')
-        offenders = []
-        for number, line in enumerate(source.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith('#'):
-                continue
-            for marker in ('show_toast(f"', "show_toast(f'", 'show_toast("',
-                           "show_toast('"):
-                if marker in line:
-                    offenders.append(f'presenter/main_presenter.py:{number}: {stripped}')
-        self.assertEqual([], offenders,
-                         'user-visible status copy must come from a key lookup that '
-                         'substitutes its parameters')
 
-        for number, line in enumerate(source.splitlines(), 1):
-            if 'i18n.get(' in line and 'status.' in line and 'default=' in line:
-                self.fail(
-                    f'presenter/main_presenter.py:{number}: a status key with a '
-                    'hardcoded default -- every status key ships in both locales')
+        Both channels are checked, because both can carry copy: a toast whose
+        message is not a key lookup, a progress call that grew a third argument or
+        a keyword (spec §5: the progress row produces no text), and a ``status.*``
+        lookup with a ``default=`` -- a fallback is English sitting in code with a
+        key file next to it. See :func:`status_channel_violations` for why this
+        reads ``ast.Call`` nodes instead of scanning lines.
+        """
+        violations = _source_guard(
+            (ROOT / 'presenter' / 'main_presenter.py',), COPY_CONCERNS)
+        self.assertEqual(
+            [], violations,
+            'user-visible status copy must come from a key lookup that substitutes '
+            'its parameters, and the progress channel must stay (id, bool)',
+        )
 
     def test_retired_keys_have_no_lookup_left(self):
         """The deleted copy must not be resurrected by another call site.
 
-        Scanned as *lookups* (a line that asks i18n for the key), not as mentions:
+        Scanned as *lookups* (a call that asks i18n for the key), not as mentions:
         this task's own docstrings name the retired strings to explain why they are
         gone, and silencing that prose would make the guard worse, not stricter.
+
+        The scope is every module the status channels live in -- ``presenter/`` and
+        ``view/`` -- and the scan is the same AST pass as the guard above, because
+        the revival path this test exists to close is a *call*, and a call that
+        wraps onto a second line is still a call: ``i18n.get(\\n    'status.playing')``
+        satisfied the old line scan (review finding 2) while doing exactly the thing
+        the test forbids.
         """
-        for directory in ('presenter', 'view'):
-            for source in sorted((ROOT / directory).rglob('*.py')):
-                for number, line in enumerate(
-                        source.read_text(encoding='utf-8').splitlines(), 1):
-                    if 'i18n.get(' not in line and 'i18n.interface(' not in line:
-                        continue
-                    for key in RETIRED_KEYS:
-                        self.assertNotIn(
-                            key, line,
-                            f'{source.relative_to(ROOT)}:{number} still looks up '
-                            f'{key}: spec §5 deleted this copy (it duplicates the '
-                            'transport button or the strip, or it is progress that '
-                            'is now a button state)',
-                        )
+        paths = (sorted((ROOT / 'presenter').rglob('*.py'))
+                 + sorted((ROOT / 'view').rglob('*.py')))
+        violations = _source_guard(paths, RETIREMENT_CONCERNS)
+        self.assertEqual(
+            [], violations,
+            'spec §5 deleted this copy -- it duplicates the transport button or the '
+            'strip, or it is progress that is now a button state',
+        )
 
     # === every string, in both locales ===
 
