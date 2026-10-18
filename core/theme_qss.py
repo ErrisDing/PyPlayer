@@ -19,16 +19,23 @@ widgets (A1):
   objectName anywhere in the plan). A style can then never leak onto a widget
   that never asked for it (that leak is what made the progress slider and the
   volume slider render differently side by side). Application chrome
-  (``QMenuBar``, ``QMenu``, ``QScrollBar``, ``QToolTip``, ``QSplitter``,
-  ``QGroupBox``) is the recorded exemption -- not because it is single-instance
+  (``QMenuBar``, ``QMenu``, ``QScrollBar``, ``QToolTip``, ``QGroupBox``,
+  ``QMainWindow``) is the recorded exemption -- not because it is single-instance
   (``QMenu``, ``QScrollBar`` and ``QGroupBox`` recur many times per window) but
   because the brief's mapping table mandates those rules bare; per-widget
   scoping there is not what the table asks for. ``QMainWindow`` is the one
   genuinely single-instance member, listed for the same table-mandated reason
   (the mapping table's first row scopes it, and it is the one rule that carries
   the window's own ``window_bg`` fill -- see the Task 10 note where it is
-  emitted). The test lists the exemption by name, so a new bare class has to be
-  argued for rather than slipped in.
+  emitted). ``QSplitter`` was a seventh name until the batch-2 final review:
+  Task 7 deleted the splitter, its two ``::handle`` rules lost their wearers, and
+  the rules left with it. The test lists the exemption by name, so a new bare
+  class has to be argued for rather than slipped in -- and because this module
+  only ever banned the *leak*, the review made the sheet -> tree guard read bare
+  classes as well: an exempted name must still be worn by a live widget or
+  justified as chrome Qt builds outside the tree (``QMenuBar``/``QMenu`` -- the
+  unresolved macOS question of spec §8 -- and ``QToolTip``), which is written down
+  per name in ``tests/test_theme_qss.py``.
 * **No colour literals.** Every colour resolves to a token field, so LIGHT
   and DARK can be asserted identical in structure and the palette stays the
   one contrast-checked source of truth (see ``tests/test_theme.py``).
@@ -54,7 +61,11 @@ Task 9 deleted the widget that wore ``chip="true"``:
   mentions has a wearer in that same live tree, or the selector is named in
   :data:`KNOWN_DEAD_SELECTORS`. This is the direction that made removing the five
   left-panel names safe, and it is what keeps a rule for a widget nobody can
-  construct from coming back silently.
+  construct from coming back silently. It reads *bare class* selectors too --
+  ``QSplitter::handle`` was the zero-wearer rule that got through while it did
+  not, because a bare class carries no token to check: each one must have an
+  instance of that class in the live tree, or a name on this module's own chrome
+  exemption, which the tests pin by content and by reason.
 
 :data:`REQUIRED_OBJECT_NAMES` is therefore the live-tree half of the second
 bullet: the batch-2 names it registers (``#actionRail``/``#railButton`` from
@@ -783,7 +794,7 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
         ('background-color', 'transparent'),
     ]))
 
-    # -- 浮层与分隔 / overlays & splitters ------------------------------------
+    # -- 浮层 / overlays --------------------------------------------------------
     emit(_rule('QToolTip', [
         ('background-color', t.tooltip_bg),
         ('color', t.tooltip_text),
@@ -791,12 +802,15 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
         ('padding', f'{_px(SPACE_1)} {_px(SPACE_2)}'),
         ('border-radius', _px(RADIUS_SM)),
     ]))
-    emit(_rule('QSplitter::handle', [
-        ('background-color', t.divider),
-    ]))
-    emit(_rule('QSplitter::handle:horizontal', [
-        ('width', '1px'),
-    ]))
+    # The two ``QSplitter::handle`` rules that used to sit here are deleted by the
+    # batch-2 final review: Task 7 replaced ``QSplitter[左栏 | 列表]`` with
+    # ``QHBoxLayout[ActionRail | 列表]`` (spec §3.3), so nothing constructs a
+    # splitter and nothing will -- the handle paint had zero wearers. They escaped
+    # the sheet -> tree guard only because that guard tracked ``#objectName`` and
+    # ``[prop="value"]`` tokens and let *bare class* selectors through unexamined;
+    # that blind spot is now closed
+    # (``tests/test_view_structure.py::StyleSheetSelectorsHaveWearersTest``), so
+    # re-emitting a bare rule with no wearer fails the suite instead of lingering.
 
     # -- 对话框 / dialogs -------------------------------------------------------
     # appearanceDialog now sits on window_bg, so dialogs match the main

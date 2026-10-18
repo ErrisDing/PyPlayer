@@ -17,7 +17,12 @@ Three directions are pinned across the two files:
 * **sheet -> tree** (:class:`StyleSheetSelectorsHaveWearersTest`, added for
   batch-2 review finding 3): read the *generated* sheet back and demand a wearer
   for every selector token, or an explicit entry in
-  :data:`core.theme_qss.KNOWN_DEAD_SELECTORS`.
+  :data:`core.theme_qss.KNOWN_DEAD_SELECTORS` -- and, since the batch-2 *final*
+  review (finding 1), for every bare class a selector names, or a name on the
+  generator's own chrome exemption with a recorded reason. The first version asked
+  only about ``#name`` and ``[prop="value"]`` tokens, which is how the two
+  zero-wearer ``QSplitter::handle`` rules survived the pass that deleted the
+  splitter.
 
 Only the third makes Task 9's deletions permanent. The first two look at what is
 declared, so re-emitting a rule for ``#albumArt`` -- a name no widget can carry
@@ -76,7 +81,12 @@ from tests.test_view_smoke import QT_AVAILABLE, make_app, make_manager
 # The sheet's own selector splitter, imported rather than re-implemented: two
 # parsers of one format is how the sheet -> tree guard and the tree -> sheet guard
 # start disagreeing about what a selector is.
-from tests.test_theme_qss import _selector_members
+from tests.test_theme_qss import (
+    EXEMPT_CHROME_CLASSES,
+    EXEMPT_CHROME_DECISIONS,
+    _bare_class_selectors,
+    _selector_members,
+)
 
 from core.theme_qss import (
     KNOWN_DEAD_SELECTORS,
@@ -127,9 +137,12 @@ def collect_names(widget) -> list:
 
 # The two token kinds a QSS rule can scope itself by -- the same two the
 # generator is allowed to use (``core/theme_qss.py`` module header, rule 1).
-# Pseudo-classes, sub-controls and bare classes are not tokens: ``#railButton``
-# and ``#railButton:hover:pressed`` want the *same* wearer, and
-# ``QDialog QPushButton`` wants none (it is ancestor-scoped by decision).
+# Pseudo-classes and sub-controls are not tokens: ``#railButton`` and
+# ``#railButton:hover:pressed`` want the *same* wearer, and ``QDialog QPushButton``
+# wants none (it is ancestor-scoped by decision). A bare class is not a token
+# either, but it is not exempt from the guard: it names a *whole class*, so
+# :func:`worn_classes` answers the same question one level up -- see
+# :meth:`StyleSheetSelectorsHaveWearersTest.test_every_emitted_bare_class_is_worn_or_exempted`.
 SELECTOR_NAME_RE = re.compile(r'#([A-Za-z_][A-Za-z0-9_]*)')
 SELECTOR_PROPERTY_RE = re.compile(r'\[([a-z_]+)="([^"]*)"\]')
 
@@ -150,6 +163,29 @@ def worn_properties(*trees) -> set:
             for raw in widget.dynamicPropertyNames():
                 worn.add((bytes(raw).decode('utf-8'),
                           str(widget.property(raw))))
+    return worn
+
+
+def worn_classes(*trees) -> set:
+    """Every Qt class name the given trees instantiate, base classes included.
+
+    The bare-class half of the sheet -> tree guard asks whether a rule like
+    ``QScrollBar::handle:horizontal`` has anything to paint, and QSS matches on the
+    *class*, so the answer is the whole MRO of every widget in the tree, not just
+    its most-derived type: a ``QTableView``'s scroll bar is a plain ``QScrollBar``,
+    but a subclass instance still wears its base's rule. Names that do not start
+    with ``Q`` (this project's own classes, ``object``) are skipped -- the sheet
+    cannot select on them, so counting them would only make the answer
+    platform-shaped rather than wrong in a useful way.
+    """
+    from PyQt6.QtCore import QObject
+
+    worn = set()
+    for tree in trees:
+        for widget in [tree] + list(tree.findChildren(QObject)):
+            for klass in type(widget).__mro__:
+                if klass.__name__.startswith('Q'):
+                    worn.add(klass.__name__)
     return worn
 
 
@@ -473,42 +509,148 @@ class ViewStructureTest(unittest.TestCase):
             window.deleteLater()
 
     def test_rail_dispatch_reaches_the_window_exactly_once(self):
-        """Ledger constraint 3: connect only ``ActionRail.action_triggered``.
+        """Ledger constraint 3 *and* spec §1 criterion 4: each id does real work.
 
-        A rail click already routes ``clicked -> action.trigger() ->
-        triggered``, and the rail itself connects only the action (Task 3's
-        critical fix) -- so a window that *also* wired the button or the action
-        would deliver every click twice. ``click()`` drives the real route.
-        The appearance entry doubles as the dispatch-table check: it is the
-        only rail action whose effect is a window signal rather than a handler.
+        A rail click already routes ``clicked -> action.trigger() -> triggered``,
+        and the rail itself connects only the action (Task 3's critical fix) -- so a
+        window that *also* wired the button or the action would deliver every click
+        twice. ``click()`` drives the real route, and one click per id is what makes
+        the count the assertion rather than a side note.
+
+        The second half is what the batch-2 final review (finding 3) found missing:
+        this test used to drive two of the seven ids, because ``MainWindow``'s
+        dispatch table ignores an unknown id on purpose ("a crash in a click handler
+        is worse than a no-op") -- so deleting the ``ACTION_OPEN_FOLDER`` or the
+        ``ACTION_ABOUT`` entry from the table kept the entire suite green while
+        removing a user-visible action from the app. A deliberately silent fallback
+        cannot be tested by absence, only by presence: every id is clicked and every
+        id's *effect* is observed, which is the only way a dropped table entry shows
+        up. The table's own shape is pinned too (one expectation per declared id), so
+        an eighth id cannot join ``ACTION_IDS`` without a dispatch case here.
         """
         from unittest.mock import patch
 
-        from PyQt6.QtWidgets import QFileDialog, QWidget
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox, QWidget
 
+        from core import i18n
         from view.main_window import MainWindow
+        from view.widgets.action_rail import (
+            ACTION_ABOUT,
+            ACTION_APPEARANCE,
+            ACTION_IDS,
+            ACTION_LIBRARY,
+            ACTION_OPEN_FILE,
+            ACTION_OPEN_FOLDER,
+            ACTION_REFRESH,
+            ACTION_REFRESH_ALL,
+        )
 
         song = str(Path('C:/media/song.mp3'))
-        with patch.object(QFileDialog, 'getOpenFileNames',
-                          lambda *args, **kwargs: ([song], '')):
-            window = MainWindow(make_manager())
-            try:
-                rail = window.findChild(QWidget, 'actionRail')
-                self.assertIsNotNone(rail, '#actionRail must live in the window tree')
-                scans: list = []
-                appearances: list = []
-                window.scan_folder_requested.connect(scans.append)
-                window.manage_appearance_requested.connect(lambda: appearances.append(True))
+        folder = 'C:/media/folder-library'
+        current = '/media/rock'
 
-                rail.button_for('open_file').click()
-                rail.button_for('appearance').click()
+        window = MainWindow(make_manager())
+        # The panel installs an *application-level* filter while it is open (Task 4),
+        # and ``deleteLater`` does not run until the loop spins -- so a panel left
+        # open here would eat mouse presses for the tests that follow. ``hide_panel``
+        # is documented idempotent, so this can be unconditional.
+        sidebar = window.findChild(QWidget, 'librarySidebar')
+        self.addCleanup(sidebar.hide_panel)
+        try:
+            rail = window.findChild(QWidget, 'actionRail')
+            self.assertIsNotNone(rail, '#actionRail must live in the window tree')
 
-                self.assertEqual(1, len(scans),
-                                 'open_file must emit scan_folder_requested once per click')
-                self.assertEqual(1, len(appearances),
-                                 'appearance must emit manage_appearance_requested once per click')
-            finally:
-                window.deleteLater()
+            # ``_on_refresh_library`` only emits when the window knows a current
+            # library, so the id has to be driven on a window that looks used.
+            window.set_libraries([SimpleNamespace(name='Rock', path=current)])
+            window.set_current_library(current)
+
+            seen = {'scan': [], 'refresh': [], 'refresh_all': [],
+                    'appearance': [], 'about': []}
+            about: list = []
+            window.scan_folder_requested.connect(seen['scan'].append)
+            window.refresh_library_requested.connect(seen['refresh'].append)
+            window.refresh_all_requested.connect(lambda: seen['refresh_all'].append(True))
+            window.manage_appearance_requested.connect(lambda: seen['appearance'].append(True))
+
+            def check_library():
+                self.assertTrue(
+                    window.is_library_panel_open(),
+                    'the library id toggles the floating panel through its own '
+                    'signal -- it never reaches the dispatch table (spec §3.2), so '
+                    'this is the only witness that the button does anything')
+
+            def check_about():
+                self.assertEqual(
+                    [(window, i18n.get('dialog.about.title'),
+                      i18n.get('dialog.about.text'))], about,
+                    'about is the one id whose effect is a modal: the table entry '
+                    'calls QMessageBox.about on the window with the two localised '
+                    'strings -- no entry, no dialog, and nothing else is red')
+
+            checks = {
+                ACTION_LIBRARY: check_library,
+                ACTION_OPEN_FILE: lambda: self.assertEqual(
+                    [str(Path(song).parent)], seen['scan'],
+                    'open_file must emit scan_folder_requested once per click, with '
+                    'the chooser result\'s parent directory'),
+                ACTION_OPEN_FOLDER: lambda: self.assertEqual(
+                    [folder], seen['scan'],
+                    'open_folder must emit scan_folder_requested once per click, '
+                    'with the chosen directory itself'),
+                ACTION_REFRESH: lambda: self.assertEqual(
+                    [current], seen['refresh'],
+                    'refresh must emit refresh_library_requested once, for the '
+                    'current library path'),
+                ACTION_REFRESH_ALL: lambda: self.assertEqual(
+                    [True], seen['refresh_all'],
+                    'refresh_all must emit refresh_all_requested once per click'),
+                ACTION_APPEARANCE: lambda: self.assertEqual(
+                    [True], seen['appearance'],
+                    'appearance must emit manage_appearance_requested once per click '
+                    '(the presenter, not the window, opens the dialog)'),
+                ACTION_ABOUT: check_about,
+            }
+            self.assertEqual(
+                set(ACTION_IDS), set(checks),
+                'the rail declares ids this test does not click -- every id has to '
+                'be evidenced against the dispatch table, which is spec §1 '
+                'criterion 4')
+
+            with patch.object(QFileDialog, 'getOpenFileNames',
+                              lambda *args, **kwargs: ([song], '')), \
+                    patch.object(QFileDialog, 'getExistingDirectory',
+                                 lambda *args, **kwargs: folder), \
+                    patch.object(QMessageBox, 'about',
+                                 lambda *args: about.append(args)):
+                for action_id, assert_effect in checks.items():
+                    with self.subTest(action_id=action_id):
+                        for bucket in seen.values():
+                            bucket.clear()
+                        about.clear()
+                        rail.button_for(action_id).click()
+                        assert_effect()
+                        # Exactly one *signal-level* effect per click, checked after
+                        # each click rather than at the end, so a double connection on
+                        # one button cannot be hidden by a missing one on another. The
+                        # library entry is the one id with nothing to count: its window
+                        # effect is the panel flag above, and it must not also fire a
+                        # dispatch-table signal -- 1 for the six routed ids, 0 for it.
+                        expected = 0 if action_id == ACTION_LIBRARY else 1
+                        self.assertEqual(
+                            expected,
+                            sum(len(bucket) for bucket in seen.values()) + len(about),
+                            f'{action_id} produced {expected} window effect(s) and '
+                            'the click reached something else too (or nothing else): '
+                            'the window must connect the rail signal once and nothing '
+                            'on the buttons')
+
+            # The toggle is a toggle: a second click closes what the first opened.
+            rail.button_for(ACTION_LIBRARY).click()
+            self.assertFalse(window.is_library_panel_open(),
+                             'the library button must also close the panel')
+        finally:
+            window.deleteLater()
 
     def test_sidebar_selection_reaches_the_window_exactly_once(self):
         """Same rule on the panel side: one connection, one window emission.
@@ -715,7 +857,22 @@ class StyleSheetSelectorsHaveWearersTest(unittest.TestCase):
     The rule this class enforces: every ``#name`` and every ``[prop="value"]``
     token of every selector member in the generated sheet must have a wearer in a
     constructed tree, or the member must be named by
-    :data:`core.theme_qss.KNOWN_DEAD_SELECTORS`.
+    :data:`core.theme_qss.KNOWN_DEAD_SELECTORS`; and, since the batch-2 final
+    review, every **bare class** a member names must have an instance in that tree
+    or be a name of the recorded chrome exemption.
+
+    That last clause is the one this class got wrong for a whole pass. Token-wise
+    a bare rule has nothing to check -- ``QSplitter::handle`` carries no ``#name``
+    and no ``[prop]``, so :func:`selector_offenders` answered ``[]`` and the two
+    splitter rules the rail replaced (spec §3.3) sat emitted, un-worn and
+    unreported. The exemption list the generator's own scope gate uses was the only
+    thing standing between a dead rule and a green suite, and this guard never read
+    it: a hole in exactly the mechanism built to stop dead rules lingering
+    silently. ``test_every_emitted_bare_class_is_worn_or_exempted`` closes it,
+    against the *same* list rather than a second competing one, and
+    :meth:`test_the_zero_wearer_chrome_exemptions_are_the_recorded_three` pins
+    which of those names really have no wearer so the macOS question cannot rot into
+    an assumption.
 
     Two details the test has to get right, because a guard that fails for the
     wrong reason gets deleted:
@@ -767,6 +924,10 @@ class StyleSheetSelectorsHaveWearersTest(unittest.TestCase):
         names = set(collect_names(self.window)) | set(collect_names(self.dialog))
         return names, worn_properties(self.window, self.dialog)
 
+    def _live_classes(self):
+        """The Qt class names the driven trees instantiate -- bases included."""
+        return worn_classes(self.window, self.dialog)
+
     def test_every_emitted_selector_has_a_wearer_or_is_listed(self):
         names, properties = self._live_tokens()
 
@@ -785,6 +946,74 @@ class StyleSheetSelectorsHaveWearersTest(unittest.TestCase):
             'widget, delete the rule, or -- only with a render-matrix decision '
             f'behind it -- list it in KNOWN_DEAD_SELECTORS: {offenders}',
         )
+
+    def test_every_emitted_bare_class_is_worn_or_exempted(self):
+        """A rule that names a whole class has an existence claim too.
+
+        ``selector_offenders`` can only answer about tokens, so the class half of
+        "does anything wear this?" went unasked: re-emit ``QSplitter::handle``
+        after Task 7 deleted the splitter and this class stayed green. The claim is
+        now made in the same shape as the token claim -- a wearer, or a name on the
+        exemption -- and the exemption is the generator's own
+        ``EXEMPT_CHROME_CLASSES``, not a second list that can disagree with the
+        first. A bare class outside it fails here *and* in the scope gate, which is
+        the point: the two guards read one record, so widening it is a decision with
+        two witnesses rather than a pass through one blind spot. Requiring a
+        recorded reason in ``EXEMPT_CHROME_DECISIONS`` as well is what stops the
+        tuple from becoming a place to park a rule nobody will defend.
+        """
+        classes = self._live_classes()
+
+        offenders = []
+        for label, qss in self._sheets():
+            for member, cls in _bare_class_selectors(qss):
+                if cls in classes:
+                    continue
+                if cls in EXEMPT_CHROME_CLASSES and cls in EXEMPT_CHROME_DECISIONS:
+                    continue
+                why = ('is not on' if cls not in EXEMPT_CHROME_CLASSES
+                       else 'is on the chrome exemption with no recorded reason in '
+                            'EXEMPT_CHROME_DECISIONS, which is what makes the '
+                            'exemption a decision instead of a parking space')
+                offenders.append(
+                    f'{label}: {member} styles {cls}, which no widget in the '
+                    f'constructed tree is, and {why}')
+
+        self.assertEqual(
+            [], offenders,
+            'the sheet styles a class nobody can construct and nobody recorded a '
+            'decision for. Give it a wearer, delete the rule, or add the class to '
+            'tests/test_theme_qss.py::EXEMPT_CHROME_CLASSES *with* a reason in '
+            'EXEMPT_CHROME_DECISIONS -- both lists are pinned by name, so that is '
+            f'a reviewed edit: {offenders}',
+        )
+
+    def test_the_zero_wearer_chrome_exemptions_are_the_recorded_three(self):
+        """Exactly which exempted classes the offscreen tree cannot produce.
+
+        The positive guard above tolerates an exemption; this one names its cost,
+        which is the part that would otherwise be lost. Two of the three are the
+        unresolved macOS question of spec §8 (batch 2 deleted ``menuBar()``; whether
+        Qt still synthesises an application menu and its ``QMenu`` popups on macOS
+        cannot be answered from this Windows host), and the third is Qt's on-demand
+        tip popup. So the set is deliberately *not* derived from the exemption list
+        -- it is written out, because a name sliding from "unworn but decided" to
+        "worn again, nobody noticed" is the same silence this whole finding is about,
+        only in the other direction: the real-machine check either lifts one of these
+        out of the tuple on purpose or the suite says the tree changed under it.
+        """
+        classes = self._live_classes()
+
+        for label, qss in self._sheets():
+            bare = {cls for _member, cls in _bare_class_selectors(qss)}
+            with self.subTest(theme=label):
+                self.assertEqual(
+                    ['QMenu', 'QMenuBar', 'QToolTip'], sorted(bare - classes),
+                    'the set of bare chrome classes with no wearer moved. Every '
+                    'name that left it needs the rule it now wears; every name that '
+                    'joined it needs a reason in EXEMPT_CHROME_DECISIONS and a '
+                    'decision about whether it is chrome or dead paint',
+                )
 
     def test_the_dead_family_is_still_the_dead_family(self):
         """No listed selector may quietly regain a wearer.

@@ -38,6 +38,18 @@ marker scan is satisfied by the very style the file it guards is written in, and
 retired key looked up across the same line break resurrected deleted copy with the
 suite green (batch-2 review findings 1 and 2).
 
+The progress guard asks about the **whitelist**, not the vocabulary
+(:func:`_progressable_action_ids`): the rail lets only ``PROGRESSABLE_IDS`` -- the
+two library scans -- into running state, and it raises ``ValueError`` for anything
+else. Because the presenter calls it from a Qt slot, that exception is not a
+traceback the user can walk away from: Qt calls ``qFatal`` and the process dies. So
+``set_action_progress('appearance', True)`` is not a spinner on the wrong button, it
+is a crash-on-touch, and the guard that admitted it (the batch-2 final review's
+finding 2) was checking the wrong set -- all seven ids instead of the two allowed
+ones. It reads the rail's own declaration, resolves the ``ACTION_*`` symbols the
+presenter actually writes as well as string literals, and reports an unresolvable
+whitelist instead of trusting an empty one.
+
 Run with an offscreen Qt platform:
     QT_QPA_PLATFORM=offscreen python -m unittest tests.test_presenter_status -v
 """
@@ -133,13 +145,85 @@ def _lookup_key(node: ast.Call) -> str:
     return ''
 
 
-def _rail_action_ids() -> tuple:
-    """The ids ``set_action_progress`` may address, read from the rail itself."""
-    try:
-        from view.widgets.action_rail import ACTION_IDS
-    except ImportError:  # pragma: no cover - environment without PyQt6
-        return ()
-    return tuple(ACTION_IDS)
+_RAIL_SOURCE = ROOT / 'view' / 'widgets' / 'action_rail.py'
+
+
+def _rail_declared_names() -> tuple:
+    """``(literals, {tuple_name: ids})`` declared at the top of the rail module.
+
+    Read by **parsing**, not importing: this file guards *source*, and importing
+    the rail to learn a fact written in plain text would tie the non-Qt half of the
+    suite to PyQt6 for nothing. ``literals`` maps a constant name to its string
+    value (``ACTION_REFRESH -> 'refresh'``); ``tuples`` resolves the id groups whose
+    elements are those names (``PROGRESSABLE_IDS -> ('refresh', 'refresh_all')``).
+    ``ACTION_IDS`` and ``PROGRESSABLE_IDS`` are annotated assignments, so both
+    ``Assign`` and ``AnnAssign`` are read -- missing the latter is how a guard ends
+    up with an empty whitelist it silently ignores.
+    """
+    tree = ast.parse(_RAIL_SOURCE.read_text(encoding='utf-8'))
+    literals, groups = {}, {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if len(targets) != 1 or not isinstance(targets[0], ast.Name) or value is None:
+            continue
+        name = targets[0].id
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            literals[name] = value.value
+        elif isinstance(value, (ast.Tuple, ast.List)) and value.elts:
+            ids = [literals.get(elts.id) if isinstance(elts, ast.Name) else None
+                   for elts in value.elts]
+            if all(identifier is not None for identifier in ids):
+                groups[name] = tuple(ids)
+    return literals, groups
+
+
+def _progressable_action_ids() -> tuple:
+    """The ids ``set_action_progress`` may address -- ``PROGRESSABLE_IDS``, not ``ACTION_IDS``.
+
+    Batch-2 final-review finding 2: this guard asked the wrong question. "Is this a
+    rail action?" is *not* the rule -- spec §5's Task 8 ruling is that only the two
+    library scans can show progress, and the whitelist lives in the rail itself as
+    :data:`view.widgets.action_rail.PROGRESSABLE_IDS`, enforced in
+    :meth:`ActionRail.set_progress` by ``raise ValueError``. The presenter reaches
+    that method from a Qt slot, so the exception does not surface as a traceback:
+    Qt prints it and calls ``qFatal``, and **the process dies**. A guard that
+    admitted ``set_action_progress('appearance', True)`` therefore admitted a
+    crash-on-touch, which is the one thing a source guard has to be worth.
+    """
+    return _rail_declared_names()[1].get('PROGRESSABLE_IDS', ())
+
+
+def _known_action_ids() -> tuple:
+    """Every rail id, for the message that distinguishes a typo from a refusal."""
+    return _rail_declared_names()[1].get('ACTION_IDS', ())
+
+
+def _progress_target(node) -> tuple:
+    """``(shape, id_value)`` for the first argument of a progress call.
+
+    Three shapes, because the presenter writes the id as a *symbol*
+    (``ACTION_REFRESH``) and a guard that only understands string literals checks
+    four call sites it cannot see. A name the rail declares is resolved to its
+    value, so ``ACTION_APPEARANCE`` fails exactly like ``'appearance'`` would; a
+    name it does not (a variable, an attribute of something else, any computed
+    expression) is ``'opaque'`` -- which this module has always called a finding
+    ("a computed value means a call site the ruling never covered"), the old code
+    simply waved ``Name``/``Attribute`` through on the way to enforcing it.
+    """
+    literals = _rail_declared_names()[0]
+    if isinstance(node, ast.Constant):
+        return ('literal', node.value if isinstance(node.value, str) else None)
+    names = ([node.id] if isinstance(node, ast.Name)
+             else [node.attr] if isinstance(node, ast.Attribute) else [])
+    for name in names:
+        if name in literals:
+            return ('rail constant', literals[name])
+    return ('opaque', None)
 
 
 def _show_toast_violations(node: ast.Call, where: str) -> list:
@@ -166,13 +250,20 @@ def _show_toast_violations(node: ast.Call, where: str) -> list:
 
 
 def _progress_violations(node: ast.Call, where: str) -> list:
-    """``set_action_progress`` is a state channel: ``(action id, bool)``, nothing else.
+    """``set_action_progress`` is a state channel: ``(progressable id, bool)``.
 
     spec §5's progress row produces **no text**, so every shape that smuggles some
     in -- a third argument, a keyword, a message where the bool belongs -- is one
     defect: a spinner that also carries a sentence. And ``running`` is reported at
     the start of a ``try`` and cleared in its ``finally``, so a computed value
     rather than a literal means a call site the ruling never covered.
+
+    The id half of that check asks the *whitelist* question, not the *vocabulary*
+    question: ``PROGRESSABLE_IDS`` (the two library scans), not ``ACTION_IDS`` (all
+    seven). See :func:`_progressable_action_ids` for what the difference costs -- a
+    known id with no running state is a ``ValueError`` raised inside a Qt slot, and
+    Qt answers that with ``qFatal``, so the defect is a dead process rather than a
+    spinner that never spins.
     """
     if len(node.args) != 2 or node.keywords:
         return [('progress-text',
@@ -182,15 +273,42 @@ def _progress_violations(node: ast.Call, where: str) -> list:
                  f'{len(node.keywords)} keyword(s)]')]
     action, running = node.args
     failures = []
-    ids = _rail_action_ids()
-    if isinstance(action, ast.Constant):
-        if not isinstance(action.value, str) or (ids and action.value not in ids):
-            failures.append(
-                f'{where}: {action.value!r} is not a rail action id')
-    elif not isinstance(action, (ast.Name, ast.Attribute)):
+    progressable = _progressable_action_ids()
+    known = _known_action_ids()
+    shape, action_id = _progress_target(action)
+    if not progressable:
+        # An unresolvable whitelist reads as "no restriction", which is the failure
+        # mode this whole finding is: a guard that admits everything is a guard that
+        # is green. Say so at every call site rather than trust the empty tuple.
         failures.append(
-            f'{where}: the progress channel is addressed by {type(action).__name__}, '
-            'not by one of the rail\'s ACTION_* ids')
+            f'{where}: PROGRESSABLE_IDS could not be read from '
+            'view/widgets/action_rail.py -- a whitelist that resolves to nothing '
+            'admits every progress call, so the empty read is reported instead of '
+            'believed')
+    elif shape == 'opaque':
+        failures.append(
+            f'{where}: the progress channel is addressed by {ast.unparse(action)}, '
+            'which is neither one of the rail\'s ACTION_* ids nor a string literal '
+            f'-- a computed id is a call site this ruling cannot check, and the rail '
+            f'raises on the wrong one (only {", ".join(progressable)} are '
+            'progressable)')
+    elif action_id is None:
+        failures.append(
+            f'{where}: the progress id must be a string, got '
+            f'{ast.unparse(action)}')
+    elif action_id not in progressable:
+        verdict = (
+            'is not a rail action at all -- a typo'
+            if action_id not in known else
+            'is a rail action with **no running state**: progress is the library '
+            'scan made visible, so a spinner here promises work this button does '
+            'not do (spec §5)')
+        failures.append(
+            f'{where}: set_action_progress({action_id!r}) is refused by the rail -- '
+            f'it {verdict}. Only {", ".join(progressable)} may enter progress, and '
+            f'{action_id!r} raises ValueError inside the Qt slot that called it, '
+            'which Qt turns into qFatal: the process dies. Fix the call site; '
+            'widening PROGRESSABLE_IDS is a spec decision, not a test edit')
     if not (isinstance(running, ast.Constant)
             and isinstance(running.value, bool)):
         failures.append(
@@ -243,7 +361,15 @@ def status_channel_violations(*paths: Path) -> list:
     """
     violations = []
     for path in paths:
-        relative = path.relative_to(ROOT)
+        try:
+            relative = path.relative_to(ROOT)
+        except ValueError:
+            # A source the scanner was *handed* by a test of the scanner itself
+            # (``PresenterStatusTest._scan`` writes throwaway modules to a temp
+            # directory). The guard has to be testable with code the repository does
+            # not contain -- otherwise the only way to prove it bites is to commit
+            # the bad call, which for the progress channel means committing a crash.
+            relative = path
         tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -896,6 +1022,113 @@ class PresenterStatusTest(PresenterHarness, unittest.TestCase):
             'user-visible status copy must come from a key lookup that substitutes '
             'its parameters, and the progress channel must stay (id, bool)',
         )
+
+    def _scan(self, *statements: str) -> list:
+        """Run the copy/progress source guard over a throwaway module.
+
+        The only honest way to test a guard whose subject is a crash: the progress
+        defect this guards against kills the process from inside a Qt slot, so
+        "prove it bites" cannot mean "run it". The statements are written into a
+        temp file and read back by the same AST pass the real presenter is scanned
+        with, so what is under test is the guard, not a copy of its logic.
+        """
+        import shutil
+        import tempfile
+
+        tmp = Path(tempfile.mkdtemp(prefix='status-guard-'))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = tmp / 'synthetic_presenter.py'
+        path.write_text(
+            'class Presenter:\n    def _run(self):\n'
+            + ''.join(f'        {line}\n' for line in statements),
+            encoding='utf-8')
+        return _source_guard([path], COPY_CONCERNS)
+
+    def test_the_progress_guard_refuses_an_id_the_rail_will_refuse(self):
+        """Final-review finding 2, permanently: the whitelist, not the vocabulary.
+
+        Every one of these calls is a ``ValueError`` inside a Qt slot at runtime,
+        and Qt's answer to an unhandled exception in a slot is ``qFatal`` -- the
+        process ends. The first three are the shapes that used to pass: ``'appearance'``
+        because it *is* a rail action, ``ACTION_APPEARANCE`` for the same reason
+        written as the symbol the presenter actually uses (the old check only looked
+        at string literals, so it saw nothing to check), and a bare variable because
+        ``Name`` was waved through on the way to rejecting computed values. The last
+        two are the legal calls, kept here so the guard is shown not to be a blanket
+        refusal -- a guard that fails everything is deleted, not trusted.
+        """
+        refused = (
+            "self._view.set_action_progress('appearance', True)",
+            'self._view.set_action_progress(ACTION_APPEARANCE, True)',
+            "self._view.set_action_progress('library', True)",
+            "self._view.set_action_progress('nonsense', True)",
+            'self._view.set_action_progress(action_id, True)',
+            "self._view.set_action_progress('refresh', 'working')",
+        )
+        for statement in refused:
+            with self.subTest(statement=statement):
+                self.assertTrue(
+                    self._scan(statement),
+                    f'{statement} reaches the rail and aborts the process, but the '
+                    'source guard let it through')
+
+        allowed = (
+            "self._view.set_action_progress('refresh', True)",
+            "self._view.set_action_progress('refresh_all', False)",
+            'self._view.set_action_progress(ACTION_REFRESH, True)',
+            'self._view.set_action_progress(ACTION_REFRESH_ALL, False)',
+        )
+        for statement in allowed:
+            with self.subTest(statement=statement):
+                self.assertEqual(
+                    [], self._scan(statement),
+                    f'{statement} is a legal progress call and the guard has to say '
+                    'so, or the next person disables it')
+
+    def test_the_progress_whitelist_is_read_not_assumed(self):
+        """The guard's input is the rail's own declaration, and empty is a failure.
+
+        Two halves. First: ``PROGRESSABLE_IDS`` is read from the rail's source and
+        must still name exactly the two library scans -- if the rail's whitelist is
+        ever re-shaped (a computed tuple, a different name), the resolver stops
+        resolving, and that is red here rather than a silently unguarded channel.
+        Second: the empty read is *reported* at every call site -- see
+        :func:`_progress_violations` -- because a whitelist that resolves to nothing
+        admits everything, which is this whole finding wearing a different hat.
+        """
+        literals, groups = _rail_declared_names()
+        self.assertEqual(
+            ('refresh', 'refresh_all'), _progressable_action_ids(),
+            f'PROGRESSABLE_IDS resolved to {_progressable_action_ids()!r} out of '
+            f'{sorted(groups)} -- the guard and the rail now disagree about what may '
+            'spin, and the rail is the one that raises')
+        self.assertEqual(
+            7, len(_known_action_ids()),
+            'the rail declares a different number of action ids than spec §6 fixes '
+            '(7); the guard separates "typo" from "no running state" using this, so '
+            'a broken read degrades every message')
+        self.assertEqual(
+            {'ACTION_REFRESH': 'refresh', 'ACTION_REFRESH_ALL': 'refresh_all',
+             'ACTION_APPEARANCE': 'appearance', 'ACTION_ABOUT': 'about',
+             'ACTION_LIBRARY': 'library', 'ACTION_OPEN_FILE': 'open_file',
+             'ACTION_OPEN_FOLDER': 'open_folder'},
+            {name: value for name, value in literals.items()
+             if name.startswith('ACTION_')},
+            'the ACTION_* symbols the presenter writes did not resolve to the ids '
+            'the rail compares against -- the symbol-shaped call sites are the ones '
+            'this guard used to be blind to')
+
+        # And the loud-empty branch, by taking the whitelist away.
+        with mock.patch(
+                'tests.test_presenter_status._progressable_action_ids',
+                lambda: ()):
+            violations = self._scan(
+                "self._view.set_action_progress('refresh', True)")
+        self.assertTrue(
+            violations,
+            'an unresolvable PROGRESSABLE_IDS must fail every progress call site: '
+            'a guard whose whitelist reads empty is a guard that admits everything, '
+            'and it must not be green while doing that')
 
     def test_retired_keys_have_no_lookup_left(self):
         """The deleted copy must not be resurrected by another call site.

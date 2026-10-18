@@ -31,21 +31,73 @@ SCOPED_NEEDING_CLASSES = ('QPushButton', 'QSlider', 'QListView', 'QLabel')
 # chrome that stays bare *by decision* -- the brief's mapping table mandates
 # these rules bare. This is NOT a single-instance claim: ``QMenu``, ``QScrollBar``
 # and ``QGroupBox`` recur many times per window and are still named globally by
-# the table (per-widget scoping would be noise and is not what the brief asks).
-# Adding a class here is a review-visible decision, not a blind spot.
-# ``QMainWindow`` is the seventh entry: the ruling named six, and the gate then
-# caught the bare ``QMainWindow`` of the table's first row (brief line 33, which
-# scoped the window together with the left panel). It belongs here rather than in
-# the blind spot, so it is listed and explained.
+# the table (per-widget scoping would be noise and not what the brief asks).
+# Adding a class here is a review-visible decision, not a blind spot, and
+# :meth:`BuildQssTest.test_the_chrome_exemption_contents_are_pinned` pins its
+# contents name by name.
+# ``QMainWindow`` is the seventh entry of the original ruling: the ruling named
+# six, and the gate then caught the bare ``QMainWindow`` of the table's first row
+# (brief line 33, which scoped the window together with the left panel). It
+# belongs here rather than in the blind spot, so it is listed and explained.
+# ``QSplitter`` is the name that has *left* the list: batch-2 Task 7 replaced
+# ``QSplitter[左栏 | 列表]`` with ``QHBoxLayout[ActionRail | 列表]``, so its two
+# ``::handle`` rules had zero wearers, and the batch-2 final review deleted them.
+# They survived the sheet -> tree guard only because that guard inspected
+# ``#name``/``[prop="value"]`` tokens and let bare classes through unexamined; the
+# guard now reads them too (see
+# ``tests/test_view_structure.py::StyleSheetSelectorsHaveWearersTest``), which is
+# what makes a name here need a *reason* and not merely a line in a tuple: each is
+# recorded in :data:`EXEMPT_CHROME_DECISIONS`, and the three that genuinely have no
+# wearer are pinned against the live tree.
 EXEMPT_CHROME_CLASSES = (
     'QMenuBar',
     'QMenu',
     'QScrollBar',
     'QToolTip',
-    'QSplitter',
     'QGroupBox',
     'QMainWindow',
 )
+
+#: The one reason each exempted chrome name may stay bare, and -- for the three
+#: names no constructed tree can produce -- may stay without a wearer.
+#:
+#: This is the record the sheet -> tree guard reads bare-class selectors against.
+#: Batch-2 final-review finding 1 was that the exemption here was a *syntax* claim
+#: ("chrome may be global") with no *existence* claim behind it, which is exactly
+#: how two ``QSplitter::handle`` rules sat emitted, un-worn and unreported. The
+#: three zero-wearer names stay because Qt builds them outside the widget tree,
+#: not because anybody checked:
+#:
+#: * ``QMenuBar`` / ``QMenu`` -- spec §8: batch 2 deleted ``menuBar()``, but
+#:   whether Qt still synthesises an application menu (and the context menus these
+#:   rules paint) on macOS is **unverified on this Windows host**. Deleting them as
+#:   dead paint would answer that question by accident, so they stay as a recorded
+#:   decision, pinned as zero-wearer in ``tests/test_view_structure.py``.
+#: * ``QToolTip`` -- Qt instantiates the tip on demand as a top-level popup, so it
+#:   is never a descendant of the window or the dialog and can never be worn.
+#:
+#: The other three *are* worn by the live tree (the dialog's group box, every
+#: viewport's scroll bars, the window itself), so their exemption buys them only
+#: freedom from ``#objectName`` scoping, not freedom from having a wearer.
+EXEMPT_CHROME_DECISIONS = {
+    'QMenuBar': 'spec §8 macOS: menuBar() was deleted by Task 7 but Qt may still '
+                'synthesise an application menu; unverified on this host, so the '
+                'rule is kept as a recorded decision rather than deleted as dead '
+                'paint',
+    'QMenu': 'spec §8 macOS, the same unresolved question as QMenuBar -- and '
+             'context menus are created on demand, so no constructed tree holds '
+             'one',
+    'QToolTip': 'Qt popup built on demand as a top-level window: never a '
+                'descendant of MainWindow or the dialog, so it can have no wearer '
+                'in the tree whatever the platform',
+    'QScrollBar': 'worn: every scroll-able viewport in the tree owns one (the '
+                  'playlist and the sidebar list), and the mapping table mandates '
+                  'the family bare',
+    'QGroupBox': 'worn: the appearance dialog groups its controls, and grouping is '
+                 'chrome rather than a per-widget style',
+    'QMainWindow': 'worn: the window itself, and the only rule carrying its '
+                   'window_bg fill (table row 1)',
+}
 
 # Bare-widget gate, line-anchored: a scoped-needing class at the start of a
 # selector that is NOT immediately followed by an id (``#``), a property
@@ -527,6 +579,38 @@ class BuildQssTest(unittest.TestCase):
         self.assertEqual(
             set(), bare_classes & set(SCOPED_NEEDING_CLASSES),
             'a per-instance class was added to the chrome exemption',
+        )
+
+    def test_the_chrome_exemption_contents_are_pinned(self):
+        """No name joins the bare-chrome list -- or keeps a rule on it -- quietly.
+
+        Batch-2 final-review finding 1 made this exemption load-bearing in a new
+        way: the sheet -> tree guard now rejects a bare-class rule whose class has
+        no wearer unless the class is listed here, so the tuple is no longer only a
+        syntax allowance but also an existence claim. A literal pin is what keeps it
+        that way -- an edit that adds ``QStatusBar``, or restores ``QSplitter`` after
+        seeing the splitter rule fail, has to change a name written out here as well
+        as the reason recorded beside it, and both edits are review-visible.
+        """
+        self.assertEqual(
+            ('QGroupBox', 'QMainWindow', 'QMenu', 'QMenuBar', 'QScrollBar',
+             'QToolTip'),
+            tuple(sorted(EXEMPT_CHROME_CLASSES)),
+            'the bare-chrome exemption changed: every name here needs a wearer in '
+            'the live tree or a macOS/on-demand reason in EXEMPT_CHROME_DECISIONS, '
+            'and adding or restoring one is a reviewed decision',
+        )
+        self.assertNotIn(
+            'QSplitter', EXEMPT_CHROME_CLASSES,
+            'QSplitter left the exemption with the splitter (batch-2 Task 7): a '
+            'bare rule nobody can wear is dead paint, not chrome',
+        )
+        # One reason per name, and no reason without a rule: an entry that outlives
+        # its exemption would let the next bare class in on an inherited argument.
+        self.assertEqual(
+            set(EXEMPT_CHROME_CLASSES), set(EXEMPT_CHROME_DECISIONS),
+            'EXEMPT_CHROME_CLASSES and EXEMPT_CHROME_DECISIONS disagree -- the '
+            'list and its justifications are one record, not two',
         )
 
     def test_dialog_family_is_ancestor_scoped(self):
