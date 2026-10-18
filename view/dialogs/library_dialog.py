@@ -141,11 +141,15 @@ class LibraryManagementDialog(QDialog):
         library_path = selected.data(Qt.ItemDataRole.UserRole)
         library_name = library_path.split('/')[-1] if '/' in library_path else library_path.split('\\')[-1]
 
-        # Confirm deletion
+        # Confirm deletion. The path goes to ``i18n.dialog`` as a parameter instead
+        # of being ``.format()``\\ ed over the resolved copy: batch 1/2's
+        # single-brace substitution makes the key fill itself, and hand-formatting
+        # a value that may itself contain ``{`` raises KeyError here (ledger,
+        # Task 1 hand-off).
         reply = QMessageBox.question(
             self,
             i18n.dialog('dialog.title.confirm'),
-            i18n.dialog('dialog.confirm_delete_media_lib').format(path=library_path),
+            i18n.dialog('dialog.confirm_delete_media_lib', path=library_path),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )

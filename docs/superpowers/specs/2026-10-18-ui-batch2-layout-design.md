@@ -42,9 +42,11 @@
 | 单元 | 单一职责 | 对外接口 |
 |---|---|---|
 | `view/widgets/action_rail.py` → `ActionRail` | 56px 图标栏，承载原菜单全部动作与曲库入口 | `set_progress(action_id: str, running: bool)`、信号 `library_panel_requested`、`action_triggered(action_id: str)` |
-| `view/widgets/library_sidebar.py` → `LibrarySidebar` | 浮层曲库面板。**只负责选库与添加库**——刷新与媒体库管理统一归图标栏，不在两处提供同一动作 | `set_libraries(list)`、`set_current(path)`、`show_panel()`/`hide_panel()`/`toggle()`；信号 `library_selected(str)`、`add_library_requested(str)` |
+| `view/widgets/library_sidebar.py` → `LibrarySidebar` | 浮层曲库面板。**列表负责选库，页脚负责库行政（添加 + 管理）**——刷新与刷新全部仍归图标栏，不在两处提供同一动作 | `set_libraries(list)`、`set_current(path)`、`show_panel()`/`hide_panel()`/`toggle()`；信号 `library_selected(str)`、`add_library_requested(str)`、`manage_requested()` |
 | `view/widgets/now_playing_strip.py` → `NowPlayingStrip` | 控制条左端的封面 + 曲名/艺人单行 | `update_track_info(title, artist, album)`、`update_album_art(bytes)`、`clear()` |
 | `view/widgets/toast.py` → `Toast` | 限时反馈浮层 | `show_toast(message: str, msec: int = 2500)`；同时最多一条，后到者替换 |
+
+> **§3.2 订正（批次 2 Task 8）**：本节原文写「只负责选库与添加库——媒体库管理统一归图标栏」，而 §6 把图标栏钉死为七项、七项里没有「管理媒体库」。两条合起来后，媒体库管理**没有归属**：换壳删掉菜单后 `manage_libraries_requested` 无发射者（presenter 那条连接悬空），删除库整条路径端到端不可达。裁定：页脚同时承载「添加媒体库」与「管理媒体库」——二者都是库行政，且用户想到「库」时就在这个面板里；图标栏仍是七项。这是消除规格自相矛盾，**不是扩范围**。
 
 ### 3.3 改造
 
@@ -63,7 +65,7 @@
 | `update_track_info` / `update_album_art` / `clear_now_playing` | `MainWindow` 转发到 `NowPlayingStrip` | 否 |
 | `set_libraries` / `set_current_library` | `MainWindow` 转发到 `LibrarySidebar` | 否 |
 | `library_selected` 信号 | 由 `LibrarySidebar` 发，`MainWindow` 转发 | 否 |
-| `manage_libraries_requested` / `manage_appearance_requested` | 由 `ActionRail` 的 `action_triggered` 分流 | 是（连接点） |
+| `manage_libraries_requested` / `manage_appearance_requested` | 外观走 `ActionRail` 的 `action_triggered`；媒体库管理走 `LibrarySidebar` 的 `manage_requested`（见 §3.2 订正） | 是（连接点） |
 | `set_status_message(msg)` | **移除**，拆成 §5 三类 | 是（全部调用点） |
 | `NowPlayingPanel.art_clicked` | **删除**（全仓无消费方） | 否 |
 | `MainWindow.set_background_image` / `set_overlay_alpha` | 不变 | 否 |
@@ -74,9 +76,12 @@
 
 | 类别 | 现有文案 | 归属 |
 |---|---|---|
-| 进度态 | `status.refreshing`、`status.refresh_all` | 发起它的图标栏按钮进入进行态（禁用 + 进行态图标），完成即恢复。不产生文本 |
-| 结果反馈 | `Refreshed {n} files from {k} libraries`、`Switched to library: {path}`、`status.library_removed`、`status.background_set/cleared` | `Toast`，2.5s 淡出。文案改为走 i18n 并带参数 |
-| 错误 | `status.theme_save_failed`、`warning.background_not_found` | 保持 `QMessageBox` |
+| 进度态 | `status.refreshing`、`status.refresh_all` | 发起它的图标栏按钮进入进行态（禁用 + 进行态图标），完成即恢复。不产生文本。**只有这两个动作可以进入进行态**（Task 8 裁定：白名单落在图标栏自身，非白名单 id 抛 `ValueError`，不依赖调用方自觉） |
+| 结果反馈 | `Refreshed {n} files from {k} libraries`、`Switched to library: {path}`、`status.library_removed`、`status.background_set/cleared`、`status.theme_save_failed`、`status.library_refreshed`、`status.completed` | `Toast`，2.5s 淡出。文案改为走 i18n 并带参数 |
+| 与控件重复的文本 | `status.playing`、`status.paused`、`Now playing: {title}` | **删除**：传输按钮已给出播放/暂停态，`NowPlayingStrip` 已给出曲目名；保留它们等于用第三种控件重复同一事实，且违反判据 3 |
+| 错误 | `warning.background_not_found` | 保持 `QMessageBox` |
+
+> **§5 订正（批次 2 Task 8 Step 1）**：本表原把 `status.theme_save_failed` 归入「错误 → 保持 QMessageBox」，但它**现状就不是弹窗**而是一行状态文本；把它升成 `QMessageBox` 等于把一次写盘失败变成模态打断。裁定：归入「结果反馈」走 toast。这是分类订正，不是新增范围。
 
 结果反馈的两条硬编码英文（`main_presenter.py:248`、`:270`）在本批次一并接上 i18n——批次 1 的字面量扫描只禁了特定字符串，没覆盖这类 f-string。
 
@@ -84,7 +89,7 @@
 
 - **零媒体库首启**：图标栏库图标仍在；点开浮层显示空态 + 「添加媒体库」入口；列表沿用现有空态。
 - **浮层尺寸**：宽 `min(SIDEBAR_WIDTH, 窗口宽 − RAIL_WIDTH)`；820×520 下仍浮在列表之上、内部可滚、不出现水平滚动条。
-- **图标栏不滚动**：动作固定 7 项（库、打开文件、打开文件夹、刷新当前库、刷新全部、外观设置、关于）。56×~40 共约 280px，最小窗高 500 放得下。「退出」不上栏。
+- **图标栏不滚动**：动作固定 7 项（库、打开文件、打开文件夹、刷新当前库、刷新全部、外观设置、关于）。56×~40 共约 280px，最小窗高 500 放得下。「退出」不上栏；「管理媒体库」同样不上栏——第八项按钮不在本批次的形态里，它归浮层页脚（§3.2 订正）。
 - **可发现性是硬约束**：V2 之下 tooltip 是唯一文字线索，缺 tooltip 视为缺陷而非瑕疵。
 - **刷新重入**：进行态期间该按钮禁用；「刷新全部」进行时「刷新当前库」同样禁用——两者共用库加载路径。
 - **快捷键**：`Ctrl+O`、`Ctrl+Q` 的 `QAction` 必须继续 `self.addAction()` 挂在主窗口上，菜单不可见不影响生效；有回归测试守。

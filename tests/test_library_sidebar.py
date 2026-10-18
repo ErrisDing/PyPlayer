@@ -88,23 +88,58 @@ def _push_rows(sidebar):
     return sidebar.findChildren(QPushButton, 'libraryRow')
 
 
+def reap_deleted_rows():
+    """Deliver the ``deleteLater`` queue now.
+
+    ``_rebuild_rows`` hands the old rows to ``deleteLater``, and a deferred delete
+    is only processed when an event *loop* is entered -- ``processEvents()`` leaves
+    them in the object tree, where ``findChildren`` still returns them (as plain
+    ``QPushButton`` wrappers, their ``LibraryRow`` Python side already gone). A test
+    that asserts a row count after a rebuild has to flush this way or it counts the
+    rows the rebuild removed.
+    """
+    from PyQt6.QtCore import QCoreApplication, QEvent
+
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 def library_rows(sidebar):
     """The selectable library rows.
 
-    The footer add entry deliberately shares ``#libraryRow`` (a fifth styled
-    objectName is outside what the brief lists), and the two are told apart by
-    the ``library_path`` dynamic property the widget sets -- the same key
-    ``LibrarySelector`` put on its chips.
+    The two footer entries deliberately share ``#libraryRow`` (a fifth styled
+    objectName is outside what the brief lists), and rows and footer are told
+    apart by the ``library_path`` dynamic property the widget sets: a footer entry
+    selects no library, so it carries none.
     """
     return [row for row in _push_rows(sidebar)
             if row.property('library_path') is not None]
 
 
+def _footer_row(sidebar, label: str):
+    """The footer entry whose *un-elided* text is ``label``, or ``None``.
+
+    Matched on ``full_name``, not ``text``: a row elides against its own width, so
+    the visible string is not an identity. ``library_path`` absence alone cannot
+    tell the two footer entries apart since spec §3.2's Task 8 correction gave the
+    panel a second administration entry.
+    """
+    rows = [row for row in _push_rows(sidebar)
+            if row.property('library_path') is None and row.full_name == label]
+    return rows[0] if len(rows) == 1 else None
+
+
 def add_row(sidebar):
     """The panel's footer add entry, or ``None`` if the widget lost it."""
-    rows = [row for row in _push_rows(sidebar)
-            if row.property('library_path') is None]
-    return rows[0] if rows else None
+    from core import i18n
+
+    return _footer_row(sidebar, i18n.get('sidebar.add'))
+
+
+def manage_row(sidebar):
+    """The panel's footer 管理媒体库 entry, or ``None`` if the widget lost it."""
+    from core import i18n
+
+    return _footer_row(sidebar, i18n.get('sidebar.manage'))
 
 
 def _content_area_class():
@@ -767,6 +802,98 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         with mock.patch.object(QFileDialog, 'getExistingDirectory', return_value=''):
             add.click()
         self.assertEqual([], emitted, 'a cancelled chooser still emitted a path')
+
+    def test_manage_entry_emits_and_closes(self):
+        """The footer's 管理媒体库 entry: the only route to the management dialog.
+
+        spec §3.2's Task 8 correction gave the panel both administration entries,
+        because §6 freezes the rail at seven actions and management is not one of
+        them -- so if this row emitted nothing, adding *and* removing libraries
+        would both be unreachable from the shipped shell.
+
+        It also has to close the panel: the dialog the presenter opens is modal and
+        this panel floats over the list, and a modal behind a floating overlay is
+        the "看不见在放哪首" failure spec §11 lists.
+        """
+        sidebar, _manager, _parent, _content = self._sidebar()
+        sidebar.set_libraries(_libraries(2))
+        sidebar.show_panel()
+        self.app.processEvents()
+
+        emitted = []
+        sidebar.manage_requested.connect(lambda: emitted.append(True))
+        manage = manage_row(sidebar)
+        self.assertIsNotNone(manage, 'the footer lost its 管理媒体库 entry')
+        self.assertIsNone(manage.path,
+                          'the management entry selects no library: it is not a row')
+
+        manage.click()
+
+        self.assertEqual([True], emitted,
+                         'the 管理媒体库 entry emitted nothing: the dialog is '
+                         'unreachable from the panel')
+        self.assertFalse(sidebar.is_panel_open(),
+                         'the panel is still floating behind a modal dialog')
+
+    def test_the_two_footer_entries_are_independent(self):
+        """Clicking one administration entry must not fire the other's route."""
+        from unittest import mock
+
+        from PyQt6.QtWidgets import QFileDialog
+
+        sidebar, _manager, _parent, _content = self._sidebar()
+        sidebar.set_libraries(_libraries(1))
+        sidebar.show_panel()
+        self.app.processEvents()
+
+        add = add_row(sidebar)
+        manage = manage_row(sidebar)
+        self.assertIsNotNone(add)
+        self.assertIsNotNone(manage)
+        self.assertNotEqual(add.full_name, manage.full_name,
+                            'both entries render, so both need distinct copy')
+
+        added = []
+        managed = []
+        sidebar.add_library_requested.connect(added.append)
+        sidebar.manage_requested.connect(lambda: managed.append(True))
+
+        with mock.patch.object(QFileDialog, 'getExistingDirectory',
+                               return_value='/media/second'):
+            add.click()
+        self.assertEqual(['/media/second'], added)
+        self.assertEqual([], managed,
+                         'the add entry opened the management dialog as well')
+
+        sidebar.show_panel()
+        manage.click()
+        self.assertEqual(['/media/second'], added,
+                         'the management entry went through the directory chooser')
+        self.assertEqual([True], managed)
+
+    def test_both_footer_entries_survive_an_empty_list(self):
+        """spec §6 零媒体库首启: the empty state must not swallow the entries.
+
+        With no library at all, the footer rows are the *only* way in -- the empty
+        label sits in the scroll area above them, so a rebuild that hid them would
+        strand a first-launch user outside the panel.
+        """
+        sidebar, _manager, _parent, _content = self._sidebar()
+        sidebar.set_libraries(_libraries(3))
+        sidebar.set_libraries([])
+        sidebar.show_panel()
+        # The three dropped rows are ``deleteLater`` candidates, not gone: until the
+        # deferred deletes are delivered they answer ``findChildren`` and the empty
+        # state would read as a list of three libraries.
+        reap_deleted_rows()
+        self.app.processEvents()
+
+        for row in (add_row(sidebar), manage_row(sidebar)):
+            self.assertIsNotNone(row, 'the footer entry vanished with the libraries')
+            self.assertFalse(row.isHidden())
+            self.assertTrue(row.isEnabled())
+            self.assertTrue(row.text(), 'an unlabelled footer row is not discoverable')
+        self.assertEqual([], library_rows(sidebar))
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')

@@ -3,13 +3,20 @@
 PyPlayer Library Sidebar
 
 The floating media-library panel of batch 2 (spec §3.2, §6, §11): the rail's
-library button opens it, and it answers exactly two questions -- *which* library
-and *add one*. Refresh, refresh-all, appearance and about stay on the icon rail,
-so the same action never exists in two places.
+library button opens it, and it answers the three *library* questions -- *which*
+library, *add one*, and *manage the set*. Refresh and refresh-all stay on the icon
+rail, so the same action never exists in two places.
+
+Why the footer carries both administration entries (spec §3.2's Task 8
+correction): §3.2 originally sent 管理媒体库 to the rail while §6 froze the rail at
+exactly seven actions and management was not one of them, so after the menu bar
+went away the management dialog -- and with it library *removal* -- had no route
+from the shipped UI at all. Two library-administration verbs belong on the panel
+that a user opens when thinking about libraries; the column stays at seven.
 
 Why a panel and not a column: audit item B3 was the old chip row overflowing its
-row as libraries accumulated (``LibrarySelector`` laid buttons out in a
-``QHBoxLayout`` and pushed them left with an ``addStretch``). The panel owns a
+row as libraries accumulated -- a horizontal button row with an ``addStretch``
+pushing it left. The panel owns a
 vertical list inside a ``QScrollArea``, so thirty libraries cost a scrollbar and
 nothing else -- and it floats over the playlist instead of taking width from it,
 which is what let batch 2 give the list the full window.
@@ -35,10 +42,13 @@ Three constraints shape the code below:
 * **No stylesheet of its own.** Fills, borders, the current-row marker and the
   empty state are ``#librarySidebar`` / ``#sidebarTitle`` / ``#libraryRow`` /
   ``#sidebarEmpty`` in ``core/theme_qss.py``; the only pixels this widget draws
-  itself are the ``folder`` and ``add`` glyphs, which QSS cannot recolour, so
-  :meth:`recolor` re-rasterises them. ``add`` is the file Task 3 authored for
-  this footer; ``folder`` is already the rail's library toggle and 打开文件夹
-  glyph, and a row *is* a folder, so the third use of it names the same object.
+  itself are the ``folder``, ``add`` and ``settings`` glyphs, which QSS cannot
+  recolour, so :meth:`recolor` re-rasterises them. ``add`` is the file Task 3
+  authored for this footer and ``settings`` is the rail's 外观设置 glyph reused
+  here for 管理媒体库 -- administration is what both of them mean, and the row's own
+  text is what says *which* thing is being administered; ``folder`` is already the
+  rail's library toggle and 打开文件夹 glyph, and a row *is* a folder, so the third
+  use of it names the same object.
 """
 
 from typing import Any, List, Optional
@@ -93,11 +103,13 @@ class LibraryRow(QPushButton):
     its own width on every resize and keeps the full name in the tooltip, which
     is the "elided, not clipped" half of spec §6.
 
-    ``path`` is ``None`` for the footer's add entry: the footer is a row in every
+    ``path`` is ``None`` for the two footer entries: the footer is a row in every
     respect (same glyph slot, same hover, same height) except that it selects no
     library, and giving it its own objectName would mean a fifth styled name the
-    brief does not list. Tests and :class:`LibrarySidebar` tell the two apart with
-    the ``library_path`` dynamic property, the same key ``LibrarySelector`` used.
+    brief does not list. Tests and :class:`LibrarySidebar` tell the entries apart
+    with the ``library_path`` dynamic property -- absent for both of them -- and
+    their labels, since the footer carries 添加媒体库 *and* 管理媒体库 (spec §3.2's
+    Task 8 correction).
     """
 
     def __init__(self, name: str, path: Optional[str] = None,
@@ -121,7 +133,7 @@ class LibraryRow(QPushButton):
 
     @property
     def path(self) -> Optional[str]:
-        """The library this row selects, or ``None`` for the add entry."""
+        """The library this row selects, or ``None`` for a footer entry."""
         return self._path
 
     @property
@@ -162,7 +174,7 @@ class LibraryRow(QPushButton):
 
 
 class LibrarySidebar(QFrame):
-    """Floating panel that picks and adds media libraries.
+    """Floating panel that picks, adds and manages media libraries.
 
     Args:
         manager: The running :class:`view.theme_manager.ThemeManager`; only
@@ -177,13 +189,20 @@ class LibrarySidebar(QFrame):
         library_selected(str): A *different* library's row was clicked, with its
             path. Re-clicking the current library emits nothing: the presenter
             would re-scan a library that is already loaded.
-        add_library_requested(str): The footer entry was used and a folder was
-            chosen. The path is emitted, not a ``LibraryConfig`` -- the presenter
-            owns configuration.
+        add_library_requested(str): The footer's add entry was used and a folder
+            was chosen. The path is emitted, not a ``LibraryConfig`` -- the
+            presenter owns configuration.
+        manage_requested(): The footer's 管理媒体库 entry was used. No argument:
+            the management dialog reads the configured libraries itself, and
+            adding, renaming-free removing and reordering all live in it. Task 8
+            added this signal to give ``MainWindow.manage_libraries_requested``
+            the emitter the deleted menu bar took away, which is also the only
+            route left to library *removal* (spec §3.2 correction).
     """
 
     library_selected = pyqtSignal(str)
     add_library_requested = pyqtSignal(str)
+    manage_requested = pyqtSignal()
 
     def __init__(self, manager, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -235,9 +254,17 @@ class LibrarySidebar(QFrame):
         self._scroll.setWidget(self._list)
         layout.addWidget(self._scroll, 1)
 
+        # The footer: both library-administration entries, one row each. They
+        # share everything with a library row -- name, glyph slot, height, hover --
+        # and carry no ``library_path``, because neither one selects a library.
         self._add_row = LibraryRow(i18n.get('sidebar.add'), None, self)
         self._add_row.clicked.connect(lambda checked=False: self._on_add_clicked())
         layout.addWidget(self._add_row)
+
+        self._manage_row = LibraryRow(i18n.get('sidebar.manage'), None, self)
+        self._manage_row.clicked.connect(
+            lambda checked=False: self._on_manage_clicked())
+        layout.addWidget(self._manage_row)
 
         self._generate_icons()
         self.hide()
@@ -294,6 +321,12 @@ class LibrarySidebar(QFrame):
                              self.devicePixelRatioF()))
         self._add_row.setIcon(icon('add', self._tokens.icon, _ROW_ICON_SIZE,
                                    self.devicePixelRatioF()))
+        # ``settings`` is the rail's 外观设置 glyph, used here for 管理媒体库: the
+        # two entries are both administration, and the text says which kind. The
+        # alternative was a fourth glyph for one more footer row, which is how the
+        # icon set grows past what any test can still name.
+        self._manage_row.setIcon(icon('settings', self._tokens.icon, _ROW_ICON_SIZE,
+                                      self.devicePixelRatioF()))
 
     def recolor(self, tokens) -> None:
         """Regenerate every glyph for a new theme (``MainWindow.recolor``)."""
@@ -523,6 +556,24 @@ class LibrarySidebar(QFrame):
             self, i18n.get('dialog.add_library'))
         if folder:
             self.add_library_requested.emit(folder)
+
+    def _on_manage_clicked(self) -> None:
+        """Close the panel, then ask the presenter for the management dialog.
+
+        The order is the point: :meth:`MainWindow.manage_libraries_requested`'s
+        handler runs ``dialog.exec()``, i.e. a modal loop, and the presenter's
+        signal slot is *synchronous* -- emitting first would park this floating
+        panel behind a modal dialog and only then take it away. It is also why the
+        app-level filter goes first: while the panel is open it consumes presses
+        inside the window, and a filter that outlives the panel by one dialog is
+        the leak :meth:`hideEvent` exists to close.
+
+        Unlike :meth:`_on_add_clicked` this emits unconditionally: a directory
+        chooser can be cancelled and mean nothing happened, a dialog the user
+        opened and closed always means they may have changed the set.
+        """
+        self.hide_panel()
+        self.manage_requested.emit()
 
 
 def _global_press_point(event):

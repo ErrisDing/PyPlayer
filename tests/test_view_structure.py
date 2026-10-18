@@ -72,9 +72,10 @@ except ImportError:  # pragma: no cover - environment without PyQt6
 MULTIPLICITY = {'timeLabel': 2, 'railButton': 7}
 
 # Names whose instance count is set by *data*, not by the sheet. ``#libraryRow``
-# is one per media library plus the footer add entry, which deliberately shares
-# the name (Task 4's ruling: same glyph slot, same hover, same height), and
-# ``Settings.media_libraries`` is uncapped -- so no fixed integer can bound it:
+# is one per media library plus the two footer administration entries, which
+# deliberately share the name (Task 4's ruling for the add entry, spec §3.2's
+# Task 8 correction for the manage one: same glyph slot, same hover, same height),
+# and ``Settings.media_libraries`` is uncapped -- so no fixed integer can bound it:
 # 1 would go red for anyone with one library, 8 only moves the red to the
 # ninth. The semantics here are "exists at least once, ceiling-free": existence
 # is already pinned by ``test_every_required_object_name_exists`` (the name is
@@ -244,8 +245,9 @@ class ViewStructureTest(unittest.TestCase):
                 'one #railButton per rail action -- the seven spec §6 fixes',
             )
             self.assertEqual(
-                counts['libraryRow'], 1,
-                'with no library loaded only the footer add entry wears the name',
+                counts['libraryRow'], 2,
+                'with no library loaded only the two footer entries wear the name '
+                '(add + manage, spec §3.2 correction)',
             )
         finally:
             dialog.deleteLater()
@@ -459,7 +461,11 @@ class ViewStructureTest(unittest.TestCase):
             window.deleteLater()
 
     def test_sidebar_add_reaches_the_window_exactly_once(self):
-        """The footer's route: choose a folder, emit ``add_library_requested``.
+        """Same rule on the panel side: one connection, one window emission.
+
+        The footer's add entry, identified by its un-elided label because the two
+        administration entries (add + manage) share ``#libraryRow`` and the absence
+        of ``library_path`` no longer singles one out.
 
         This is the emitter proof the dead-signals census in
         ``tests/test_dead_code_removed.py`` points at: the signal survived
@@ -471,6 +477,7 @@ class ViewStructureTest(unittest.TestCase):
 
         from PyQt6.QtWidgets import QFileDialog, QPushButton
 
+        from core import i18n
         from view.main_window import MainWindow
 
         window = MainWindow(make_manager())
@@ -481,14 +488,54 @@ class ViewStructureTest(unittest.TestCase):
                 row for row in window.findChildren(QPushButton, 'libraryRow')
                 if row.property('library_path') is None
             ]
-            self.assertEqual(1, len(footer), 'the footer add entry is the path-less row')
+            self.assertEqual(2, len(footer),
+                             'the footer owns both administration entries now')
+            add = [row for row in footer if row.full_name == i18n.get('sidebar.add')]
+            self.assertEqual(1, len(add), 'the footer add entry is the 添加媒体库 row')
 
             with patch.object(QFileDialog, 'getExistingDirectory',
                               lambda *args, **kwargs: '/media/new'):
-                footer[0].click()
+                add[0].click()
 
             self.assertEqual(['/media/new'], emitted,
                               'one footer click with a chosen folder emits once')
+        finally:
+            window.deleteLater()
+
+    def test_sidebar_manage_reaches_the_window_exactly_once(self):
+        """The footer's second entry: ``manage_requested`` -> one window emission.
+
+        ``MainWindow.manage_libraries_requested`` has had exactly one listener since
+        Task 2 (the presenter's dialog opener) and no emitter since Task 7 deleted
+        the menu bar -- spec §3.2's correction hands the emitter to this row, so a
+        second connection on the window side would open two dialogs per click.
+        """
+        from unittest.mock import patch
+
+        from PyQt6.QtWidgets import QDialog, QPushButton
+
+        from core import i18n
+        from view.dialogs.library_dialog import LibraryManagementDialog
+        from view.main_window import MainWindow
+
+        window = MainWindow(make_manager())
+        try:
+            emitted: list = []
+            window.manage_libraries_requested.connect(lambda: emitted.append(True))
+            manage = [
+                row for row in window.findChildren(QPushButton, 'libraryRow')
+                if row.full_name == i18n.get('sidebar.manage')
+            ]
+            self.assertEqual(1, len(manage))
+            self.assertIsNone(manage[0].path,
+                              'the management entry selects no library')
+
+            with patch.object(LibraryManagementDialog, 'exec',
+                              lambda dialog: QDialog.DialogCode.Accepted):
+                manage[0].click()
+
+            self.assertEqual([True], emitted,
+                             'one footer click must ask for the dialog exactly once')
         finally:
             window.deleteLater()
 
@@ -496,8 +543,9 @@ class ViewStructureTest(unittest.TestCase):
         """The ``UNBOUNDED_NAMES`` decision at its reason-for-existing size.
 
         Thirty libraries is spec §1 criterion 2's own number; the row count is
-        libraries + 1 because the footer add entry shares ``#libraryRow``. The
-        same helper call must find no violation anywhere else in the tree.
+        libraries + 2 because the footer's two administration entries share
+        ``#libraryRow`` (add + manage, spec §3.2's Task 8 correction). The same
+        helper call must find no violation anywhere else in the tree.
         """
         from view.main_window import MainWindow
 
@@ -508,8 +556,8 @@ class ViewStructureTest(unittest.TestCase):
                 for i in range(30)
             ])
             counts = Counter(collect_names(window))
-            self.assertEqual(31, counts['libraryRow'],
-                             '30 rows plus the shared-name footer entry')
+            self.assertEqual(32, counts['libraryRow'],
+                             '30 rows plus the two shared-name footer entries')
             self.assertEqual([], multiplicity_failures(counts))
         finally:
             window.deleteLater()

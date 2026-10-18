@@ -112,9 +112,11 @@ class MainWindow(QMainWindow):
 
     def _setup_window(self) -> None:
         """Set up window properties, including the window-level shortcuts."""
-        # The title is written exactly once, here. The old ``set_status_message``
-        # rewrote it per event; spec §1 criterion 3 retires that, and Task 8's
-        # ``test_no_status_message_calls_left`` holds the door.
+        # The title is written exactly once, here. The status channel batch 1 left
+        # behind rewrote it on every event; spec §1 criterion 3 retires that, and
+        # Task 8 deleted the channel with it. Task 8's source scan of ``view/`` and
+        # ``presenter/`` is what keeps it from coming back as a one-line forwarder
+        # (ledger R1's transitional shim).
         self._base_title = i18n.get('window.title')
         self.setWindowTitle(self._base_title)
 
@@ -234,10 +236,14 @@ class MainWindow(QMainWindow):
         self._rail.action_triggered.connect(self._on_rail_action)
         self._rail.library_panel_requested.connect(self.toggle_library_panel)
 
-        # Same rule on the panel side: its two signals already carry their own
-        # de-duplication (Task 4), the window just re-exports them.
+        # Same rule on the panel side: its signals already carry their own
+        # de-duplication (Task 4), the window just re-exports them. Both footer
+        # entries -- add and manage (spec §3.2's Task 8 correction) -- reach the
+        # presenter through a window signal, so the panel knows nothing about
+        # dialogs or configuration.
         self._sidebar.library_selected.connect(self._on_library_selected)
         self._sidebar.add_library_requested.connect(self.add_library_requested.emit)
+        self._sidebar.manage_requested.connect(self.manage_libraries_requested.emit)
 
     # === Rail handlers ===
 
@@ -349,9 +355,13 @@ class MainWindow(QMainWindow):
     def set_action_progress(self, action_id: str, running: bool) -> None:
         """Put a rail action into (or out of) its running state.
 
-        The presenter's call sites arrive in Task 8; the three-layer name (
-        ``set_action_progress`` here, ``set_progress`` on the rail) is the
-        plan's, not a typo.
+        The presenter's two library-scan call sites use this instead of a message
+        (spec §5's 进度态 row); the three-layer name (``set_action_progress`` here,
+        ``set_progress`` on the rail) is the plan's, not a typo. Which ids may be in
+        flight is the rail's decision, not the caller's -- it raises for anything
+        outside :data:`view.widgets.action_rail.PROGRESSABLE_IDS`, and this forwarder
+        deliberately adds no guard of its own: a second whitelist two layers up is a
+        second place for the two lists to disagree.
         """
         self._rail.set_progress(action_id, running)
 
@@ -526,19 +536,6 @@ class MainWindow(QMainWindow):
     def clear_now_playing(self) -> None:
         """Clear the now playing strip."""
         self._bottom_panel.clear_now_playing()
-
-    def set_status_message(self, message: str) -> None:
-        """Legacy entry point: forward to the toast (spec §5).
-
-        # Task 8 分流后删除
-        The presenter's 14 call sites move to ``show_toast`` /
-        ``set_action_progress`` in Task 8; deleting this now would make the
-        shell-swap commit fail the full suite (ledger R1), and Task 8's
-        ``test_no_status_message_calls_left`` scans ``view/`` too, so this
-        cannot become a permanent interface. It no longer touches the window
-        title (spec §1 criterion 3).
-        """
-        self.show_toast(message)
 
     def reset_progress(self) -> None:
         """Reset the progress slider."""

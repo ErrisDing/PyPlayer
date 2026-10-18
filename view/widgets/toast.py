@@ -2,9 +2,9 @@
 """
 PyPlayer Toast
 
-The timed result message of batch 2 (spec §5). Before this, one
-``MainWindow.set_status_message`` slot carried three different kinds of thing --
-progress, results and errors -- by rewriting the window title, which is why
+The timed result message of batch 2 (spec §5). Before this, one window-level
+status slot carried three different kinds of thing -- progress, results and
+errors -- by rewriting the window title, which is why
 spec §2's success criterion 3 ("the title is always the application name") needed
 them pulled apart. Progress now lives on the icon-rail button that started it,
 errors stay dialogs, and this widget is what "it worked" looks like: one line of

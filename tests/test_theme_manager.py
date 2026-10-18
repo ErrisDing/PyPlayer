@@ -1121,16 +1121,23 @@ class PresenterThemeFlowTest(unittest.TestCase):
         keep the old mode while the click did nothing visible. The presenter's
         job is to say so on the view's one status surface, not to add a second
         apply path.
+
+        Batch 2 Task 8 moved that surface: the status slot that used to carry it
+        was split into progress / feedback / error (spec §5), and this string --
+        a result the user has to see once, not a modal interruption -- is the
+        feedback class, so the assertion now reads the toast channel. Same claim,
+        one layer closer to what the user sees: ``show_toast`` is what actually
+        paints, and the channel's old name no longer exists on the view.
         """
         from unittest.mock import patch
 
         from core import i18n
 
         self.config.set_theme.return_value = False
-        with patch.object(self.view, 'set_status_message') as status:
+        with patch.object(self.view, 'show_toast') as report:
             self.presenter._handle_theme_change('dark')
 
-        status.assert_called_once_with(i18n.get('status.theme_save_failed'))
+        report.assert_called_once_with(i18n.get('status.theme_save_failed'))
         self.assertEqual(
             'auto', self.manager.mode,
             'a refused write emits nothing, so a failed save may not restyle')

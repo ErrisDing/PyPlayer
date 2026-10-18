@@ -6,8 +6,9 @@ The 56 px icon column that replaces the native menu bar (batch 2 spec §2, §3.2
 §6). Everything the menu used to hold is now a button here: the media-library
 panel toggle, open file, open folder, refresh this library, refresh every
 library, the appearance dialog and the about box. "Exit" deliberately stays off
-the rail (spec §6), and the floating panel owns *choosing* and *adding* a
-library so the same action never appears in two places (spec §3.2).
+the rail (spec §6), and the floating panel owns the three *library* verbs --
+choosing, adding and managing (spec §3.2's Task 8 correction) -- so the same
+action never appears in two places and the column never grows an eighth button.
 
 Two constraints shape this widget:
 
@@ -30,7 +31,10 @@ both to every button. That is why ``set_progress`` is idempotent (a retried scan
 cannot overwrite a resting glyph with a spinner) and why the mutual exclusion
 between the two refresh entries -- they walk one library-loading path, so
 starting either must close the other, spec §6 -- is expressed once, in
-:data:`_BLOCKED_PAIR`, rather than in paired enable/disable calls.
+:data:`_BLOCKED_PAIR`, rather than in paired enable/disable calls. Which ids may
+be in flight at all is a separate decision, taken in Task 8 and recorded in
+:data:`PROGRESSABLE_IDS`: the two library scans, and nothing else -- a shell where
+any button could spin is a shell where 打开文件 can promise a scan it never runs.
 """
 
 from typing import Optional
@@ -101,6 +105,21 @@ _BLOCKED_PAIR = {
     ACTION_REFRESH_ALL: (ACTION_REFRESH,),
     ACTION_REFRESH: (ACTION_REFRESH_ALL,),
 }
+
+#: The only ids allowed into the running state (Task 8's ruling on Task 3's
+#: hand-off; spec §5's 进度态 row lists exactly these two call sites).
+#:
+#: Progress is the *library scan* made visible, and a scan is the only thing in
+#: this shell that takes long enough to need it. Before this list, any id could
+#: spin, so ``set_progress('open_file', True)`` was a legal call that parked the
+#: refresh artwork on 打开文件 and disabled a button nothing was waiting on -- a
+#: call that compiled, passed every type check and meant the wrong thing, which
+#: is precisely what a "callers, please only use refresh" comment does not
+#: prevent. Enforced here rather than in the presenter because this widget owns
+#: the state, and :meth:`ActionRail.set_progress` *raises* instead of ignoring:
+#: a silently ignored progress report is a spinner that never appears, and
+#: Task 8's whole point is that a scan in flight has to be visible.
+PROGRESSABLE_IDS: tuple[str, ...] = (ACTION_REFRESH, ACTION_REFRESH_ALL)
 
 # The glyph size, derived from the transport token so a rail button and a
 # transport button are one object (``TRANSPORT_SIZE`` squares inside a
@@ -236,13 +255,19 @@ class ActionRail(QWidget):
         it in :data:`_BLOCKED_PAIR` are disabled too but keep their own glyph,
         because they are blocked, not working.
 
+        Only :data:`PROGRESSABLE_IDS` may be in flight, and that is checked in
+        both directions: an id that cannot run cannot be *cleared* either, so a
+        ``False`` for it means the caller believes it has a state to lose.
+
         Raises:
-            ValueError: an unknown ``action_id``. A typo in a presenter call has
-                to fail loudly -- a silently ignored progress report is a button
-                that never spins.
+            ValueError: an unknown ``action_id``, or a known one that has no
+                running state. A typo in a presenter call has to fail loudly --
+                a silently ignored progress report is a button that never spins.
         """
         if action_id not in self._buttons:
             raise ValueError(self._unknown_id(action_id))
+        if action_id not in PROGRESSABLE_IDS:
+            raise ValueError(self._not_progressable(action_id))
         if running:
             self._running.add(action_id)
         else:
@@ -259,6 +284,14 @@ class ActionRail(QWidget):
     def _unknown_id(action_id: str) -> str:
         return (f'Unknown rail action: {action_id!r} '
                 f'(expected one of {", ".join(ACTION_IDS)})')
+
+    @staticmethod
+    def _not_progressable(action_id: str) -> str:
+        """Why a *known* id was still refused (see :data:`PROGRESSABLE_IDS`)."""
+        return (f'{action_id!r} has no running state: progress is the library scan '
+                f'made visible, so only {", ".join(PROGRESSABLE_IDS)} may report it '
+                f'(spec §5). A spinner on {action_id!r} would promise work this '
+                'button does not do')
 
     def _blocked_ids(self) -> set[str]:
         """Everything that may not be clicked right now."""

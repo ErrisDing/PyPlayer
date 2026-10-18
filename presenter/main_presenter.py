@@ -8,10 +8,14 @@ from typing import Optional, List
 from PyQt6.QtCore import QObject, QTimer, pyqtSlot
 
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from view.main_window import MainWindow
+# The rail's action ids are the wire format for progress reports (Task 3), so the
+# presenter names them through the constants the widget dispatches on rather than
+# repeating literals that can drift from the button they address.
+from view.widgets.action_rail import ACTION_REFRESH, ACTION_REFRESH_ALL
 # ``view.models.DisplayEntry`` is the service DTO since Task 2 merged the
 # duplicate, so the presenter has no conversion left to do and no import of its
 # own to make (see ``_on_display_changed``).
@@ -89,11 +93,17 @@ class MainPresenter(QObject):
         # Playlist interactions
         self._view.track_double_clicked.connect(self._on_track_double_clicked)
 
-        # Library management
+        # Library management. ``add_library_requested`` and
+        # ``manage_libraries_requested`` both come from the floating panel's footer
+        # since Task 8 (spec §3.2 correction): the add entry emits the chosen path,
+        # the manage entry asks for this presenter's dialog. Before that, ``add``
+        # had an emitter and no consumer, and ``manage`` had a consumer and no
+        # emitter -- the two halves of Task 7's review finding.
         self._view.scan_folder_requested.connect(self._on_scan_folder)
         self._view.refresh_library_requested.connect(self._on_refresh_library)
         self._view.refresh_all_requested.connect(self._on_refresh_all)
         self._view.library_selected.connect(self._on_library_selected)
+        self._view.add_library_requested.connect(self._on_add_library)
         self._view.manage_libraries_requested.connect(self._on_manage_libraries)
 
         # Appearance settings
@@ -147,6 +157,28 @@ class MainPresenter(QObject):
         self._view.set_overlay_alpha(self._config.get_overlay_alpha())
         self._view.set_playlist_alpha(self._config.get_playlist_alpha())
         self._view.set_controls_alpha(self._config.get_controls_alpha())
+
+    # === Copy helpers ===
+
+    def _library_label(self, library_path: str) -> str:
+        """The label a library is known by, for copy that substitutes ``{name}``.
+
+        The three status strings that name a library all take a ``{name}``
+        parameter, and the honest value for it is the same string the floating
+        panel's row shows: the configured name, or the folder when a library has no
+        name at all (``LibrarySidebar._rebuild_rows`` makes exactly this choice, for
+        exactly this reason -- a name and a path in the same list would read as two
+        different libraries). A removal report always lands on the fallback:
+        ``ConfigService.remove_library`` has written the file before this runs, so
+        the path is no longer configured and only the folder is left to say.
+        """
+        for library in self._config.get_libraries():
+            if getattr(library, 'path', None) == library_path:
+                name = getattr(library, 'name', None)
+                if name:
+                    return name
+                break
+        return _basename(library_path) or library_path
 
     # === View Signal Handlers ===
 
@@ -222,12 +254,25 @@ class MainPresenter(QObject):
 
     @pyqtSlot(str)
     def _on_refresh_library(self, library_path: str) -> None:
-        """Handle refresh library request."""
-        self._view.set_status_message(i18n.get('status.refreshing'))
-        files = self._library.refresh_library(library_path)
+        """Handle refresh library request: state on the button, result as feedback.
+
+        spec §5's split, in one shape: the *scan* is progress, so the rail button
+        carries it and no text is produced for the duration; the *count* is a
+        result, so it goes to the toast. ``finally`` clears the state because
+        ``_BLOCKED_PAIR`` disables the other refresh entry while this one runs --
+        an unbalanced report would leave two dead buttons on a shell that has no
+        other way to notice.
+        """
+        self._view.set_action_progress(ACTION_REFRESH, True)
+        try:
+            files = self._library.refresh_library(library_path)
+        finally:
+            self._view.set_action_progress(ACTION_REFRESH, False)
+
         if files:
-            self._view.set_status_message(
-                i18n.get('status.library_refreshed').format(name=library_path)
+            self._view.show_toast(
+                i18n.get('status.library_refreshed',
+                         name=self._library_label(library_path))
             )
             # Rebuild queue with refreshed files
             tracks = []
@@ -241,11 +286,23 @@ class MainPresenter(QObject):
 
     @pyqtSlot()
     def _on_refresh_all(self) -> None:
-        """Handle refresh all libraries request."""
-        self._view.set_status_message(i18n.get('status.refresh_all'))
-        results = self._library.refresh_all_libraries()
+        """Handle refresh all libraries request.
+
+        The count report replaces a hardcoded English sentence;
+        ``status.refreshed_files`` is the key, and both numbers are passed as
+        parameters rather than formatted here (spec §5: 文案改为走 i18n 并带参数).
+        """
+        self._view.set_action_progress(ACTION_REFRESH_ALL, True)
+        try:
+            results = self._library.refresh_all_libraries()
+        finally:
+            self._view.set_action_progress(ACTION_REFRESH_ALL, False)
+
         total_files = sum(len(files) for files in results.values())
-        self._view.set_status_message(f"Refreshed {total_files} files from {len(results)} libraries")
+        self._view.show_toast(
+            i18n.get('status.refreshed_files',
+                     count=total_files, libs=len(results))
+        )
 
     @pyqtSlot(str)
     def _on_library_selected(self, library_path: str) -> None:
@@ -267,11 +324,22 @@ class MainPresenter(QObject):
                 )
                 tracks.append(track)
             self._queue.build_from_tracks(tracks)
-            self._view.set_status_message(f"Switched to library: {library_path}")
+            self._view.show_toast(
+                i18n.get('status.library_switched',
+                         name=self._library_label(library_path))
+            )
 
     @pyqtSlot()
     def _on_manage_libraries(self) -> None:
-        """Handle manage libraries menu action - open dialog."""
+        """Handle manage libraries request - open dialog.
+
+        Reachable since Task 8 through the floating panel's footer entry
+        (:meth:`view.widgets.library_sidebar.LibrarySidebar.manage_requested` ->
+        ``MainWindow.manage_libraries_requested``). This handler has been connected
+        since Task 2 with nothing to fire it: the menu bar was the only emitter, and
+        spec §3.2 then promised the rail would carry the action while §6 froze the
+        rail at seven buttons that do not include it.
+        """
         libraries = self._config.get_libraries()
         dialog = LibraryManagementDialog(libraries, self._view)
 
@@ -283,23 +351,55 @@ class MainPresenter(QObject):
         # Show dialog
         dialog.exec()
 
+    @pyqtSlot(str)
+    def _on_add_library(self, path: str) -> None:
+        """Handle the floating panel's add entry: the same write, no dialog to refresh."""
+        self._add_library(path)
+
+    def _add_library(self, path: str) -> bool:
+        """The one place a new library is written, scanned and re-published.
+
+        Two entry points reach it -- the panel footer and the management dialog's
+        Add button -- so splitting the write would mean one of them silently
+        stopped scanning a new library. Returns the config write's verdict; a write
+        that failed leaves the list, the scan and the panel untouched, exactly as
+        the dialog path always did.
+
+        ``MainWindow.set_libraries`` is what puts the new row in the panel the user
+        is already looking at (Task 4's tolerate-while-open ruling). There is no
+        toast: the row appearing *is* the report, and the panel is on screen.
+        """
+        if not self._config.add_library(path):
+            return False
+        self._library.load_library(path)
+        self._view.set_libraries(self._config.get_libraries())
+        return True
+
+    def _remove_library(self, library_path: str) -> bool:
+        """The one place a library is removed: config write, then the view's list.
+
+        The removal report goes to the toast (spec §5) because the row disappearing
+        from a panel the user has to open on purpose is not enough to tell them the
+        write succeeded -- unlike adding, where the panel is already on screen.
+        """
+        if not self._config.remove_library(library_path):
+            return False
+        self._view.set_libraries(self._config.get_libraries())
+        self._view.show_toast(
+            i18n.get('status.library_removed',
+                     name=self._library_label(library_path))
+        )
+        return True
+
     def _handle_add_library_dialog(self, dialog: LibraryManagementDialog, path: str) -> None:
         """Handle add library from dialog."""
-        if self._config.add_library(path):
-            self._library.load_library(path)
-            # Refresh both main window and dialog
-            libraries = self._config.get_libraries()
-            self._view.set_libraries(libraries)
-            dialog.set_libraries(libraries)
+        if self._add_library(path):
+            dialog.set_libraries(self._config.get_libraries())
 
     def _handle_remove_library_dialog(self, dialog: LibraryManagementDialog, library_path: str) -> None:
         """Handle library removal from dialog."""
-        if self._config.remove_library(library_path):
-            # Refresh both main window and dialog
-            libraries = self._config.get_libraries()
-            self._view.set_libraries(libraries)
-            dialog.set_libraries(libraries)
-            self._view.set_status_message(i18n.get('status.library_removed', default=f"Library removed: {library_path}"))
+        if self._remove_library(library_path):
+            dialog.set_libraries(self._config.get_libraries())
 
     def _handle_reorder_library_dialog(self, dialog: LibraryManagementDialog, old_index: int, new_index: int) -> None:
         """Handle library reorder from dialog."""
@@ -357,20 +457,24 @@ class MainPresenter(QObject):
         get, and the dialog re-opened from it would lie. The presenter cannot
         fix that ordering from here, so it tells the user the save failed
         instead; a user-initiated click that silently does nothing is the bug.
+
+        The report is a toast, never a dialog. spec §5 first filed this string
+        under 错误, but it was never modal, and one failed settings write must not
+        interrupt the whole window for it -- see the §5 correction in the spec.
         """
         if not self._config.set_theme(mode):
-            self._view.set_status_message(i18n.get('status.theme_save_failed'))
+            self._view.show_toast(i18n.get('status.theme_save_failed'))
 
     def _handle_background_change(self, dialog: AppearanceDialog, path: str) -> None:
         """Handle background image change from dialog."""
         if path:
             self._config.set_background_image(path)
             self._view.set_background_image(path)
-            self._view.set_status_message(i18n.get('status.background_set', default='背景图片已设置'))
+            self._view.show_toast(i18n.get('status.background_set'))
         else:
             self._config.set_background_image(None)
             self._view.set_background_image(None)
-            self._view.set_status_message(i18n.get('status.background_cleared', default='背景图片已清除'))
+            self._view.show_toast(i18n.get('status.background_cleared'))
 
     def _handle_overlay_change(self, dialog: AppearanceDialog, alpha: float) -> None:
         """Handle overlay alpha change from dialog."""
@@ -391,7 +495,14 @@ class MainPresenter(QObject):
 
     @pyqtSlot(object)
     def _on_playback_state_changed(self, state: PlayerState) -> None:
-        """Handle playback state change."""
+        """Handle playback state change.
+
+        The state goes to the transport button and nowhere else. spec §5 deleted
+        the two strings this used to also report (``status.playing`` /
+        ``status.paused``): a play/pause button whose glyph already changed is the
+        same fact in the same place, and a text line repeating it is what criterion
+        3 was written against.
+        """
         is_playing = state == PlayerState.PLAYING
         is_paused = state == PlayerState.PAUSED
 
@@ -399,10 +510,8 @@ class MainPresenter(QObject):
 
         if is_playing:
             self._position_timer.start(self.POSITION_UPDATE_INTERVAL)
-            self._view.set_status_message(i18n.get('status.playing'))
         elif is_paused:
             self._position_timer.stop()
-            self._view.set_status_message(i18n.get('status.paused'))
         elif state == PlayerState.IDLE:
             self._position_timer.stop()
 
@@ -415,7 +524,7 @@ class MainPresenter(QObject):
             return
 
         # Update UI with track info. The unknown title stays *empty* here:
-        # ``NowPlayingPanel.update_track_info`` maps an empty title to
+        # ``NowPlayingStrip.update_track_info`` maps an empty title to
         # ``i18n.get('metadata.unknown_title')``. Pre-filling that copy in the
         # presenter used to jump over the view's fallback, so a zh_CN user saw
         # English in the headline (review finding 1: the view owns the
@@ -434,11 +543,10 @@ class MainPresenter(QObject):
         if position.display_index >= 0:
             self._view.highlight_current_track(position.display_index)
 
-        # Update status. The status line is presenter-owned text, so it cannot
-        # reuse the view's fallback; the label still comes from the same key.
-        self._view.set_status_message(
-            f"Now playing: {title or i18n.get('metadata.unknown_title')}"
-        )
+        # And that is all of it. The old last line here reported
+        # ``Now playing: {title}`` into the status channel: the strip two rows
+        # above says the same thing in the place the user looks for it, so this
+        # method now reports nothing (spec §5, 与控件重复的文本).
 
     @pyqtSlot()
     def _on_track_ended(self) -> None:
@@ -458,7 +566,7 @@ class MainPresenter(QObject):
         else:
             # End of queue
             self._on_stop()
-            self._view.set_status_message(i18n.get('status.completed'))
+            self._view.show_toast(i18n.get('status.completed'))
 
     @pyqtSlot(float)
     def _on_volume_changed_from_service(self, volume: float) -> None:
@@ -532,8 +640,9 @@ class MainPresenter(QObject):
         # Build queue from tracks
         self._queue.build_from_tracks(tracks)
 
-        # Update status
-        self._view.set_status_message(f"Loaded {len(tracks)} tracks from library")
+        # Report the count. The rows themselves are the result the user can see,
+        # so this says only what the list cannot: how many tracks arrived.
+        self._view.show_toast(i18n.get('status.tracks_loaded', count=len(tracks)))
 
     def _update_position(self) -> None:
         """Update progress display (called by timer)."""
@@ -557,3 +666,20 @@ class MainPresenter(QObject):
         """Stop the presenter - cleanup."""
         self._position_timer.stop()
         self._playback.stop()
+
+
+def _basename(path: str) -> str:
+    """Last component of a library path, for copy that names an unnamed library.
+
+    Deliberately a second copy of the same six lines
+    :mod:`view.widgets.library_sidebar` keeps: the two callers answer the same
+    question for the same object (what a library row is *called* when its config
+    has no name), and the alternative was the presenter importing a private out of
+    the view it is supposed to stay above. The separator sniff is the part that
+    cannot be a one-liner -- ``PurePosixPath('C:\\\\music').name`` is the whole
+    string, not ``music``.
+    """
+    if not path:
+        return ''
+    pure = PureWindowsPath(path) if '\\' in path or ':' in path[:3] else PurePosixPath(path)
+    return pure.name or str(pure)

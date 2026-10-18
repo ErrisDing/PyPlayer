@@ -348,13 +348,22 @@ class ActionRailContractTest(unittest.TestCase):
         the action rather than the button, then releases it and drives it again:
         a connect that ignored the enabled state -- or a button-only connect that
         emitted while the action was disabled -- fails the first half.
+
+        ``open_file`` was a case here until Task 8: it used to be blocked by its
+        own running state, and the whitelist
+        (:data:`view.widgets.action_rail.PROGRESSABLE_IDS`) says a file chooser has
+        no running state to be in. The keyboard-honours-enabled half is still
+        asserted, through the action's own ``setEnabled`` -- the only way left to
+        take that button out of reach -- in
+        :meth:`test_a_disabled_open_file_action_stays_silent_on_the_keyboard`.
         """
         Trigger = _action_trigger()
         # (action driven, id put into its running state to block it)
         cases = (
-            ('open_file', 'open_file'),        # in flight itself
             ('refresh', 'refresh_all'),       # blocked by its partner
             ('refresh_all', 'refresh'),       # the mirror case
+            ('refresh', 'refresh'),           # in flight itself
+            ('refresh_all', 'refresh_all'),   # in flight itself
         )
 
         rail, _manager = self._rail()
@@ -381,6 +390,31 @@ class ActionRailContractTest(unittest.TestCase):
                 action.activate(Trigger)
                 self.assertEqual([action_id], triggered,
                                  'the action stayed disabled after the scan ended')
+
+    def test_a_disabled_open_file_action_stays_silent_on_the_keyboard(self):
+        """The one case the whitelist cannot express, asserted through its mechanism.
+
+        Ctrl+O is disabled by writing ``setEnabled(False)`` on the action -- the
+        same property ``set_progress`` uses for the ids that may run -- and a
+        disabled ``QAction`` must not emit when activated. Kept as its own test so
+        dropping the enabled-state check does not hide behind the refresh cases.
+        """
+        Trigger = _action_trigger()
+        rail, _manager = self._rail()
+        triggered = []
+        rail.action_triggered.connect(triggered.append)
+        action = self._action_for(rail, 'open_file')
+
+        action.setEnabled(False)
+        action.activate(Trigger)
+        self.assertEqual([], triggered,
+                         'a disabled open_file action still reached the presenter')
+        self.assertFalse(rail.button_for('open_file').isEnabled(),
+                         'setDefaultAction must mirror the enabled state onto the button')
+
+        action.setEnabled(True)
+        action.activate(Trigger)
+        self.assertEqual(['open_file'], triggered)
 
     def test_buttons_carry_the_declared_object_names(self):
         """The sheet selects ``#actionRail`` and ``#railButton``; both must exist."""
@@ -471,25 +505,31 @@ class ActionRailProgressStateTest(unittest.TestCase):
         self.assertTrue(refresh.isEnabled(), 'the partner must be released too')
         self.assertTrue(refresh_all.isEnabled())
 
-    def test_running_state_swaps_the_glyph_on_a_non_refresh_button(self):
+    def test_running_state_swaps_the_glyph_on_the_other_refresh_entry(self):
         """The progress glyph, observed where it can actually be told apart.
 
         The brief's own progress test drives ``ACTION_REFRESH``, whose resting
         glyph *is* the progress glyph, so it cannot see a missing swap: deleting
         the ``_running`` branch from ``_glyph_for`` left every other test green
-        (mutation run recorded in the task report). ``appearance`` rests on
-        ``settings``, so there the spinner is the only difference, and both
+        (mutation run recorded in the Task 3 report). ``refresh_all`` rests on
+        ``refresh_all``, so there the spinner is the only difference, and both
         directions are asserted.
+
+        Retargeted in Task 8: ``appearance`` -- the button this test used before --
+        can no longer enter running state at all, because the whitelist in
+        :meth:`test_only_the_two_refresh_actions_may_run` rejects it. The subject
+        had to move to the one *other* id that may spin, chosen for the same
+        reason as before: a glyph that differs from the progress artwork.
         """
         from view.icons import icon
-        from view.widgets.action_rail import ACTION_APPEARANCE
+        from view.widgets.action_rail import ACTION_REFRESH_ALL
 
         rail, manager = self._rail()
-        button = rail.button_for(ACTION_APPEARANCE)
+        button = rail.button_for(ACTION_REFRESH_ALL)
         size = button.iconSize()
         resting = _fingerprint(button.icon().pixmap(size))
 
-        rail.set_progress(ACTION_APPEARANCE, True)
+        rail.set_progress(ACTION_REFRESH_ALL, True)
         shown = _fingerprint(button.icon().pixmap(size))
         self.assertEqual(
             _fingerprint(icon('refresh', manager.tokens.icon,
@@ -498,7 +538,7 @@ class ActionRailProgressStateTest(unittest.TestCase):
         self.assertNotEqual(resting, shown,
                             'the running glyph is indistinguishable from the resting one')
 
-        rail.set_progress(ACTION_APPEARANCE, False)
+        rail.set_progress(ACTION_REFRESH_ALL, False)
         self.assertEqual(resting, _fingerprint(button.icon().pixmap(size)),
                          'the action\'s own glyph must come back')
 
@@ -579,45 +619,104 @@ class ActionRailProgressStateTest(unittest.TestCase):
         second call may not overwrite the saved resting icon with the spinner,
         or the button never returns to its own glyph.
 
-        Driven on ``appearance``, never on ``refresh``. ``refresh`` rests on the
+        Driven on ``refresh_all``, never on ``refresh``. ``refresh`` rests on the
         progress glyph itself, so its resting and running fingerprints are the
         same bytes (measured: identical), and all three comparisons below would
         be a value against itself -- green under the saved-icon implementation
         this test exists to exclude, which is the same blind spot
-        :meth:`test_running_state_swaps_the_glyph_on_a_non_refresh_button`
-        closes for mutation D. ``appearance`` rests on ``settings``, so the two
-        states can be told apart, and the first assertion below is that
-        distinguishability itself: without it the test could quietly regress to
+        :meth:`test_running_state_swaps_the_glyph_on_the_other_refresh_entry`
+        closes for mutation D. ``appearance`` drove this test until Task 8 put the
+        running state behind a whitelist, so the two refresh entries are the only
+        ids that can be in flight at all; ``refresh_all`` rests on ``refresh_all``,
+        so the two states can still be told apart, and the first assertion below is
+        that distinguishability itself: without it the test could quietly regress to
         the vacuous form.
         """
-        from view.widgets.action_rail import ACTION_APPEARANCE
+        from view.widgets.action_rail import ACTION_REFRESH_ALL
 
         rail, _manager = self._rail()
-        button = rail.button_for(ACTION_APPEARANCE)
+        button = rail.button_for(ACTION_REFRESH_ALL)
         size = button.iconSize()
         resting = _fingerprint(button.icon().pixmap(size))
 
-        rail.set_progress(ACTION_APPEARANCE, True)
+        rail.set_progress(ACTION_REFRESH_ALL, True)
         running = _fingerprint(button.icon().pixmap(size))
         self.assertNotEqual(
             resting, running,
-            'appearance must be able to show the spinner at all, or "idempotent" '
+            'refresh_all must be able to show the spinner at all, or "idempotent" '
             'has no second state to be idempotent about')
-        self.assertTrue(rail.is_running(ACTION_APPEARANCE))
+        self.assertTrue(rail.is_running(ACTION_REFRESH_ALL))
 
-        rail.set_progress(ACTION_APPEARANCE, True)
+        rail.set_progress(ACTION_REFRESH_ALL, True)
         self.assertEqual(running, _fingerprint(button.icon().pixmap(size)),
                          'the retry changed the glyph; only one state is running')
-        self.assertTrue(rail.is_running(ACTION_APPEARANCE))
+        self.assertTrue(rail.is_running(ACTION_REFRESH_ALL))
         self.assertFalse(button.isEnabled())
 
-        rail.set_progress(ACTION_APPEARANCE, False)
+        rail.set_progress(ACTION_REFRESH_ALL, False)
         self.assertEqual(
             resting, _fingerprint(button.icon().pixmap(size)),
             'the second set_progress overwrote the resting glyph and the spinner '
-            'is stuck on the appearance button')
-        self.assertFalse(rail.is_running(ACTION_APPEARANCE))
+            'is stuck on the refresh-all button')
+        self.assertFalse(rail.is_running(ACTION_REFRESH_ALL))
         self.assertTrue(button.isEnabled(), 'the retry left the button disabled')
+
+    def test_only_the_two_refresh_actions_may_run(self):
+        """Task 3's hand-off, ruled in Task 8: the running state is whitelisted.
+
+        Progress is the *library scan* made visible. Any id could enter running
+        state before, so ``set_progress('open_file', True)`` parked a refresh
+        spinner on 打开文件 and disabled the button -- a legal call that meant the
+        wrong thing, which is precisely what a caller-discipline comment would not
+        prevent. The whitelist therefore lives here, in the widget that owns the
+        state, and it **raises** rather than ignores: an ignored progress report is
+        a spinner that never appears, and :meth:`ActionRail.set_progress` already
+        refuses an unknown id for that same reason.
+        """
+        from view.widgets.action_rail import (
+            ACTION_REFRESH,
+            ACTION_REFRESH_ALL,
+            PROGRESSABLE_IDS,
+        )
+
+        rail, _manager = self._rail()
+        self.assertEqual({ACTION_REFRESH, ACTION_REFRESH_ALL}, set(PROGRESSABLE_IDS),
+                         'spec §5: only the two library scans report progress')
+
+        blocked = [action_id for action_id in ACTION_IDS
+                   if action_id not in PROGRESSABLE_IDS]
+        self.assertEqual(['library', 'open_file', 'open_folder', 'appearance', 'about'],
+                         blocked,
+                         'the non-progressable set changed without a decision here')
+
+        for action_id in blocked:
+            with self.subTest(action_id=action_id):
+                with self.assertRaises(ValueError):
+                    rail.set_progress(action_id, True)
+                with self.assertRaises(ValueError):
+                    rail.set_progress(action_id, False)
+
+        # A rejected call must leave the rail exactly as it found it.
+        self.assertTrue(
+            all(rail.button_for(action_id).isEnabled() for action_id in ACTION_IDS),
+            'a rejected call disabled something on the way out')
+        self.assertFalse(
+            any(rail.is_running(action_id) for action_id in ACTION_IDS),
+            'a rejected call put a button into flight')
+        for action_id in ACTION_IDS:
+            self.assertEqual(
+                'false', rail.button_for(action_id).property('running'),
+                f'{action_id} wears the running style after a rejected call')
+
+        # And the two ids that may run still do, both directions.
+        for action_id in PROGRESSABLE_IDS:
+            rail.set_progress(action_id, True)
+            self.assertTrue(rail.is_running(action_id))
+            rail.set_progress(action_id, False)
+            self.assertFalse(rail.is_running(action_id))
+        self.assertTrue(
+            all(rail.button_for(action_id).isEnabled() for action_id in ACTION_IDS),
+            'leaving the running state must release the blocked partner too')
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
