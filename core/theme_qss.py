@@ -41,10 +41,12 @@ without a display (see ``tests/test_theme_qss.py``).
 :data:`REQUIRED_OBJECT_NAMES` and :data:`REQUIRED_DYN_PROPERTIES` are the
 contract with the widget tree: Task 5 guarantees the widgets carry these
 names/properties, and ``build_qss`` guarantees every one of them is styled.
-The reverse implication does not hold in batch 2: ``#actionRail`` and
-``#railButton`` are emitted here before they are registered there, because the
-tuple is asserted against the live ``MainWindow`` tree and the rail only enters
-it in Task 7. See the action-rail section for the full ruling.
+The reverse implication does not hold in batch 2: ``#actionRail``/``#railButton``
+(Task 3) and ``#librarySidebar``/``#sidebarTitle``/``#libraryRow``/
+``#sidebarEmpty`` (Task 4) are emitted here before they are registered there,
+because the tuple is asserted against the live ``MainWindow`` tree and those
+widgets only enter it in Task 7. See the action-rail and library-sidebar
+sections for the full ruling.
 """
 
 from core.theme import (
@@ -58,6 +60,7 @@ from core.theme import (
     RADIUS_MD,
     RADIUS_PILL,
     RADIUS_SM,
+    ROW_HEIGHT,
     SPACE_1,
     SPACE_2,
     SPACE_3,
@@ -474,6 +477,75 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     ]))
     emit(_rule('#railButton:focus', [
         ('border', f'2px solid {t.focus_ring}'),
+    ]))
+
+    # -- 曲库浮层 / library sidebar (batch 2, Task 4) ---------------------------
+    # Same registration ruling as the rail: the rules land here, the four names
+    # reach ``REQUIRED_OBJECT_NAMES`` in Task 7, when the panel enters the live
+    # ``MainWindow`` tree the structure test walks.
+    #
+    # ``surface`` (not ``surface_alt``) is the deliberate choice: the panel floats
+    # over ``#playlistView``, whose fill is ``surface`` composited at the user's
+    # playlist alpha, and the palette's ``Base`` -- which is what the scroll area's
+    # viewport paints behind the rows -- is ``surface`` too. A raised card has to
+    # read as *above* the list, so it wears the list's own colour un-composited and
+    # carries a ``border_strong`` edge to say "floating"; ``border`` would vanish
+    # into the list's own 1px rule.
+    emit(_rule('#librarySidebar', [
+        ('background-color', t.surface),
+        ('border', f'1px solid {t.border_strong}'),
+        ('border-radius', _px(RADIUS_MD)),
+        ('padding', f'{_px(SPACE_2)} {_px(SPACE_3)}'),
+    ]))
+    # The panel's heading is a small-cap label, not a second ``#playlistHeader``:
+    # two 15px/600 headings in one window is what made the old left column look
+    # like a second app.
+    emit(_rule('#sidebarTitle', [
+        ('color', t.text_secondary),
+        ('font-size', _px(FONT_SIZE_SM)),
+        ('font-weight', '600'),
+    ]))
+    # A row is a flat, left-aligned, full-width button. The 2px left border is
+    # declared ``transparent`` at rest so the current state can paint it without
+    # shifting the text by two pixels -- the same reserved-gutter trick the
+    # delegate uses for the playing bar.
+    emit(_rule('#libraryRow', [
+        ('background-color', 'transparent'),
+        ('border', 'none'),
+        ('border-left', '2px solid transparent'),
+        ('border-radius', _px(RADIUS_SM)),
+        ('padding', f'{_px(SPACE_1)} {_px(SPACE_3)}'),
+        ('min-height', _px(ROW_HEIGHT)),
+        ('text-align', 'left'),
+        ('color', t.text_primary),
+    ]))
+    emit(_rule('#libraryRow:hover', [
+        ('background-color', t.hover_bg),
+    ]))
+    emit(_rule('#libraryRow:pressed', [
+        ('background-color', t.button_pressed),
+    ]))
+    # The current library, marked by ``LibrarySidebar.set_current`` with
+    # ``setProperty('current', 'true')`` + unpolish/polish. ``selection_bg`` is the
+    # sheet's one "this row is chosen" fill (``PlaylistItemDelegate`` paints the
+    # same token for a selected track); ``accent_soft`` is *not* used here, for the
+    # two reasons the selected chip already records -- it is byte-identical to
+    # ``playing_bg``, so a library switcher would mimic track state, and
+    # ``accent`` on it is under the 4.5 text bar in LIGHT. ``text_primary`` on
+    # ``selection_bg`` is a contrast-pinned pair, and the glyph in it is covered by
+    # the ``icon``/``selection_bg`` pin in ``tests/test_theme.py``.
+    emit(_rule('#libraryRow[current="true"]', [
+        ('background-color', t.selection_bg),
+        ('border-left', f'2px solid {t.accent}'),
+        ('color', t.text_primary),
+    ]))
+    emit(_rule('#libraryRow:focus', [
+        ('border', f'2px solid {t.focus_ring}'),
+    ]))
+    # First launch (spec §6): the panel is not empty, it is *explaining*.
+    emit(_rule('#sidebarEmpty', [
+        ('color', t.text_muted),
+        ('font-size', _px(FONT_SIZE_SM)),
     ]))
 
     # -- 正在播放文字区 / now-playing labels ---------------------------------

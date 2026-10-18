@@ -658,11 +658,13 @@ class PaletteOnlyColoursTest(unittest.TestCase):
         )
         self.assertEqual(
             {'background-color', 'color', 'border', 'border-top', 'border-bottom',
-             'border-right', 'border-color', 'outline'},
+             'border-left', 'border-right', 'border-color', 'outline'},
             {prop for prop, _value in declarations},
             'the colour-property inventory changed; ``border-right`` arrived with '
-            'the batch 2 rail divider, and a new colour-bearing property must be '
-            'added to COLOUR_PROPERTIES so the no-literal guards keep reading it')
+            'the batch 2 rail divider and ``border-left`` with the batch 2 sidebar '
+            'row\'s current-marker (a transparent one at rest, so the marker cannot '
+            'shift the text by two pixels), and a new colour-bearing property must '
+            'be added to COLOUR_PROPERTIES so the no-literal guards keep reading it')
         self.assertTrue(
             any('rgba(' in value for _prop, value in declarations),
             'the alpha-composited surfaces vanished from the sheet',

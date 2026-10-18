@@ -193,6 +193,12 @@ class ThemeContrastTest(unittest.TestCase):
         ('icon', 'hover_bg', 3.0),
         ('icon', 'button_disabled_bg', 3.0),
         ('icon', 'accent_soft', 3.0),
+        # Batch 2 Task 4's library rows: the ``folder`` glyph is rasterised from
+        # ``tokens.icon`` and the row it sits on can be the current library, whose
+        # fill ``#libraryRow[current="true"]`` emits as ``selection_bg``. The other
+        # three grounds the row can wear -- ``surface`` (the panel), ``hover_bg``
+        # and ``button_pressed`` -- are already pinned above.
+        ('icon', 'selection_bg', 3.0),
         # The ``icon_muted`` / ``surface`` pair above is a deliberate superset:
         # the loop-off glyph paints on the button, never on the panel. It stays
         # because #loopButton's fill is one QSS edit away from transparent (the
