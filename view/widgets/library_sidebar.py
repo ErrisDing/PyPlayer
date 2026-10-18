@@ -20,8 +20,12 @@ Three constraints shape the code below:
   parent's content area (``raise_()`` + ``setGeometry``) rather than opening a
   top-level popup, for the same reason the toast does: a child cannot land on
   the wrong monitor, cannot be reordered below the window on macOS, and does not
-  have to be re-positioned when the window moves. The cost is that clicks
-  outside it are not delivered to it, so dismissal needs an event filter -- see
+  have to be re-positioned when the window moves. The cost is that neither of the
+  panel's two dismissal routes can come from itself: a click outside it is not
+  delivered to it, and a key press is delivered to ``focusWidget()`` and only
+  walks *up* the parent chain from there -- the panel is a sibling of the
+  playlist, never its ancestor, and holds no focus of its own. Both routes
+  therefore run through the application-level filter, see
   :meth:`LibrarySidebar.eventFilter`.
 * **Rows carry a name and nothing else.** A per-library track count is not
   available: ``library_manager.scan_directory()`` returns paths and never reads
@@ -57,8 +61,14 @@ from core.theme import (
 )
 from view.icons import icon
 
-#: Glyph size inside a :data:`core.theme.ROW_HEIGHT` row. Same token arithmetic
-#: as the rail (``TRANSPORT_SIZE // 2`` there): the ink is half the control.
+#: Glyph size inside a :data:`core.theme.ROW_HEIGHT` row. This is *not* the
+#: rail's arithmetic (``TRANSPORT_SIZE // 2``, 20 px there): a rail button is a
+#: 40 px square, a row here is a 28 px text line. The sheet gives a row
+#: ``padding: SPACE_1 SPACE_3``, so its content box is
+#: ``ROW_HEIGHT - 2 * SPACE_1`` = 20 px, and ``SPACE_4`` (16) is the largest
+#: ``SPACE_*`` step that fits inside it while leaving the name's own line height
+#: untouched. ``tests/test_library_sidebar.py`` asserts that inequality, so the
+#: arithmetic in this comment is checked rather than narrated.
 _ROW_ICON_SIZE = SPACE_4
 
 #: ``#libraryRow``'s non-text width, mirrored here for the elide calculation:
@@ -299,6 +309,11 @@ class LibrarySidebar(QFrame):
         ``isVisible() == False`` even when it was told to show, so the visibility
         call cannot answer "did the user open this" and ``toggle()`` would drift
         out of step with the rail button.
+
+        The flag is only meaningful while it tracks real visibility, and Qt can
+        hide the panel without asking this class -- so :meth:`hideEvent` writes
+        ``False`` here whenever a ``QEvent.Hide`` arrives, which keeps the rail
+        button's one-press-per-toggle arithmetic true for every route out.
         """
         return self._is_open
 
@@ -316,9 +331,30 @@ class LibrarySidebar(QFrame):
 
     def hide_panel(self) -> None:
         """Hide the panel and stop watching for outside clicks. Idempotent."""
-        self._is_open = False
         self._remove_outside_filter()
+        self._is_open = False
         self.hide()
+
+    def hideEvent(self, event) -> None:
+        """Drop the application-level filter whenever the panel stops being visible.
+
+        ``hide_panel()`` is not the only route out: a parent-window teardown, an
+        explicit ``sidebar.hide()``/``setVisible(False)`` or a hide-through of the
+        presenter all fire ``QEvent.Hide`` directly. Without this hook those paths
+        leave the filter installed while ``_is_open`` still reads ``True``, so
+        :meth:`eventFilter` continues to see -- and consume -- mouse presses in
+        the parent subtree even though the panel is invisible. That makes the
+        rail toggle look dead: the first press is swallowed, the second reopens
+        because the flag says it was never open, and every click in the window
+        between them is silently eaten.
+
+        Both calls are idempotent, and :meth:`hide_panel` has already cleared them
+        by the time Qt reaches here for the normal route, so this hook only ever
+        repairs a bypass.
+        """
+        super().hideEvent(event)
+        self._remove_outside_filter()
+        self._is_open = False
 
     def toggle(self) -> None:
         """Open when closed, close when open. Two calls are therefore a no-op."""
@@ -363,8 +399,12 @@ class LibrarySidebar(QFrame):
         press on the playlist view is delivered to the view: a parent-level
         filter only sees events the parent itself receives, so clicks on any
         widget that accepts its own press would leave the panel floating forever.
-        :meth:`eventFilter` still restricts itself to the parent's own subtree,
-        so a modal dialog opened over the panel is untouched.
+        The same install is what puts the keyboard and the parent's resize inside
+        reach -- every event the window receives passes :meth:`eventFilter` first,
+        whatever widget holds focus and whether the window holds any at all.
+        The price is that the filter now sees events belonging to *every*
+        top-level in the application, which is why the gate is window identity
+        rather than the parent's subtree: see :meth:`_shares_window`.
         """
         if self._filter_host is not None:
             return
@@ -380,11 +420,56 @@ class LibrarySidebar(QFrame):
         self._filter_host.removeEventFilter(self)
         self._filter_host = None
 
+    def _shares_window(self, watched: QWidget) -> bool:
+        """Whether ``watched`` lives in the top-level window the panel floats in.
+
+        The gate is the window, not the parent's subtree, for two reasons:
+
+        * a widget in another top-level -- a modal directory chooser, a menu, a
+          tooltip -- must never disturb the panel and must never have its own
+          mouse press eaten by it; and
+        * a subtree test would be wrong in the other direction as soon as Task 7
+          parents the panel to the content area: the rail, the strip and the toast
+          are then *siblings* of that area, still inside ``MainWindow``, and a
+          press on any of them has to dismiss the panel.
+
+        ``isAncestorOf`` is not a substitute for the second point, and measured on
+        Qt 6.11 it is not even a substitute for the first: it stops at window
+        boundaries, so it already reports ``False`` for a dialog parented to the
+        panel. Window identity is the question the filter actually needs.
+        """
+        parent = self.parentWidget()
+        return parent is not None and watched.window() is parent.window()
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Dismiss the panel on a mouse press inside its own window, outside itself."""
-        if (self._is_open
-                and event.type() == QEvent.Type.MouseButtonPress
-                and isinstance(watched, QWidget)):
+        """Dismiss the panel on an outside press or an Escape; re-place it when
+        the parent resizes.
+
+        ``isVisible()`` is in the gate next to ``_is_open`` on purpose: the flag
+        answers "did the user open this" (see :meth:`is_panel_open`) and can only
+        be trusted while the panel really is on screen. A hide that bypassed
+        :meth:`hide_panel` clears both from :meth:`hideEvent`; the gate means that
+        even a route this class has not thought of cannot leave an invisible panel
+        swallowing presses.
+        """
+        if not (self._is_open and self.isVisible() and isinstance(watched, QWidget)):
+            return super().eventFilter(watched, event)
+        etype = event.type()
+        if etype == QEvent.Type.KeyPress:
+            # Escape belongs to the filter, not to ``keyPressEvent``. Qt delivers
+            # a key press to ``focusWidget()`` and only walks *up* the parent
+            # chain when it is not accepted; this panel is ``NoFocus`` and is a
+            # sibling of the playlist rather than its ancestor, so with the
+            # keyboard where the user actually put it -- the list, right after
+            # opening from the rail -- a press injected into the panel's own
+            # handler could never be reached. Measured: the filter sees the key
+            # both at the focus widget and at the top-level, so the route also
+            # works when nothing has focus.
+            if event.key() == Qt.Key.Key_Escape and self._shares_window(watched):
+                self.hide_panel()
+                event.accept()
+                return True
+        elif etype == QEvent.Type.MouseButtonPress:
             # *Position*, not the receiver, decides "inside the panel". A press on a
             # part of the panel that handles nothing -- its padding, the title
             # label -- is ignored by that widget and Qt then re-delivers it to the
@@ -394,8 +479,7 @@ class LibrarySidebar(QFrame):
             point = _global_press_point(event)
             if point is not None and self.rect().contains(self.mapFromGlobal(point)):
                 return False
-            parent = self.parentWidget()
-            if parent is not None and (watched is parent or parent.isAncestorOf(watched)):
+            if self._shares_window(watched):
                 self.hide_panel()
                 # Consume the press. A real popup does this, and here it is the
                 # only way the rail's own library button can close the panel:
@@ -403,15 +487,15 @@ class LibrarySidebar(QFrame):
                 # and ``toggle()`` would immediately re-open the panel the user
                 # just closed.
                 return True
+        elif etype == QEvent.Type.Resize and watched is self.parentWidget():
+            # The width clamp in ``_place_panel`` is a function of the parent, so
+            # placing once at show time is not a contract, it is a snapshot: shrink
+            # the window under ``SIDEBAR_WIDTH + RAIL_WIDTH`` while the panel
+            # floats and the snapshot overhangs the edge -- the exact overflow
+            # audit item B3 exists to remove. ``_rebuild_rows`` re-places for the
+            # row count; this re-places for the window.
+            self._place_panel()
         return super().eventFilter(watched, event)
-
-    def keyPressEvent(self, event) -> None:
-        """Escape closes. Any other key falls through to the base widget."""
-        if self._is_open and event.key() == Qt.Key.Key_Escape:
-            self.hide_panel()
-            event.accept()
-            return
-        super().keyPressEvent(event)
 
     # === Slots ===
 
@@ -427,7 +511,14 @@ class LibrarySidebar(QFrame):
         self.hide_panel()
 
     def _on_add_clicked(self) -> None:
-        """Ask for a folder and emit it. A cancelled chooser emits nothing."""
+        """Ask for a folder and emit it. A cancelled chooser emits nothing.
+
+        Parented to ``self`` on purpose -- the chooser belongs to the panel that
+        opened it -- which is why :meth:`_shares_window` gates on window identity
+        and not on the parent's subtree: a non-native ``QFileDialog`` keeps this
+        widget in ``parentWidget()`` while being its own top-level, and a press
+        inside it must neither collapse the panel nor be eaten by the filter.
+        """
         folder = QFileDialog.getExistingDirectory(
             self, i18n.get('dialog.add_library'))
         if folder:

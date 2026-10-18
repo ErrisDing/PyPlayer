@@ -7,12 +7,32 @@ overflowing a horizontal chip row) and to spec §3.2's rule that *choosing* and
 icon rail. That makes the contract below mostly about the floating-panel
 mechanics rather than about colour:
 
-* **The panel is a child widget, not a window**, so "click outside" has to come
-  from an event filter. :meth:`test_click_outside_closes_panel` therefore posts
-  a real ``QMouseEvent`` at the parent's content area and runs the event loop --
-  calling ``hide_panel()`` directly would assert nothing about the filter, and a
-  filter that hides on *every* press (including presses inside the panel) would
-  pass such a test. Both directions are asserted.
+* **The panel is a child widget, not a window**, so neither of its two dismissal
+  routes can come from itself. :meth:`test_click_outside_closes_panel` therefore
+  posts a real ``QMouseEvent`` at the parent's content area and runs the event
+  loop -- calling ``hide_panel()`` directly would assert nothing about the filter,
+  and a filter that hides on *every* press (including presses inside the panel)
+  would pass such a test. Both directions are asserted.
+* **Escape reaches the panel through the same filter, at a focus position the
+  panel does not own.** The panel is ``NoFocus``, and Qt delivers a key press to
+  ``focusWidget()`` and walks *up* the parent chain on non-accept; the panel is a
+  sibling of the list, never its ancestor, so a ``keyPressEvent`` on the panel is
+  unreachable with the keyboard in the list.
+  :meth:`test_escape_closes_panel` therefore injects into ``app.focusWidget()``
+  (and into the window when nothing has focus), never into the panel -- the form
+  that could not fail for the reason the handler was wrong.
+* **The filter runs on the application, so it must not touch other windows.**
+  :meth:`test_a_press_in_another_top_level_window_leaves_the_panel_alone` pins
+  that a press in a dialog owned by the panel, or in an unrelated window, is
+  neither consumed nor dismissive;
+  :meth:`test_a_press_elsewhere_in_the_window_dismisses_outside_the_parent_subtree`
+  pins the other half -- a widget that shares the window but sits outside the
+  parent's subtree (Task 7's rail, strip and toast are siblings of the content
+  area) still closes the panel.
+* **A hide that bypasses ``hide_panel()`` gives the filter back.**
+  :meth:`test_a_bypassed_hide_stops_consuming_presses` hides through ``hide()``
+  and then asserts that a press reaches its receiver: an installed-but-invisible
+  panel swallows mouse presses, which reads to the user as a dead rail button.
 * **``toggle()`` is the rail button's only entry point**, and the rail button is
   itself outside the panel, so an outside-press dismissal that let the click
   through would close and immediately re-open the panel. The filter consumes the
@@ -22,7 +42,9 @@ mechanics rather than about colour:
 * **Geometry is spec §6**: width ``min(SIDEBAR_WIDTH, parent - RAIL_WIDTH)``,
   internal scrolling, no horizontal scrollbar, no clipping of a long name. The
   narrow-parent case is asserted too, because ``<= min(...)`` on an 820 px parent
-  is also satisfied by a panel that never resizes at all.
+  is also satisfied by a panel that never resizes at all -- and it is asserted by
+  shrinking the window *while the panel floats*, because a clamp computed at show
+  time is a snapshot, not a contract.
 * **No track counts** (controller constraint, batch 1 ruling):
   ``library_manager.scan_directory()`` never reads metadata, so a per-library
   count is not obtainable this batch. A row shows the name only, and
@@ -96,14 +118,32 @@ def _content_area_class():
     an application-level filter, which is what the panel needs to dismiss on a click
     in the playlist.
 
+    Two more things it does, because ``QListView`` does them and the panel's
+    dismissal contract depends on both:
+
+    * ``WheelFocus``, the list's real focus policy, so
+      :meth:`test_escape_closes_panel` can put the keyboard where the user puts it
+      and deliver the key to ``app.focusWidget()`` instead of to the panel;
+    * a ``press_count``, which is the only way to tell "the filter dismissed the
+      panel and consumed the press" from "the filter ate the press while the panel
+      was not even there" -- a consumption test that only looks at the panel's own
+      state cannot make that difference.
+
     Built lazily so this module stays importable without PyQt6 (the class body is a
     ``QWidget`` subclass, and a syntax-safe import at module scope would make the
     whole file uncollectable).
     """
+    from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QWidget
 
     class ContentArea(QWidget):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.press_count = 0
+            self.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
+
         def mousePressEvent(self, event):
+            self.press_count += 1
             event.accept()
 
     return ContentArea
@@ -159,6 +199,54 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         self.addCleanup(sidebar.hide_panel)
         self.app.processEvents()
         return sidebar, manager, parent, content
+
+    # === event delivery ===
+
+    def _post_mouse(self, widget, event_type):
+        """Send a real mouse event at ``widget``'s centre and run the loop.
+
+        Posted, not ``hide_panel()``: the point of these tests is the event
+        filter. Posting to a *child* of the parent is also what proves the filter
+        sits on the application rather than only on the parent widget -- a press
+        on a grandchild never reaches a parent-level filter, and a row that
+        accepts its own press (like ``QListView`` does) would leave the panel
+        floating.
+        """
+        from PyQt6.QtCore import QPointF, Qt
+        from PyQt6.QtGui import QMouseEvent
+
+        position = QPointF(widget.width() / 2.0, widget.height() / 2.0)
+        event = QMouseEvent(
+            event_type, position,
+            widget.mapToGlobal(position),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+        self.app.postEvent(widget, event)
+        self.app.processEvents()
+
+    def _press_on(self, widget):
+        from PyQt6.QtCore import QEvent
+
+        self._post_mouse(widget, QEvent.Type.MouseButtonPress)
+
+    def _release_on(self, widget):
+        from PyQt6.QtCore import QEvent
+
+        self._post_mouse(widget, QEvent.Type.MouseButtonRelease)
+
+    def _click_on(self, widget):
+        self._press_on(widget)
+        self._release_on(widget)
+
+    def _escape(self, receiver):
+        """Inject an Escape key press into ``receiver``, and hand the event back."""
+        from PyQt6.QtCore import QEvent, Qt
+        from PyQt6.QtGui import QKeyEvent
+
+        event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape,
+                          Qt.KeyboardModifier.NoModifier)
+        self.app.sendEvent(receiver, event)
+        return event
 
     # === Step 1 tests ===
 
@@ -237,14 +325,25 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         self.assertEqual(0, horizontal.maximum(),
                          'content is wider than the viewport even with the bar hidden')
 
-        # The clamp has to be live, not a constant that happens to fit 820 px.
+        # The clamp has to be live, not a constant that happens to fit 820 px --
+        # and live means *on resize*, because a window shrunk while the panel
+        # floats is the case the user actually produces. Re-showing here would
+        # hide the missing hook: ``show_panel`` re-places anyway, so the assert
+        # below would pass on a panel that never watches the parent.
         parent.resize(260, 600)
         self.app.processEvents()
-        sidebar.show_panel()
-        self.app.processEvents()
-        self.assertLessEqual(sidebar.width(), 260 - RAIL_WIDTH)
+        self.assertTrue(sidebar.is_panel_open(),
+                        'the panel closed on its own, so the geometry check below '
+                        'would be measuring a fresh show rather than a re-place')
+        self.assertTrue(sidebar.isVisible())
+        narrow = min(SIDEBAR_WIDTH, 260 - RAIL_WIDTH)
+        self.assertEqual(narrow, sidebar.width(),
+                         'the panel did not re-clamp to the shrunk window')
         self.assertLess(sidebar.width(), SIDEBAR_WIDTH,
                         'the panel ignored the narrow window')
+        self.assertLessEqual(sidebar.x() + sidebar.width(), parent.width(),
+                             'the panel overhangs the window: the B3 overflow this '
+                             'panel exists to remove, reintroduced by a stale clamp')
 
     def test_long_library_name_is_elided_not_clipped(self):
         """An 80-character name: ellipsis inside the control, full name on hover."""
@@ -334,65 +433,260 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         self.assertTrue(sidebar.isVisible())
 
     def test_escape_closes_panel(self):
-        """A real ``QKeyEvent`` through ``keyPressEvent``, not a direct call."""
+        """Escape reaches the panel from the focus position the user actually has.
+
+        The key is delivered to ``app.focusWidget()`` (and, in the second half, to
+        the top-level with nothing focused) -- never to the panel. Injecting into
+        the panel would be direct delivery that bypasses Qt's routing, and the
+        panel is ``NoFocus`` while the playlist is a *sibling*, not an ancestor, of
+        it: with the keyboard in the list a ``keyPressEvent`` on the panel is
+        unreachable, which is exactly the failure such a test could not see.
+        """
         from PyQt6.QtCore import QEvent, Qt
         from PyQt6.QtGui import QKeyEvent
 
-        sidebar, _manager, _parent, _content = self._sidebar()
+        sidebar, _manager, parent, content = self._sidebar()
         sidebar.set_libraries(_libraries(2))
         sidebar.show_panel()
+        content.setFocus()
         self.app.processEvents()
         self.assertTrue(sidebar.is_panel_open())
+        self.assertIs(content, self.app.focusWidget(),
+                      'the harness has no focus in the list, so this test would be '
+                      'back to injecting the key into the panel itself')
 
-        event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
-        self.app.sendEvent(sidebar, event)
+        event = self._escape(self.app.focusWidget())
         self.assertTrue(event.isAccepted(),
                         'Escape was ignored, so the panel stays over the list')
         self.assertFalse(sidebar.is_panel_open())
         self.assertFalse(sidebar.isVisible())
 
         # Escape while closed must not raise or re-open anything.
-        again = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape,
-                          Qt.KeyboardModifier.NoModifier)
-        self.app.sendEvent(sidebar, again)
+        self._escape(self.app.focusWidget() or parent)
         self.assertFalse(sidebar.is_panel_open())
+
+        # The other position a real window has: no widget focused, so Qt hands
+        # the key to the top-level. The panel must still close -- the filter sees
+        # both routes, a handler on the panel sees neither.
+        content.clearFocus()
+        self.app.processEvents()
+        sidebar.show_panel()
+        self.app.processEvents()
+        self.assertTrue(sidebar.is_panel_open())
+        self.assertIsNone(self.app.focusWidget(),
+                          'the window kept a focus widget, so this is not the '
+                          'no-focus case the comment claims to cover')
+        self._escape(parent)
+        self.assertFalse(sidebar.is_panel_open(),
+                         'Escape with nothing focused left the panel floating')
 
         # A different key must not close it: the panel is not a modal grab.
         sidebar.show_panel()
-        other = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier)
-        self.app.sendEvent(sidebar, other)
+        other = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A,
+                          Qt.KeyboardModifier.NoModifier)
+        self.app.sendEvent(parent, other)
         self.assertTrue(sidebar.is_panel_open(),
                         'any key press closes the panel')
 
+    def test_a_bypassed_hide_stops_consuming_presses(self):
+        """Both halves of the dismissal gate: the flag, and real visibility.
+
+        ``hide_panel()`` is paired, but it is not the only route out: a presenter
+        can call ``sidebar.hide()``/``setVisible(False)``, and Qt hides the panel
+        with the window around it. A filter that survives such a hide keeps
+        consuming presses -- the gate was the flag alone, so an invisible panel
+        still ``return True`` on a press nowhere near it -- and the flag drifting
+        from visibility makes the rail's library button look broken rather than
+        merely stale: the press is eaten, the next toggle "closes" a panel that is
+        already gone, the one after that opens it again.
+
+        The first half hides through ``hide()`` and asserts the press reaches its
+        receiver, which only a counter on the receiver can show. The second half
+        takes the state no ``QEvent.Hide`` can produce -- ``show_panel()`` while
+        the window is hidden, so the flag is true and the screen is not -- and
+        asks the same question of the ``isVisible()`` term.
+        """
+        sidebar, _manager, parent, content = self._sidebar()
+        sidebar.set_libraries(_libraries(2))
+        sidebar.show_panel()
+        self.app.processEvents()
+        self.assertTrue(sidebar.is_panel_open())
+
+        sidebar.hide()          # the bypass route: no hide_panel()
+        self.app.processEvents()
+        self.assertFalse(sidebar.isVisible())
+        self.assertFalse(sidebar.is_panel_open(),
+                         'the panel is hidden but still reports itself open, so '
+                         'the rail button has to be pressed twice to open it again')
+        self.assertIsNone(sidebar._filter_host,
+                         'the application-level filter survived a hide that did not '
+                         'go through hide_panel()')
+
+        # A press in the window now reaches the widget underneath it.
+        presses_before = content.press_count
+        self._press_on(content)
+        self.assertEqual(presses_before + 1, content.press_count,
+                         'an invisible panel consumed a mouse press in the window')
+        self.assertFalse(sidebar.is_panel_open())
+        self.assertFalse(sidebar.isVisible())
+
+        # One toggle from here opens: the flag tracks visibility again.
+        sidebar.toggle()
+        self.assertTrue(sidebar.is_panel_open())
+        self.assertTrue(sidebar.isVisible())
+
+        # The other half of the gate: real visibility. Opening a panel whose
+        # window is not shown -- Task 7 can restore the shell that way -- leaves
+        # ``_is_open`` true and ``isVisible()`` false, and no ``QEvent.Hide`` ever
+        # arrives to clear it. Only the visibility term in the gate stops that
+        # state from eating a press posted into the hidden window.
+        sidebar.hide_panel()
+        parent.hide()
+        self.app.processEvents()
+        sidebar.show_panel()
+        self.app.processEvents()
+        self.assertTrue(sidebar.is_panel_open())
+        self.assertFalse(sidebar.isVisible(),
+                         'the fixture lost its point: the panel is visible, so the '
+                         'visibility term in the gate is not what is being tested')
+        presses_before = content.press_count
+        self._press_on(content)
+        self.assertEqual(presses_before + 1, content.press_count,
+                         'a panel that is open but not on screen consumed a press')
+
+    def test_a_press_in_another_top_level_window_leaves_the_panel_alone(self):
+        """A press in somebody else's window is neither eaten nor an outside click.
+
+        The filter runs on the ``QApplication``, so it sees events for windows the
+        panel does not belong to. The two shapes here are the ones this widget can
+        actually meet: a dialog the panel *owns* -- the directory chooser
+        ``_on_add_clicked`` opens with ``self`` as its parent, and a top-level
+        keeps its owner in ``parentWidget()`` while being its own window -- and a
+        window unrelated to the tree entirely. The fixture asserts the press point
+        is clear of the panel, otherwise it is the position gate, not the window
+        gate, doing the work.
+
+        Measured on Qt 6.11: the old ``parent.isAncestorOf(watched)`` gate already
+        let both cases through, because ``isAncestorOf`` stops at window
+        boundaries. This is therefore a regression pin for the tightened gate, not
+        the reproduction of a live dialog defect -- the counterpart that the new
+        gate genuinely changes is
+        :meth:`test_a_press_elsewhere_in_the_window_dismisses_outside_the_parent_subtree`.
+        """
+        from PyQt6.QtCore import QPoint, QPointF
+        from PyQt6.QtWidgets import QDialog, QPushButton, QWidget
+
+        for owned_by_panel in (True, False):
+            with self.subTest(owned_by_panel=owned_by_panel):
+                sidebar, _manager, parent, _content = self._sidebar()
+                sidebar.set_libraries(_libraries(2))
+                sidebar.show_panel()
+                self.app.processEvents()
+
+                other = (QDialog(sidebar) if owned_by_panel else QWidget())
+                other.setObjectName('otherWindow')
+                button = QPushButton('open', other)
+                button.setObjectName('otherWindowButton')
+                button.setGeometry(4, 4, 120, 30)
+                other.resize(220, 90)
+                other.show()
+                self.app.processEvents()
+                # Park it clear of the panel: an owned dialog is centred over its
+                # owner by default, and a fixture that lands on top of the panel
+                # would be exercising the position gate, not the window gate.
+                other.move(parent.mapToGlobal(
+                    QPoint(parent.width() - 220, parent.height() - 90)))
+                self.app.processEvents()
+                self.addCleanup(other.deleteLater)
+
+                self.assertIsNot(other.window(), parent.window(),
+                                 'the fixture put its "other window" inside the '
+                                 "panel's own window")
+                point = other.mapToGlobal(QPointF(button.x() + button.width() / 2,
+                                                  button.y() + button.height() / 2)
+                                          ).toPoint()
+                self.assertFalse(sidebar.rect().contains(sidebar.mapFromGlobal(point)),
+                                 'the other window sits on the panel, so the press '
+                                 'point -- not the window gate -- decided the outcome')
+
+                pressed = []
+                button.pressed.connect(lambda: pressed.append(1))
+                self._press_on(button)
+                self.assertEqual([1], pressed,
+                                 'the filter ate a press meant for another window')
+                self.assertTrue(sidebar.is_panel_open(),
+                                'a press in another top-level window collapsed the panel')
+
+    def test_a_press_elsewhere_in_the_window_dismisses_outside_the_parent_subtree(self):
+        """Task 7's shape: the panel floats in a content area with sibling widgets.
+
+        Once the panel is parented to a *container* rather than to the window, the
+        rail, the strip and the toast are siblings of that container -- inside the
+        same window, outside its subtree. A press on any of them is an outside
+        press and has to dismiss the panel; a subtree test would leave the panel
+        floating over the list forever. Measured: with the gate on
+        ``parent.isAncestorOf`` this fixture fails (the sibling is not a descendant
+        of the container), which is what the window-identity gate changes.
+        """
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtWidgets import QVBoxLayout, QWidget
+
+        from view.widgets.library_sidebar import LibrarySidebar
+
+        manager = make_manager('light')
+        manager.apply_to(self.app)
+
+        window = QWidget()
+        window.resize(*PARENT_SIZE)
+        inner = QVBoxLayout(window)
+        inner.setContentsMargins(0, 0, 0, 0)
+        inner.setSpacing(0)
+        # The content area the panel floats in: a child of the window, not the
+        # window itself -- Task 7's shape.
+        area = QWidget(window)
+        area.setObjectName('contentAreaStandIn')
+        area.setFixedHeight(520)
+        # A rail/strip-shaped sibling: in the window, outside the area's subtree.
+        sibling = _content_area_class()(window)
+        sibling.setObjectName('siblingStandIn')
+        sibling.setFixedSize(60, 60)
+        inner.addWidget(area)
+        inner.addWidget(sibling)
+        window.show()
+        self.app.processEvents()
+
+        sidebar = LibrarySidebar(manager, area)
+        self.addCleanup(sidebar.hide_panel)
+        self.addCleanup(sidebar.deleteLater)
+        self.addCleanup(window.deleteLater)
+        sidebar.set_libraries(_libraries(2))
+        sidebar.show_panel()
+        self.app.processEvents()
+        self.assertTrue(sidebar.is_panel_open())
+        # The two halves of the fixture the gate is being tested against.
+        self.assertFalse(area.isAncestorOf(sibling),
+                         'the sibling ended up inside the parent subtree, so this '
+                         'fixture no longer separates subtree from window')
+        self.assertIs(sibling.window(), area.window(),
+                      'the sibling is not in the same window as the panel')
+        centre = sibling.mapToGlobal(QPoint(sibling.width() // 2,
+                                           sibling.height() // 2))
+        self.assertFalse(sidebar.rect().contains(sidebar.mapFromGlobal(centre)),
+                         'the sibling sits under the panel, so the press point -- '
+                         'not the window gate -- decided the outcome')
+
+        presses_before = sibling.press_count
+        self._press_on(sibling)
+        self.assertFalse(sidebar.is_panel_open(),
+                         'a press on a widget that shares the window but not the '
+                         "parent's subtree left the panel floating")
+        self.assertEqual(presses_before, sibling.press_count,
+                         'the dismissing press was not consumed, so it also became '
+                         'a click on that sibling')
+
     def test_click_outside_closes_panel(self):
         """A posted mouse press on the content area dismisses; one inside does not."""
-        from PyQt6.QtCore import QEvent, QPointF, Qt
-        from PyQt6.QtGui import QMouseEvent
         from PyQt6.QtWidgets import QPushButton
-
-        def post(widget, event_type):
-            event = QMouseEvent(
-                event_type,
-                QPointF(widget.width() / 2.0, widget.height() / 2.0),
-                widget.mapToGlobal(QPointF(widget.width() / 2.0,
-                                           widget.height() / 2.0)),
-                Qt.MouseButton.LeftButton,
-                Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
-            # Posted, not ``hide_panel()``: the point of the test is the event
-            # filter. Posting to a *child* of the parent is also what proves the
-            # filter sits on the application rather than only on the parent widget
-            # -- a press on a grandchild never reaches a parent-level filter, and a
-            # row that accepts its own press (like ``QListView`` does) would leave
-            # the panel floating.
-            self.app.postEvent(widget, event)
-            self.app.processEvents()
-
-        def press_on(widget):
-            post(widget, QEvent.Type.MouseButtonPress)
-
-        def click_on(widget):
-            post(widget, QEvent.Type.MouseButtonPress)
-            post(widget, QEvent.Type.MouseButtonRelease)
 
         sidebar, _manager, parent, content = self._sidebar()
         sidebar.set_libraries(_libraries(3))
@@ -401,22 +695,26 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         self.assertTrue(sidebar.is_panel_open())
 
         rows = library_rows(sidebar)
-        press_on(rows[0])
+        self._press_on(rows[0])
         self.assertTrue(sidebar.is_panel_open(),
                         'a press inside the panel dismissed it: the filter does not '
                         'check whether the press landed in its own geometry')
-        press_on(sidebar)
+        self._press_on(sidebar)
         self.assertTrue(sidebar.is_panel_open(),
                         'a press on the panel frame itself dismissed it')
 
         emitted = []
         sidebar.library_selected.connect(emitted.append)
-        press_on(content)
+        presses_before = content.press_count
+        self._press_on(content)
         self.assertFalse(sidebar.is_panel_open(),
                          'a press on the content area left the panel floating')
         self.assertFalse(sidebar.isVisible())
         self.assertEqual([], emitted,
                          'the dismissing press also reached a library row')
+        self.assertEqual(presses_before, content.press_count,
+                         'the dismissing press was delivered to the list as well, so '
+                         'the filter dismisses without consuming')
 
         # The rail's library button is the case the filter has to *consume* for:
         # a press that is dismissed-but-delivered becomes a click on that button,
@@ -427,14 +725,22 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         sidebar.show_panel()
         self.app.processEvents()
         self.assertTrue(sidebar.is_panel_open())
-        click_on(toggle)
+        self._click_on(toggle)
         self.assertFalse(
             sidebar.is_panel_open(),
             'the click that dismissed the panel also reached its toggle, which '
             're-opened it -- the filter must consume the dismissing press')
 
     def test_add_entry_emits_path(self):
-        """The footer entry opens a directory chooser and emits the chosen path."""
+        """The footer entry opens a directory chooser and emits the chosen path.
+
+        The chooser itself is stubbed: what is under test is the emit-and-cancel
+        contract, not Qt's file list. That leaves the *window* the chooser opens
+        uncovered here, which is
+        :meth:`test_a_press_in_another_top_level_window_leaves_the_panel_alone`'s
+        job -- the panel must neither eat the dialog's presses nor collapse under
+        it, and a stubbed chooser cannot show that.
+        """
         from unittest import mock
 
         from PyQt6.QtWidgets import QFileDialog
@@ -543,16 +849,69 @@ class LibrarySidebarSheetTest(unittest.TestCase):
                 empty = block(qss, '#sidebarEmpty')
                 self.assertIn(f'color: {tokens.text_muted};', empty)
 
-        # The ``folder`` glyph is rasterised from ``tokens.icon`` before QSS ever
-        # sees it, so the fill it lands on has to be pinned in the contrast set --
-        # the same rule Task 3 recorded for the rail's seven glyphs.
+                # ``#libraryRow`` reserves a 2 px transparent ``border-left`` so the
+                # current marker can paint without moving the text. ``border`` is a
+                # shorthand and resets all four sides, so the focus ring must be
+                # written per side or focusing a row shifts it by 2 px -- and, on
+                # the current row, buries the ``accent`` marker under the ring.
+                focus = block(qss, '#libraryRow:focus')
+                for side in ('border-top', 'border-right', 'border-bottom'):
+                    self.assertIn(f'{side}: 2px solid {tokens.focus_ring};', focus,
+                                  f'{side} is missing from the focus ring')
+                self.assertNotIn('\n    border:', focus,
+                                 'the focus rule uses the ``border`` shorthand, which '
+                                 'wipes the 2px border-left gutter the base rule '
+                                 'reserves and covers the current marker')
+                self.assertNotIn('border-left', focus,
+                                 'the focus rule repaints the gutter instead of '
+                                 'leaving it to the base and [current] rules')
+
+        # The pairings this diff paints: the ``folder`` glyph (rasterised from
+        # ``tokens.icon`` before QSS ever sees it), ``text_primary`` on the two
+        # state fills, and the 2 px ``accent`` marker on the current row's
+        # selection. Text and marker need a tuple too, because nothing else in
+        # the contrast set checks a *state* fill -- ``TEXT_PAIRS`` only lists the
+        # four resting surfaces. Same rule Task 3 recorded for the rail's seven
+        # glyphs: a token that reaches a pixel needs a pin, not a comment.
         from tests.test_theme import ThemeContrastTest
 
-        self.assertIn(
-            ('icon', 'selection_bg', 3.0), ThemeContrastTest.EXTRA_PAIRS,
-            'the current row\'s glyph/background pairing is not pinned at the '
-            '3:1 non-text bar; #libraryRow[current="true"] would then be an '
-            'unguarded contrast decision')
+        expected = (
+            ('icon', 'selection_bg', 3.0),           # #libraryRow[current="true"]
+            ('text_primary', 'hover_bg', 4.5),       # #libraryRow:hover
+            ('text_primary', 'button_pressed', 4.5),  # #libraryRow:pressed
+            ('accent', 'selection_bg', 3.0),         # the current marker, non-text
+        )
+        pinned = set(ThemeContrastTest.EXTRA_PAIRS)
+        missing = [pair for pair in expected if pair not in pinned]
+        self.assertEqual(
+            [], missing,
+            'a background this diff paints text or a glyph onto is not pinned in '
+            f'ThemeContrastTest.EXTRA_PAIRS: {missing}. Deleting a tuple un-guards '
+            'the pairing silently while the ratio still passes, so presence at the '
+            'right bar is what is asserted here; the ratios themselves are evaluated '
+            'by ThemeContrastTest.test_contrast_requirements over both themes.')
+
+    def test_the_row_glyph_fits_the_row_box_it_claims(self):
+        """The size the row's glyph is rasterised at, checked against its own box.
+
+        ``_ROW_ICON_SIZE``'s comment derives 16 from ``ROW_HEIGHT`` less the
+        sheet's vertical padding, and the same number feeds
+        ``_ROW_TEXT_GUTTER`` (so it also moves the elide point). A comment that
+        derives a constant is only worth what a test makes of it: this is the
+        inequality the derivation claims, so a token change that lets the glyph
+        outgrow its row fails here instead of clipping a name.
+        """
+        from core.theme import ROW_HEIGHT, SPACE_1
+
+        from view.widgets.library_sidebar import _ROW_ICON_SIZE
+
+        self.assertEqual(ROW_HEIGHT - 2 * SPACE_1, 20,
+                         'the content box the comment describes is no longer 20 px; '
+                         're-read the derivation before changing either number')
+        self.assertLessEqual(_ROW_ICON_SIZE, ROW_HEIGHT - 2 * SPACE_1,
+                             'the row glyph is larger than the box its own row '
+                             'reserves after the sheet padding')
+        self.assertGreater(_ROW_ICON_SIZE, 0)
 
     def test_the_panel_owns_no_widget_level_stylesheet(self):
         """The one-stylesheet rule of the theme layer (spec §1.6, judgement 6)."""

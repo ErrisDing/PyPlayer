@@ -540,8 +540,17 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
         ('border-left', f'2px solid {t.accent}'),
         ('color', t.text_primary),
     ]))
+    # The keyboard ring must not spend the gutter the base rule reserves. ``border``
+    # is a shorthand: writing it resets all four sides, so a focused row would lose
+    # its 2 px ``border-left`` -- the text jumps two pixels exactly when the row is
+    # focused, and on the current library the ring also paints over the ``accent``
+    # marker. That is the shift the reservation above exists to prevent, so the
+    # ring is emitted per side and leaves ``border-left`` to the base and
+    # ``[current="true"]`` rules.
     emit(_rule('#libraryRow:focus', [
-        ('border', f'2px solid {t.focus_ring}'),
+        ('border-top', f'2px solid {t.focus_ring}'),
+        ('border-right', f'2px solid {t.focus_ring}'),
+        ('border-bottom', f'2px solid {t.focus_ring}'),
     ]))
     # First launch (spec §6): the panel is not empty, it is *explaining*.
     emit(_rule('#sidebarEmpty', [

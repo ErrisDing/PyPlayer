@@ -195,10 +195,25 @@ class ThemeContrastTest(unittest.TestCase):
         ('icon', 'accent_soft', 3.0),
         # Batch 2 Task 4's library rows: the ``folder`` glyph is rasterised from
         # ``tokens.icon`` and the row it sits on can be the current library, whose
-        # fill ``#libraryRow[current="true"]`` emits as ``selection_bg``. The other
-        # three grounds the row can wear -- ``surface`` (the panel), ``hover_bg``
-        # and ``button_pressed`` -- are already pinned above.
+        # fill ``#libraryRow[current="true"]`` emits as ``selection_bg``. For the
+        # glyph alone, the other three grounds the row can wear -- ``surface``
+        # (the panel), ``hover_bg`` and ``button_pressed`` -- are pinned above.
         ('icon', 'selection_bg', 3.0),
+        # The text and the marker of those same four grounds were *not* covered,
+        # because the block above is a glyph set and ``TEXT_PAIRS`` only lists
+        # ``surface``/``surface_alt``/``selection_bg``/``playing_bg``: the two
+        # fills ``#libraryRow:hover`` and ``#libraryRow:pressed`` emit under
+        # ``text_primary`` had no text pin, and the 2 px ``accent`` current-marker
+        # on the selection fill had none at all. Measured at authoring --
+        # ``text_primary``/``hover_bg`` 14.46 LIGHT, 10.91 DARK;
+        # ``text_primary``/``button_pressed`` 12.49, 6.94 (both the 4.5 text bar,
+        # WCAG 1.4.3); ``accent``/``selection_bg`` 3.98, 5.67 (the 3.0 non-text
+        # bar, WCAG 1.4.11 -- a 2 px marker is a UI component, not text, so it is
+        # not held to 4.5). All six pass: these three tuples close a coverage
+        # hole, they do not change a colour.
+        ('text_primary', 'hover_bg', 4.5),
+        ('text_primary', 'button_pressed', 4.5),
+        ('accent', 'selection_bg', 3.0),
         # The ``icon_muted`` / ``surface`` pair above is a deliberate superset:
         # the loop-off glyph paints on the button, never on the panel. It stays
         # because #loopButton's fill is one QSS edit away from transparent (the
