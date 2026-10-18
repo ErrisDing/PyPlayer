@@ -688,7 +688,7 @@ class IconPipelineTest(unittest.TestCase):
         ``.build/pyplayer.spec`` ships the whole ``resource`` directory, so a
         frozen app finds the SVGs under ``sys._MEIPASS``. ``get_resource_path``
         must resolve the new subdirectory exactly as it already resolves
-        ``resource/default_cover.png`` (``view/widgets/now_playing_panel.py:22``).
+        ``resource/default_cover.png`` (``view/widgets/now_playing_strip.py:53``).
         """
         import tempfile
         from unittest import mock

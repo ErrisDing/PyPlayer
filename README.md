@@ -114,8 +114,10 @@ PyPlayer/
 │   │   ├── library_dialog.py    # 媒体库管理对话框
 │   │   └── appearance_dialog.py # 外观设置对话框
 │   └── widgets/
-│       ├── now_playing_panel.py   # 正在播放面板
-│       ├── library_selector.py    # 媒体库切换器
+│       ├── action_rail.py         # 左侧图标栏（七个动作）
+│       ├── library_sidebar.py     # 浮层媒体库列表
+│       ├── now_playing_strip.py   # 底部封面+曲名/艺人条
+│       ├── toast.py               # 限时反馈浮层
 │       ├── playlist_view.py       # 播放列表视图
 │       ├── bottom_panel.py        # 底部面板（进度条+控制按钮）
 ├── presenter/

@@ -217,8 +217,9 @@ class ThemeContrastTest(unittest.TestCase):
         # The ``icon_muted`` / ``surface`` pair above is a deliberate superset:
         # the loop-off glyph paints on the button, never on the panel. It stays
         # because #loopButton's fill is one QSS edit away from transparent (the
-        # sheet already emits ``transparent`` for #nowPlayingPanel), and a guard
-        # must not be the thing that notices such a change.
+        # sheet already emits ``transparent`` for #railButton and
+        # #nowPlayingStrip), and a guard must not be the thing that notices such
+        # a change.
     )
 
     @staticmethod
@@ -283,9 +284,9 @@ class Batch2GeometryTest(unittest.TestCase):
     def test_art_size_is_gone(self):
         """``ART_SIZE`` must not come back as a re-export or a renamed alias.
 
-        The one remaining reader (``NowPlayingPanel``) is deleted in Task 9; it
-        holds a literal 200 until then, so nothing may reach back to this module
-        for the value.
+        Its one remaining reader was the left panel, which held a literal 200
+        while batch 2 replaced the token with ``STRIP_ART_SIZE``; Task 9 deleted
+        that widget, so nothing may reach back to this module for the value.
         """
         import core.theme as theme
 

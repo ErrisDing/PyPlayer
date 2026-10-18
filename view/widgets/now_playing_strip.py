@@ -8,17 +8,18 @@ the top of the left panel, now at the left end of the bottom bar because the lef
 panel is gone.
 
 **The cover pipeline is a move, not a rewrite.** :meth:`update_album_art`,
-:meth:`_clear_art` and :meth:`_load_default_cover` came verbatim out of
-``view/widgets/now_playing_panel.py``, the only substitution being the size they
-scale to (``self.ART_SIZE`` -> :data:`core.theme.STRIP_ART_SIZE`). That block is
+:meth:`_clear_art` and :meth:`_load_default_cover` were copied verbatim out of
+the batch-1 left-panel file -- which batch 2 Task 9 then deleted, so this is the
+only copy left -- the substitution being only the size they scale to
+(``self.ART_SIZE`` -> :data:`core.theme.STRIP_ART_SIZE`). That block is
 batch-1-tested code: PIL first with a LANCZOS thumbnail, an explicit ``QImage``
 construction per colour mode (RGBA/RGB, everything else converted to RGB), a
 Qt-only fallback when Pillow is missing, and *any* exception landing on the
-default cover. Re-deriving it would quietly drop the colour-mode handling and the
-``devicePixelRatio`` behaviour it already has, so it is duplicated here for exactly
-one task -- Task 9 deletes the panel, and with it the duplication.
+default cover. Re-deriving it would have quietly dropped the colour-mode handling
+and the ``devicePixelRatio`` behaviour it already has, which is why it was
+duplicated rather than rewritten for the one task the two files coexisted.
 
-Two deliberate differences from the panel:
+Two deliberate differences from the panel this replaced:
 
 * **One line, so no album.** ``album`` stays in :meth:`update_track_info`'s
   signature because the presenter already passes three arguments and spec §4
@@ -98,7 +99,8 @@ class NowPlayingStrip(QWidget):
     def _setup_ui(self) -> None:
         """Set up the UI components."""
         # The strip is transparent so the control bar's own composited fill shows
-        # through it (same ruling as ``#nowPlayingPanel`` in the sheet).
+        # through it -- ``core/theme_qss.py`` gives it no background token, and
+        # ``tests/test_theme_qss.py::MainWindowFillTest`` pins that.
         self.setObjectName("nowPlayingStrip")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 

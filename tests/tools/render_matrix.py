@@ -161,10 +161,10 @@ def pump(app) -> None:
 
     ``QCoreApplication.processEvents`` alone does NOT honour ``deleteLater``:
     deferred deletes are only sent when control returns to a running event
-    loop, and ``LibrarySelector._rebuild_buttons`` uses exactly that to retire
-    the old chips. A harness that swaps libraries between frames therefore
-    keeps painting the previous set on top of the new one -- six chips in a
-    three-library matrix -- and every chip frame it produces is a lie. Flushing
+    loop, and ``LibrarySidebar._rebuild_rows`` retires the old rows with exactly
+    that. A harness that swaps libraries between frames therefore keeps painting
+    the previous set on top of the new one -- six chips in a three-library
+    matrix, measured before Task 7 -- and every such frame is a lie. Flushing
     ``DeferredDelete`` explicitly is what the running app does for free.
     """
     from PyQt6.QtCore import QEvent, QCoreApplication

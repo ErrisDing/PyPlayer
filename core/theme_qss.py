@@ -41,13 +41,15 @@ without a display (see ``tests/test_theme_qss.py``).
 :data:`REQUIRED_OBJECT_NAMES` and :data:`REQUIRED_DYN_PROPERTIES` are the
 contract with the widget tree: Task 5 guarantees the widgets carry these
 names/properties, and ``build_qss`` guarantees every one of them is styled.
-The reverse implication does not hold in batch 2: ``#actionRail``/``#railButton``
-(Task 3), ``#librarySidebar``/``#sidebarTitle``/``#libraryRow``/``#sidebarEmpty``
-(Task 4), ``#nowPlayingStrip``/``#stripArt``/``#stripTitle``/``#stripArtist``
-(Task 5) and ``#toast``/``#toastText`` (Task 6) are emitted here before they are
-registered there, because the tuple is asserted against the live ``MainWindow``
-tree and those widgets only enter it in Task 7. See the action-rail,
-library-sidebar, now-playing-strip and toast sections for the full ruling.
+Every batch-2 name was emitted here one task before it was registered there,
+because the tuple is asserted against the live ``MainWindow`` tree and those
+widgets only entered it in Task 7: ``#actionRail``/``#railButton`` (Task 3),
+``#librarySidebar``/``#sidebarTitle``/``#libraryRow``/``#sidebarEmpty`` (Task 4),
+``#nowPlayingStrip``/``#stripArt``/``#stripTitle``/``#stripArtist`` (Task 5) and
+``#toast``/``#toastText`` (Task 6). The deferral is closed -- Task 7 registered
+all twelve. The reverse direction (a rule whose name no live widget can carry)
+is what Task 9 removed the five left-panel rules for; see the window-and-panel
+section.
 """
 
 from core.theme import (
@@ -56,7 +58,6 @@ from core.theme import (
     FONT_SIZE_LG,
     FONT_SIZE_MD,
     FONT_SIZE_SM,
-    FONT_SIZE_XL,
     PLAY_SIZE,
     RADIUS_MD,
     RADIUS_PILL,
@@ -80,12 +81,14 @@ from core.theme import (
 # * the twelve batch-2 names were added when the rail, the floating panel, the
 #   strip and the toast entered the tree (their rules shipped one task early,
 #   with per-section notes here pointing at the deferral);
-# * the five left-panel names were removed with the panel leaving the tree.
-#   Their *rules* stay -- ``tests/test_theme_qss.py`` pins ``#nowPlayingPanel``
-#   from the sheet side, the widget files live until Task 9, and a rule for a
-#   name that has no live widget is inert, not wrong. The reverse (a registered
-#   name with no widget) is a red suite. ``#playlistHeader``/``#playlistView``
-#   stay: the playlist never left.
+# * the five left-panel names were removed with the panel leaving the tree, and
+#   Task 9 deleted the two widget files along with the five rules that scoped
+#   them (``#nowPlayingPanel``, ``#albumArt``, ``#trackTitle``,
+#   ``#trackArtist``, ``#trackAlbum``). A rule for a name no live widget can
+#   carry is inert, not wrong -- but it is also unreadable, because a reader
+#   cannot tell dead paint from live, and the sheet is the one place the whole
+#   widget contract is written down. The strip's four names replaced them.
+#   ``#playlistHeader``/``#playlistView`` stay: the playlist never left.
 # ``#playlistContainer`` is deliberately absent from both sides: layout host
 # only (ledger R2).
 REQUIRED_OBJECT_NAMES: tuple[str, ...] = (
@@ -125,8 +128,12 @@ REQUIRED_OBJECT_NAMES: tuple[str, ...] = (
 # Dynamic properties used to scope rules for repeated elements (media-library
 # chips and sidebar rows, transport-group buttons, rail buttons in flight)
 # where objectNames would not scale. Task 7 added the two batch-2 state pairs
-# whose widgets are now in the live tree; ``('chip', 'true')`` stays registered
-# with its rule until Task 9 deletes ``LibrarySelector``, the last chip.
+# whose widgets are now in the live tree. ``('chip', 'true')`` is the one entry
+# no live widget carries since Task 9: the floating sidebar rows use
+# ``#libraryRow`` + ``[current="true"]`` instead, and the chip family -- rule,
+# registration and the ``tests/test_theme_qss.py`` contrast pin that came with
+# Task 4 -- is deliberately left standing for Task 10 to rule on with a render
+# matrix in hand, rather than deleted inside a structural cleanup.
 REQUIRED_DYN_PROPERTIES: tuple[tuple[str, str], ...] = (
     ('chip', 'true'),
     ('role', 'transport'),
@@ -225,8 +232,9 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
 
     # -- 窗口与面板 / window & panels --------------------------------------
     # Ruling from the Task 10 render matrix, deviating from the mapping table's
-    # first row (``QMainWindow, #nowPlayingPanel`` -> both ``transparent``):
-    # ``window_bg`` belongs on the window, and only the panel stays transparent.
+    # first row (which scoped ``QMainWindow`` together with the left panel and
+    # asked for ``transparent`` on both): ``window_bg`` belongs on the window,
+    # and only the panel stayed transparent.
     #
     # The table's version was inherited verbatim from ``styles.qss``, whose own
     # comment claimed "Fusion style provides the fallback for non-content
@@ -250,7 +258,8 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     # The background-image feature is untouched: ``MainWindow.paintEvent`` draws
     # the pixmap and the scrim in its own handler, which runs after this fill
     # and before the children paint, so a configured image still shows through
-    # the transparent panel and the two alpha-composited surfaces.
+    # the two alpha-composited surfaces (``#playlistView``, ``#bottomPanel``) and
+    # through the transparent strip that sits inside the latter.
     #
     # The value below is pinned by ``tests/test_theme_qss.py::MainWindowFillTest``:
     # "is the window filled at all" is invisible to a structural gate, since a
@@ -258,11 +267,6 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     # passes every guard in that suite while filling the window with nothing.
     emit(_rule('QMainWindow', [
         ('background-color', t.window_bg),
-    ]))
-    # This one stays transparent on purpose: it is the panel the background
-    # image has to show through when a user configures one.
-    emit(_rule('#nowPlayingPanel', [
-        ('background-color', 'transparent'),
     ]))
     emit(_rule('#bottomPanel', [
         ('background-color', controls_bg),
@@ -432,10 +436,13 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     # carry the same specificity (two attribute/pseudo-class terms each), so the
     # later rule wins and a selected chip keeps `surface` under the pointer:
     # a selected chip has no hover feedback at all. That is defensible --
-    # `LibrarySelector._on_button_click` returns early on the already-current
+    # the chip's own click handler returned early on the already-current
     # library, so hovering a selected chip promises an action that does nothing
     # -- but it is not what the comment said, and the comment now says what is
-    # true. (The hover state itself could not be photographed here: neither
+    # true. (The widget that wore `chip="true"` is gone as of Task 9; the note
+    # stays because it is the reason this rule reads the way it does, and the
+    # chip family itself is Task 10's to rule on.) (The hover state itself could
+    # not be photographed here: neither
     # `WA_UnderMouse` nor a synthetic mouse-move drives QSS `State_MouseOver`,
     # and this host's cursor is on a virtual display that will not hold a
     # `QCursor.setPos`. See the task report.)
@@ -594,19 +601,20 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     emit(_rule('#nowPlayingStrip', [
         ('background-color', 'transparent'),
     ]))
-    # The same box ``#albumArt`` draws around the 200 px panel cover, at the size
-    # the 48 px thumbnail needs: ``surface_alt`` behind the image (so a partially
-    # transparent PNG does not sit on the composited bar), ``border`` and a radius
-    # one step down from the panel's.
+    # The inset frame around the cover: ``surface_alt`` behind the image (so a
+    # partially transparent PNG does not sit on the composited bar), ``border``,
+    # and ``RADIUS_SM`` rather than the sheet's ``RADIUS_MD`` -- at 48 px the
+    # larger radius would clip the corners of the thumbnail.
     emit(_rule('#stripArt', [
         ('border', f'1px solid {t.border}'),
         ('border-radius', _px(RADIUS_SM)),
         ('background-color', t.surface_alt),
     ]))
-    # Two lines, not three: the old ``#trackTitle`` was 18 px bold in a column of
-    # its own, and a bar one row taller than the transport buttons cannot carry that.
-    # ``font-weight: 600`` matches the sheet's other heading weights rather than
-    # ``bold``, which at 13 px makes an elided title look like a header.
+    # Two lines, not three: the column this replaced set its title in 18 px bold
+    # (``FONT_SIZE_XL``) in a column of its own, and a bar one row taller than the
+    # transport buttons cannot carry that. ``font-weight: 600`` matches the sheet's
+    # other heading weights rather than ``bold``, which at 13 px makes an elided
+    # title look like a header.
     emit(_rule('#stripTitle', [
         ('color', t.text_primary),
         ('font-size', _px(FONT_SIZE_MD)),
@@ -638,32 +646,19 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
         ('font-size', _px(FONT_SIZE_SM)),
     ]))
 
-    # -- 正在播放文字区 / now-playing labels ---------------------------------
-    emit(_rule('#trackTitle', [
-        ('color', t.text_primary),
-        ('font-size', _px(FONT_SIZE_XL)),
-        ('font-weight', 'bold'),
-    ]))
-    emit(_rule('#trackArtist', [
-        ('color', t.text_secondary),
-        ('font-size', _px(FONT_SIZE_MD)),
-    ]))
-    emit(_rule('#trackAlbum', [
-        ('color', t.text_muted),
-        ('font-size', _px(FONT_SIZE_MD)),
-    ]))
+    # -- 底部读数 / bottom-row read-outs --------------------------------------
     # The three read-outs of the bottom row share one rule: elapsed time, total
     # duration and the volume percentage are the same kind of small secondary
     # text, and giving the third its own copy of the declarations is how the
     # progress and volume sliders ended up looking different in the first place.
+    #
+    # The track text this section used to carry (a title, an artist, an album and
+    # a bordered cover) left with the left panel in Task 9: the bottom bar's own
+    # ``#stripTitle``/``#stripArtist``/``#stripArt`` above are those surfaces now,
+    # at the sizes a single-row bar can hold.
     emit(_rule(('#timeLabel', '#volumeLabel'), [
         ('color', t.text_secondary),
         ('font-size', _px(FONT_SIZE_SM)),
-    ]))
-    emit(_rule('#albumArt', [
-        ('border', f'1px solid {t.border}'),
-        ('border-radius', _px(RADIUS_MD)),
-        ('background-color', t.surface_alt),
     ]))
 
     # -- 背景路径标签 / background-path label --------------------------------

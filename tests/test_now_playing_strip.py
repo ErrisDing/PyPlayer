@@ -7,9 +7,10 @@ pinned here, in order of how easily they regress:
 
 * **The cover pipeline is a move, not a rewrite.** The PIL-first path, the
   RGBA/RGB ``QImage`` construction, the Qt-only fallback and the
-  exception-returns-default-cover behaviour all came straight out of
-  ``view/widgets/now_playing_panel.py``. A rewrite of that block silently loses the
-  ``devicePixelRatio`` and colour-mode handling the batch-1 tests already cover, so
+  exception-returns-default-cover behaviour all came straight out of the batch-1
+  left panel, whose file batch 2 Task 9 deleted. A rewrite of that block silently
+  loses the ``devicePixelRatio`` and colour-mode handling the batch-1 tests
+  already cover, so
   the assertions below are about *pixels* -- the batch-1 Task 9 technique -- not
   about which method was called. :meth:`test_initial_state_shows_default_cover_not_text`
   compares the rendered cover with the reference scaled default cover, and

@@ -34,9 +34,9 @@ SCOPED_NEEDING_CLASSES = ('QPushButton', 'QSlider', 'QListView', 'QLabel')
 # the table (per-widget scoping would be noise and is not what the brief asks).
 # Adding a class here is a review-visible decision, not a blind spot.
 # ``QMainWindow`` is the seventh entry: the ruling named six, and the gate then
-# caught the bare ``QMainWindow`` of the table's first row (brief line 33,
-# ``QMainWindow, #nowPlayingPanel``). It belongs here rather than in the blind
-# spot, so it is listed and explained.
+# caught the bare ``QMainWindow`` of the table's first row (brief line 33, which
+# scoped the window together with the left panel). It belongs here rather than in
+# the blind spot, so it is listed and explained.
 EXEMPT_CHROME_CLASSES = (
     'QMenuBar',
     'QMenu',
@@ -277,10 +277,13 @@ class MainWindowFillTest(unittest.TestCase):
     token-coloured and still paint nothing, so this reads the declaration out of
     the emitted block and compares it to the token.
 
-    ``#nowPlayingPanel`` is pinned in the same breath from the other side: its
-    ``transparent`` is a decision (it is what lets a configured background image
-    show through), not an oversight, so a later "consistency" pass that fills it
-    fails here instead of quietly killing the feature.
+    The transparent half is pinned in the same breath from the other side. Task 9
+    deleted the left panel and the ``#nowPlayingPanel`` rule that let a configured
+    background image through it; the surface that inherited the decision is
+    ``#nowPlayingStrip``, which sits inside the alpha-composited
+    ``#bottomPanel``. Its ``transparent`` is a decision, not an oversight, so a
+    later "consistency" pass that fills it fails here instead of quietly
+    flattening the controls alpha.
     """
 
     def _blocks(self):
@@ -291,10 +294,10 @@ class MainWindowFillTest(unittest.TestCase):
             qss = build_qss(tokens, AlphaSettings())
             yield (name, tokens,
                    _rule_block(qss, 'QMainWindow'),
-                   _rule_block(qss, '#nowPlayingPanel'))
+                   _rule_block(qss, '#nowPlayingStrip'))
 
     def test_window_is_filled_with_the_window_bg_token(self):
-        for name, tokens, block, _panel in self._blocks():
+        for name, tokens, block, _strip in self._blocks():
             with self.subTest(theme=name):
                 self.assertNotIn(
                     'transparent', block,
@@ -312,16 +315,18 @@ class MainWindowFillTest(unittest.TestCase):
                     f'`playlist`/`controls` alphas composite against',
                 )
 
-    def test_now_playing_panel_stays_transparent(self):
-        for name, _tokens, _block, panel in self._blocks():
+    def test_now_playing_strip_stays_transparent(self):
+        for name, _tokens, _block, strip in self._blocks():
             with self.subTest(theme=name):
                 self.assertEqual(
                     ['transparent'],
-                    [value for prop, value in _declarations(panel)
+                    [value for prop, value in _declarations(strip)
                      if prop == 'background-color'],
-                    f'{name}: `#nowPlayingPanel` must keep no fill of its own -- '
-                    f'that is how a configured background image reaches the user '
-                    f'through the panel (core/theme_qss.py, the Task 10 ruling)',
+                    f'{name}: `#nowPlayingStrip` must keep no fill of its own -- '
+                    f'it lives inside `#bottomPanel`, whose background is '
+                    f'`surface` composited at the user\'s controls alpha, and an '
+                    f'opaque plate here would hide that (core/theme_qss.py, the '
+                    f'Task 5 section and the Task 10 ruling)',
                 )
 
     def test_delegated_view_carries_no_item_rule(self):

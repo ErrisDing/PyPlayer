@@ -31,9 +31,9 @@ recorded in ``.superpowers/sdd/2026-10-18-ui-batch2-layout/task-7-report.md``:
   in ``REQUIRED_OBJECT_NAMES``, and the five names of the deleted left panel
   (``nowPlayingPanel``/``albumArt``/``trackTitle``/``trackArtist``/``trackAlbum``)
   leave the tuple with it: the tuple is the *live-tree* half of the contract,
-  and the panel no longer enters it. The sheet's rules for those names stay --
-  ``tests/test_theme_qss.py`` pins two of them directly, and Task 9 deletes
-  files and rules together.
+  and the panel no longer enters it. Task 9 then deleted the panel's files *and*
+  the five rules that scoped those names, so neither half now mentions them; the
+  sheet's transparency pin moved to ``#nowPlayingStrip`` with them.
 * A fixed-integer ``MULTIPLICITY`` cannot express ``#libraryRow`` (one per
   media library plus the footer entry, and the library count is uncapped), so
   :data:`UNBOUNDED_NAMES` names the exempt class explicitly and
@@ -166,12 +166,15 @@ class ViewStructureTest(unittest.TestCase):
 
         The literals below are the contract; assert the tuple first so an edit
         there fails here rather than in an ``in`` test that would silently
-        shrink to zero buttons to check. ``('chip', 'true')`` stays pinned and
-        registered until Task 9 deletes ``LibrarySelector`` with its rule --
-        the shell swap took the chips out of the tree, and the last chip-wearing
-        widget is still a live file. ``('current', 'true')`` and
-        ``('running', 'true')`` are the Task 7 registrations: the sheet has
-        styled them since Tasks 3/4, and they enter the tree with this shell.
+        shrink to zero buttons to check. ``('chip', 'true')`` is the one pair no
+        live widget wears since Task 9 deleted the chip row: the floating
+        sidebar uses ``#libraryRow`` + ``[current="true"]`` instead, and the chip
+        rule, its registration and Task 4's contrast pin are left standing for
+        Task 10 to rule on with a render matrix in hand -- this test therefore
+        pins the *declaration*, not the wearing, for that one pair.
+        ``('current', 'true')`` and ``('running', 'true')`` are the Task 7
+        registrations: the sheet has styled them since Tasks 3/4, and they enter
+        the tree with this shell.
         """
         from view.main_window import MainWindow
 
