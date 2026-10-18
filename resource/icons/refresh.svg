@@ -1,0 +1,16 @@
+<!-- refresh: refresh-current-library glyph, and the single glyph every rail
+     button borrows while its action is running (Task 3 pins that reuse, so no
+     eighth spinner file exists). An annulus segment of 300 degrees about
+     (12,12) between radius 5 and radius 7, the same 2-unit wall thickness the
+     loop family and the volume arcs use, opened at the upper right, and a solid
+     arrowhead at the top end of the band pointing along the tangent, so the
+     direction of travel is clockwise.
+
+     Endpoints are exact: the outer edge runs from 340 degrees (18.58, 9.61) to
+     280 degrees (13.22, 5.11); the inner edge mirrors it at radius 5. Ink spans
+     x 5..19 (14 units) and y 3.54..19 (15.5), i.e. the ring keeps the loop
+     family's 14 unit box and the head adds the half unit a point needs. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M18.58 9.61A7 7 0 1 1 13.22 5.11L12.87 7.08A5 5 0 1 0 16.7 10.29Z"/>
+  <path fill="currentColor" d="M12.99 3.54L15.99 6.61L12.11 8.46Z"/>
+</svg>

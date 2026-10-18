@@ -49,6 +49,18 @@ ICON_NAMES = (
     'volume_mute', 'volume_low', 'volume_mid', 'volume_high',
 )
 
+# Batch 2 Task 3's seven, added to this file because the two enumeration tests
+# below assert "the set on disk is exactly the set named here": seven new files
+# in ``resource/icons`` that this list does not know about are, by this suite's
+# own logic, an unexplained fifteenth glyph. Literal for the same reason as
+# above, and the geometry floors apply to them too -- a rail glyph that inks
+# half the box would otherwise render as a lighter button beside its neighbours.
+RAIL_ICON_NAMES = (
+    'file', 'folder', 'refresh', 'refresh_all', 'settings', 'info', 'add',
+)
+
+ALL_ICON_NAMES = ICON_NAMES + RAIL_ICON_NAMES
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ICONS_DIR = PROJECT_ROOT / 'resource' / 'icons'
 
@@ -128,15 +140,21 @@ def _token(hex_color: str) -> str:
 
 
 class IconResourceTest(unittest.TestCase):
-    """The twelve SVGs exist and keep the authoring conventions."""
+    """The nineteen SVGs exist and keep the authoring conventions."""
 
     def test_all_icons_present_and_well_formed(self):
         self.assertEqual(
             12, len(ICON_NAMES),
-            'the brief pins exactly 12 icons; a shorter list would let this '
-            'test pass on a partial set',
+            'batch 1 pins exactly 12 transport/volume icons; a shorter list '
+            'would let this test pass on a partial set',
         )
-        for name in ICON_NAMES:
+        self.assertEqual(
+            7, len(RAIL_ICON_NAMES),
+            'batch 2 Task 3 pins exactly 7 rail icons (add included, spinner '
+            'reused), so an eighth file cannot slip in under this test',
+        )
+        self.assertEqual(19, len(ALL_ICON_NAMES))
+        for name in ALL_ICON_NAMES:
             path = ICONS_DIR / f'{name}.svg'
             with self.subTest(icon=name):
                 self.assertTrue(path.is_file(), f'{path} is missing')
@@ -200,10 +218,16 @@ class IconResourceTest(unittest.TestCase):
                     self.assertNotIn(
                         needle, scannable, f'{needle} reaches outside the file')
 
-    def test_icon_names_are_the_twelve_shipped_files(self):
-        """No fifthteenth file, no typo'd name sitting next to the real set."""
+    def test_icon_names_are_the_shipped_files(self):
+        """No fifteenth file, no typo'd name sitting next to the real set.
+
+        Renamed from ``test_icon_names_are_the_twelve_shipped_files`` when batch
+        2 Task 3 added seven files: the claim was always "the set on disk is the
+        set named here", and keeping the old name would make it lie about its own
+        count.
+        """
         on_disk = sorted(path.stem for path in ICONS_DIR.glob('*.svg'))
-        self.assertEqual(sorted(ICON_NAMES), on_disk)
+        self.assertEqual(sorted(ALL_ICON_NAMES), on_disk)
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
@@ -272,7 +296,7 @@ class IconGeometryTest(unittest.TestCase):
         edge pixel on each side (measured: ``volume_mute`` is authored 10 units
         wide and inks 9.5).
         """
-        for name in ICON_NAMES:
+        for name in ALL_ICON_NAMES:
             with self.subTest(icon=name):
                 x0, y0, x1, y1 = self._extent(self._mask(name))
                 self.assertGreaterEqual(x0, 1.0, f'{name}: ink leaves the box left')

@@ -41,6 +41,10 @@ without a display (see ``tests/test_theme_qss.py``).
 :data:`REQUIRED_OBJECT_NAMES` and :data:`REQUIRED_DYN_PROPERTIES` are the
 contract with the widget tree: Task 5 guarantees the widgets carry these
 names/properties, and ``build_qss`` guarantees every one of them is styled.
+The reverse implication does not hold in batch 2: ``#actionRail`` and
+``#railButton`` are emitted here before they are registered there, because the
+tuple is asserted against the live ``MainWindow`` tree and the rail only enters
+it in Task 7. See the action-rail section for the full ruling.
 """
 
 from core.theme import (
@@ -420,6 +424,56 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
         ('background-color', t.button_disabled_bg),
         ('color', t.button_disabled_text),
         ('border-color', t.button_disabled_bg),
+    ]))
+
+    # -- 图标栏 / action rail (batch 2, Task 3) -------------------------------
+    # ``#actionRail`` / ``#railButton`` are styled here but deliberately *not*
+    # registered in ``REQUIRED_OBJECT_NAMES`` yet: that tuple's other consumer,
+    # ``tests/test_view_structure.py::test_every_required_object_name_exists``,
+    # walks the live ``MainWindow`` tree, and the rail enters it in Task 7. A
+    # rule naming a widget that is not in the tree is inert; a registered name
+    # without the widget is a red suite. Task 7 registers the rail's two names
+    # together with the floating panel's.
+    emit(_rule('#actionRail', [
+        ('background-color', t.surface_alt),
+        ('border-right', f'1px solid {t.divider}'),
+    ]))
+    # Flat by default: the rail's own fill is the column's, so a resting button
+    # must not wear a plate. Geometry comes from ``TRANSPORT_SIZE``, the token
+    # the transport row uses, so the two 40 px squares are one size class.
+    emit(_rule('#railButton', [
+        ('background-color', 'transparent'),
+        ('border', 'none'),
+        ('border-radius', _px(RADIUS_MD)),
+        ('width', _px(TRANSPORT_SIZE)),
+        ('height', _px(TRANSPORT_SIZE)),
+    ]))
+    emit(_rule('#railButton:hover', [
+        ('background-color', t.hover_bg),
+    ]))
+    emit(_rule('#railButton:pressed', [
+        ('background-color', t.button_pressed),
+    ]))
+    # A blocked partner of a running action: the widget side disables it, and
+    # the disabled fill is the same token the other button families fall back to.
+    emit(_rule('#railButton:disabled', [
+        ('background-color', t.button_disabled_bg),
+    ]))
+    # The running state, marked by ``ActionRail`` with
+    # ``setProperty('running', 'true')`` + unpolish/polish. ``accent_soft`` is the
+    # sheet's "this is on" fill (it is what the selected chip would have worn);
+    # the glyph inside it is the ``refresh`` spinner rasterised from ``tokens.icon``.
+    #
+    # This rule must stay *after* ``:disabled``: a running button is also a
+    # disabled one, and the two selectors carry equal specificity
+    # (``#railButton`` plus one attribute or pseudo-class term), so the later
+    # declaration wins. Emit it first and the progress state renders as grey
+    # disabled, i.e. the indicator is invisible exactly when it matters.
+    emit(_rule('#railButton[running="true"]', [
+        ('background-color', t.accent_soft),
+    ]))
+    emit(_rule('#railButton:focus', [
+        ('border', f'2px solid {t.focus_ring}'),
     ]))
 
     # -- 正在播放文字区 / now-playing labels ---------------------------------

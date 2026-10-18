@@ -1,0 +1,11 @@
+<!-- add: add-a-library glyph, 2-unit arms crossing at the centre. Authored in
+     Task 3 because Task 4's floating panel footer needs it (the media library
+     "添加" entry), not because the rail has an add button: the rail's seven
+     actions are fixed by spec section 6 and none of them is "add", which is why
+     view/widgets/action_rail.py never names this file.
+     Ink spans x 6..18 and y 6..18 (12 units square), the smallest box in the
+     rail family, deliberately, because a plus reaching the ring glyphs' 16 unit
+     span would outshout the actions it sits beside. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M11 6h2v12h-2zM6 11h12v2H6z"/>
+</svg>

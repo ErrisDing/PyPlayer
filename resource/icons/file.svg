@@ -1,0 +1,16 @@
+<!-- file: open-file glyph, batch 2 Task 3. A page drawn as four 2-unit bands
+     (the set's stroke weight) with the top edge stopping short of the right
+     margin, closed by a solid folded corner: the triangle (14,4)-(18,8)-(14,8)
+     is the flap, so the outline reads as a document rather than a box.
+     Ink spans x 6..18 (12 units) and y 4..20 (16 units), taller than wide on
+     purpose, because a square page reads as a card, and it is the only glyph in
+     the rail family that is portrait. All edges are axis aligned, so the raster
+     keeps its weight at 20 px.
+
+     Authoring constraint this file obeys: QSvgRenderer rejects a comment whose
+     body contains a double hyphen, which is Qt's own XML parser being strict
+     where the test suite's ElementTree is lenient. Batch 1's set never uses the
+     sequence inside a comment, and neither does this one. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M6 4h2v16H6zM16 8h2v12h-2zM6 4h8v2H6zM6 18h12v2H6zM14 4l4 4h-4z"/>
+</svg>

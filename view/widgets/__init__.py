@@ -8,10 +8,12 @@ from .now_playing_panel import NowPlayingPanel
 from .playlist_view import PlaylistView
 from .library_selector import LibrarySelector
 from .bottom_panel import BottomPanel
+from .action_rail import ActionRail
 
 __all__ = [
     'NowPlayingPanel',
     'PlaylistView',
     'LibrarySelector',
     'BottomPanel',
+    'ActionRail',
 ]
