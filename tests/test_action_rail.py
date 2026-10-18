@@ -88,6 +88,30 @@ RAIL_ICON_NAMES = (
 ICONS_DIR = ROOT / 'resource' / 'icons'
 LOCALES = ('zh_CN', 'en_US')
 
+
+def _action_trigger():
+    """``QAction.ActionEvent.Trigger`` on every PyQt6 this repo allows.
+
+    ``QAction.ActionEvent`` is Qt 6.9+; ``requirements.txt`` floors the
+    dependency at ``PyQt6>=6.5.0``, and ``QT_AVAILABLE`` is an import check,
+    not a version check -- a bare ``QAction.ActionEvent.Trigger`` therefore
+    raises ``AttributeError`` on 6.5-6.8 instead of skipping. Those versions
+    spell the same value ``QAction.Activation.Trigger``, and 6.9+ drops
+    ``Activation``, so *both* names must be probed lazily: the obvious
+    ``getattr(QAction, 'ActionEvent', QAction.Activation)`` evaluates its
+    default eagerly and dies on exactly the newest Qt the repo runs (measured
+    here on 6.11). This is the guarded form the ledger's deferred minor asked
+    Task 7 to land before the idiom is reused anywhere (Task 7's own shortcut
+    tests drive real ``QKeyEvent``s instead, so the guard has exactly these
+    two consumers).
+    """
+    from PyQt6.QtGui import QAction
+
+    action_event = getattr(QAction, 'ActionEvent', None)
+    if action_event is None:  # PyQt6 6.5-6.8
+        action_event = QAction.Activation
+    return action_event.Trigger
+
 # Anything that reaches outside the file (same list ``tests/test_icons.py`` uses).
 # The SVG namespace URI is removed before the scan, so it is the one URL an
 # authored file may keep.
@@ -289,8 +313,6 @@ class ActionRailContractTest(unittest.TestCase):
         ``activate(Trigger)`` emitted nothing at all (measured, and re-run as a
         mutation in the task report).
         """
-        from PyQt6.QtGui import QAction
-
         from view.widgets.action_rail import ACTION_LIBRARY
 
         rail, _manager = self._rail()
@@ -301,7 +323,7 @@ class ActionRailContractTest(unittest.TestCase):
                 rail.library_panel_requested.connect(lambda: panels.append(True))
 
                 self._action_for(rail, action_id).activate(
-                    QAction.ActionEvent.Trigger)
+                    _action_trigger())
 
                 if action_id == ACTION_LIBRARY:
                     self.assertEqual(
@@ -327,9 +349,7 @@ class ActionRailContractTest(unittest.TestCase):
         a connect that ignored the enabled state -- or a button-only connect that
         emitted while the action was disabled -- fails the first half.
         """
-        from PyQt6.QtGui import QAction
-
-        Trigger = QAction.ActionEvent.Trigger
+        Trigger = _action_trigger()
         # (action driven, id put into its running state to block it)
         cases = (
             ('open_file', 'open_file'),        # in flight itself

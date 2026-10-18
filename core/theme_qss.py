@@ -72,12 +72,23 @@ from core.theme import (
 # Every objectName referenced by the generated stylesheet, exactly as spec §4.2
 # scopes the widget tree. The structure test in Task 5 asserts the real widgets
 # carry each of these; renaming a widget without updating both sides fails.
+#
+# The tuple is the *live-tree* half of that contract
+# (``tests/test_view_structure.py`` walks a constructed ``MainWindow``), which
+# Task 7 used twice:
+#
+# * the twelve batch-2 names were added when the rail, the floating panel, the
+#   strip and the toast entered the tree (their rules shipped one task early,
+#   with per-section notes here pointing at the deferral);
+# * the five left-panel names were removed with the panel leaving the tree.
+#   Their *rules* stay -- ``tests/test_theme_qss.py`` pins ``#nowPlayingPanel``
+#   from the sheet side, the widget files live until Task 9, and a rule for a
+#   name that has no live widget is inert, not wrong. The reverse (a registered
+#   name with no widget) is a red suite. ``#playlistHeader``/``#playlistView``
+#   stay: the playlist never left.
+# ``#playlistContainer`` is deliberately absent from both sides: layout host
+# only (ledger R2).
 REQUIRED_OBJECT_NAMES: tuple[str, ...] = (
-    'nowPlayingPanel',
-    'albumArt',
-    'trackTitle',
-    'trackArtist',
-    'trackAlbum',
     'playlistHeader',
     'playlistView',
     'bottomPanel',
@@ -102,13 +113,25 @@ REQUIRED_OBJECT_NAMES: tuple[str, ...] = (
     'overlaySlider',
     'playlistSlider',
     'controlsSlider',
+    # Batch 2, registered by Task 7 when the widgets entered the tree.
+    'actionRail', 'railButton',                       # Task 3's rail
+    'librarySidebar', 'sidebarTitle',                 # Task 4's floating panel
+    'libraryRow', 'sidebarEmpty',
+    'nowPlayingStrip', 'stripArt',                    # Task 5's strip row
+    'stripTitle', 'stripArtist',
+    'toast', 'toastText',                             # Task 6's feedback line
 )
 
 # Dynamic properties used to scope rules for repeated elements (media-library
-# chips, transport-group buttons) where objectNames would not scale.
+# chips and sidebar rows, transport-group buttons, rail buttons in flight)
+# where objectNames would not scale. Task 7 added the two batch-2 state pairs
+# whose widgets are now in the live tree; ``('chip', 'true')`` stays registered
+# with its rule until Task 9 deletes ``LibrarySelector``, the last chip.
 REQUIRED_DYN_PROPERTIES: tuple[tuple[str, str], ...] = (
     ('chip', 'true'),
     ('role', 'transport'),
+    ('current', 'true'),    # #libraryRow's marker for the current library
+    ('running', 'true'),    # #railButton's in-flight state
 )
 
 

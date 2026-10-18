@@ -149,6 +149,20 @@ class Toast(QFrame):
 
     # === Placement ===
 
+    def reposition(self) -> None:
+        """Re-run placement inside the current parent, geometry only.
+
+        ``show_toast`` positions at show time alone, which is a snapshot: after
+        the window is dragged narrower a live toast would sit off-centre or
+        overhang the container. Task 7's shell owns the *when* (a container
+        resize filter in ``MainWindow``); this is the *how*, kept on the widget
+        so the placement maths stays in one place. It touches no text, no timer
+        and no visibility -- re-placing must never extend the message's life.
+        """
+        parent = self.parentWidget()
+        if parent is not None:
+            self._place(parent)
+
     def _place(self, parent: QWidget) -> None:
         """Bottom-centred in the parent, ``SPACE_3`` above its bottom edge."""
         available_width = max(0, parent.width() - 2 * _SIDE_GAP)

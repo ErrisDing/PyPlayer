@@ -72,9 +72,6 @@ class DeadCodeRemovedTest(unittest.TestCase):
         from view.widgets.playlist_view import PlaylistView
 
         for owner, name in (
-            # MainWindow._on_add_library was never wired to any action, so the
-            # emit - and therefore the presenter connection - was unreachable.
-            (MainWindow, 'add_library_requested'),
             # never emitted by MainWindow (only LibraryManagementDialog has one)
             (MainWindow, 'remove_library_requested'),
             # emitted on click but no presenter/view ever connected to it
@@ -85,6 +82,14 @@ class DeadCodeRemovedTest(unittest.TestCase):
                     hasattr(owner, name), False,
                     f'{owner.__name__}.{name} is still declared',
                 )
+
+        # ``MainWindow.add_library_requested`` was on this list while its only
+        # emitter (the never-wired ``_on_add_library`` slot) was gone. Task 7's
+        # shell revived it with a live producer: the floating panel's footer
+        # add entry, pinned by
+        # ``tests/test_view_structure.py::test_sidebar_add_reaches_the_window_exactly_once``.
+        # A revived signal belongs to the surviving side of this file, not here.
+        self.assertTrue(hasattr(MainWindow, 'add_library_requested'))
 
     def test_background_dead_chain_is_gone(self):
         """MainWindow.background_image_changed lost its only emitters in Task 2.
@@ -236,9 +241,22 @@ class AppearanceBackgroundPathTest(unittest.TestCase):
         )
         self.assertFalse(self.view._background_pixmap.isNull())
         self.config.set_background_image.assert_called_once_with(self.bg_path)
-        self.assertNotEqual(
+        # The report still has to reach the view -- but since Task 7 the carrier
+        # is the toast, not the window title (spec §1 criterion 3 froze the
+        # title, §5 made results transient feedback; Task 8 rewrites the
+        # presenter's call sites onto ``show_toast`` directly). What this
+        # assertion refuses to tolerate is the report vanishing.
+        from PyQt6.QtWidgets import QFrame
+
+        toast = self.view.findChild(QFrame, 'toast')
+        self.assertIsNotNone(toast, '#toast must be part of the shell')
+        self.assertNotEqual('', toast.current_message(),
+                            'presenter did not report the background change on the view')
+        self.assertTrue(toast.isVisibleTo(self.view),
+                        'the report must be shown, not merely stored')
+        self.assertEqual(
             self.view.windowTitle(), self.view._base_title,
-            'presenter did not report the background change on the view',
+            'the title is no longer a status channel (spec §1 criterion 3)',
         )
 
     def test_dialog_clear_background_reaches_view(self):
