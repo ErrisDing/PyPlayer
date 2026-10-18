@@ -24,9 +24,25 @@
 ## 播放功能 / Playback Features
 
 - 🔄 **自动播放**: 曲目播放完毕自动跳转下一首
-- 🎨 **Now Playing 面板**: 显示专辑封面、歌曲标题、艺术家和专辑信息
+- 🎨 **正在播放条 (Now Playing strip)**: 封面 + 曲名/艺人两行，位于底部控制栏内（批次 2 起不再是左侧面板），空间不足时省略号截断、悬停看全名
 - ⏱️ **进度条与计时器**: 实时显示播放进度，支持拖拽跳转（所有音频格式）
 - 📝 **元数据提取**: 自动读取 ID3、FLAC、M4A、OGG、NCM 标签信息
+
+## 界面布局 / Interface Layout (批次 2 / batch 2)
+
+菜单栏与左侧面板已整体移除。窗口现在由五部分组成：
+
+- **56 px 图标栏 (ActionRail)**: 固定在左侧的七个动作（打开文件、打开文件夹、刷新当前库、刷新全部、媒体库切换、外观设置、关于），Ctrl+Q 退出挂在窗口级快捷键上。
+- **全宽播放列表**: 列表宽度恒等于窗口宽度减 56 px，不再被任何左栏占用。
+- **浮层媒体库面板 (LibrarySidebar)**: 由图标栏的媒体库按钮开合，浮在列表之上而不向其取宽；页脚集中了添加媒体库与管理媒体库两个入口。选择库、点击面板外或 Esc 都会收起面板。
+- **正在播放条**: 见上，位于底部栏第一行。
+- **限时提示 (Toast)**: 一两行文字的瞬时反馈，2.5 秒后自动消失。
+
+状态反馈按三类分流 / status is routed three ways: 进度显示在发起它的图标栏按钮上（running 态），成功反馈走 toast，错误仍是模态对话框；窗口标题恒为应用名，不再被任何运行时状态改写。
+Progress rides on the rail button that started it, feedback is a transient toast, errors stay dialogs -- and the window title is never rewritten by runtime state.
+
+- ⚠️ **macOS 注意 / macOS caveat**: 批次 2 删除了原生菜单栏。Qt 在没有任何 `QMenuBar` 内容时是否仍会合成一个最小应用菜单（应用名、退出等），**尚未在真实 macOS 硬件上验证**（本仓库在 Windows 上开发，离屏平台无法回答该问题）。macOS 用户在升级到此版本前必须先在实际设备上确认这一点；若 Qt 不再合成应用菜单，Cmd+Q 之外的系统级菜单项将不复存在。
+  The native menu bar was removed in batch 2. Whether Qt still synthesises an application menu with no `QMenuBar` content has **not been verified on real macOS hardware**; confirm it on an actual device before a macOS user upgrades.
 
 ## 外观设置 / Appearance Settings
 
@@ -39,9 +55,9 @@
 - 🔤 **SVG 图标集**: 播放/暂停、上一曲、下一曲、停止、三种循环模式与四级音量共 12 个图形，手写于 `resource/icons/`（24×24 viewBox，`fill="currentColor"`），按主题 token 光栅化，因此深浅两套都能保持对比度达标；图标不再是文字字符，缺字体的平台不会再出现方框。
   Twelve hand-authored SVGs in `resource/icons/`, rasterised through a theme token instead of being drawn as polygons or typed as characters, so a glyph can never keep a light-mode colour in dark mode.
 - 🧾 **播放状态区分**: 「正在播放」行用 `playing_bg` 底色 + `playing_text` 文字 + 左侧 3px `playing_bar` 色条，与仅选中行的中性 `selection_bg` 分属两族；进度条与音量条共用同一套滑块规则。
-- 🎛️ **统一配置**: 通过 `文件` → `外观设置` 打开配置弹窗
-- 📸 **渲染矩阵 / Render matrix**: `python tests/tools/render_matrix.py --out DIR` 在离屏环境渲染 8 张对比图（`light|dark` × `空|有数据` × `820×520|1100×720`），用于改动主题层后的目视核对。注意离屏 harness 的中文字形会退化为方框，文字正确性需在真实桌面运行确认。
-  `python tests/tools/render_matrix.py --out DIR` renders the 8-frame theme matrix (light|dark × empty|populated × 820×520|1100×720) for eyeball review. Offscreen, CJK glyphs degrade to boxes, so copy still needs a real desktop run.
+- 🎛️ **统一配置**: 通过图标栏的 `外观设置` 按钮打开配置弹窗（批次 2 起不再有 `文件` 菜单）
+- 📸 **渲染矩阵 / Render matrix**: `python tests/tools/render_matrix.py --out DIR` 在离屏环境渲染 12 张对比图（`light|dark` × `空|有数据|三十库` × `820×520|1100×720`，其中三十库帧浮层面板展开），另有 `--sidebar-open` / `--toast` 两张可选浮层帧与 `--crops` 2x 局部放大，用于改动主题层或外壳后的目视核对。注意离屏 harness 的中文字形会退化为方框，文字正确性需在真实桌面（`--capture window`）运行确认。
+  `python tests/tools/render_matrix.py --out DIR` renders the 12-frame shell matrix (light|dark × empty|populated|thirty-libraries × 820×520|1100×720), plus opt-in sidebar/toast overlay frames and 2x crops. Offscreen, CJK glyphs degrade to boxes, so copy still needs a real desktop run (`--capture window`).
 
 ## NCM 格式支持 / NCM Format Support
 

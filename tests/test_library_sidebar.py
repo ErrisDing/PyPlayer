@@ -33,6 +33,15 @@ mechanics rather than about colour:
   :meth:`test_a_bypassed_hide_stops_consuming_presses` hides through ``hide()``
   and then asserts that a press reaches its receiver: an installed-but-invisible
   panel swallows mouse presses, which reads to the user as a dead rail button.
+* **A top-level hide/show round trip cannot leave the panel painted while the
+  flag says closed.** Qt replays the on-screen child visibilities when a hidden
+  window is shown again, and that restore is not a ``show_panel()`` call, so
+  every flag-level assertion in this file was green while the render matrix
+  photographed a closed frame wearing a blank 240 px stripe of panel.
+  :meth:`test_a_window_hide_show_round_trip_leaves_no_panel_on_screen` and
+  :class:`LibrarySidebarMainWindowTest` therefore assert the *pixels*: real
+  ``isVisible()`` after a shown window, and which widget is topmost at a point
+  inside the panel's geometry.
 * **``toggle()`` is the rail button's only entry point**, and the rail button is
   itself outside the panel, so an outside-press dismissal that let the click
   through would close and immediately re-open the panel. The filter consumes the
@@ -589,6 +598,59 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         self.assertEqual(presses_before + 1, content.press_count,
                          'a panel that is open but not on screen consumed a press')
 
+    def test_a_window_hide_show_round_trip_leaves_no_panel_on_screen(self):
+        """The picture, not the flag: closed means nothing of the panel paints.
+
+        Reproduce the route the render matrix walks on every frame boundary:
+        open the panel, hide the top-level, show it again. ``hideEvent`` clears
+        ``_is_open`` during the hide, but Qt's ``showChildren`` restores the
+        child visibilities that were on screen at hide time -- no caller runs,
+        no ``show_panel()``, and before the ``showEvent`` guard the panel was
+        back on top of the list while every flag-level assertion in this file
+        stayed green. ``is_panel_open()`` alone cannot see that state; a
+        ``childAt`` on the panel's own geometry can.
+        """
+        from PyQt6.QtCore import QPoint
+
+        sidebar, _manager, parent, content = self._sidebar()
+        sidebar.set_libraries(_libraries(2))
+        sidebar.show_panel()
+        self.app.processEvents()
+        self.assertTrue(sidebar.isVisible(),
+                        'the fixture never got the panel on screen')
+
+        # A point inside the panel, clear of the footer rows: the panel's own
+        # scroll viewport paints here, and with the panel gone the content area
+        # must be what answers.
+        panel_point = QPoint(sidebar.x() + sidebar.width() // 2,
+                             sidebar.y() + sidebar.height() // 2)
+        self.assertTrue(sidebar.rect().contains(
+            sidebar.mapFromGlobal(parent.mapToGlobal(panel_point))),
+            'the fixture point is not inside the panel')
+        self.assertIsNot(content, parent.childAt(panel_point),
+                         'the open panel does not cover the fixture point')
+
+        parent.hide()
+        self.app.processEvents()
+        parent.show()
+        self.app.processEvents()
+
+        self.assertFalse(sidebar.is_panel_open())
+        self.assertFalse(sidebar.isVisible(),
+                         'the panel survived a hide/show round trip on screen '
+                         'while reporting itself closed -- the closed frame that '
+                         'blanked the left 240 px of the playlist in the matrix')
+        self.assertFalse(sidebar.isVisibleTo(parent))
+        self.assertIs(content, parent.childAt(panel_point),
+                      'something still paints over the list at the panel\'s '
+                      'own geometry: the flag says closed, the pixels disagree')
+
+        # And the rail button still works from here: one toggle opens.
+        sidebar.toggle()
+        self.app.processEvents()
+        self.assertTrue(sidebar.is_panel_open())
+        self.assertTrue(sidebar.isVisible())
+
     def test_a_press_in_another_top_level_window_leaves_the_panel_alone(self):
         """A press in somebody else's window is neither eaten nor an outside click.
 
@@ -894,6 +956,88 @@ class LibrarySidebarPanelTest(unittest.TestCase):
             self.assertTrue(row.isEnabled())
             self.assertTrue(row.text(), 'an unlabelled footer row is not discoverable')
         self.assertEqual([], library_rows(sidebar))
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class LibrarySidebarMainWindowTest(unittest.TestCase):
+    """The panel as the shipped shell wears it -- the matrix' own construction.
+
+    The standalone fixture above proves the widget contract; this class proves
+    the same thing through ``MainWindow`` at the matrix' 1100x720 size, because
+    the defect was photographed there: ``QListView`` geometry correct at full
+    width, rows starting ~240 px in, i.e. a closed panel painting over the
+    list's left region. The assertion that catches that shape is which widget
+    is *topmost* at a point in that region -- a flag check passed on every one
+    of the 236 tests while the pixels were wrong.
+    """
+
+    #: A point in the list's left region that the open panel covers: the panel
+    #: sits at ``RAIL_WIDTH`` inside a ``content_stack`` that itself starts at
+    #: ``RAIL_WIDTH``, so window x=150 is inside it and inside the list.
+    PROBE = (150, 300)
+
+    def setUp(self):
+        self.app = make_app()
+
+    def _window(self):
+        from PyQt6.QtWidgets import QListView
+
+        from view.main_window import MainWindow
+        from view.widgets import LibrarySidebar
+
+        manager = make_manager('light')
+        manager.apply_to(self.app)
+        window = MainWindow(manager)
+        window.resize(1100, 720)
+        self.addCleanup(window.deleteLater)
+        self.addCleanup(window.close)
+        sidebar = window.findChild(LibrarySidebar)
+        self.addCleanup(sidebar.hide_panel)   # before the window dies
+        return window, sidebar, window.findChild(QListView, 'playlistView')
+
+    def test_closed_panel_paints_nothing_over_the_playlist(self):
+        """Fresh launch and post-round-trip: the list's viewport is topmost."""
+        from PyQt6.QtCore import QPoint
+
+        window, sidebar, view = self._window()
+        window.show()
+        self.app.processEvents()
+
+        self.assertFalse(sidebar.is_panel_open())
+        self.assertFalse(sidebar.isVisible(),
+                         'the panel painted without ever being opened')
+        self.assertFalse(sidebar.isVisibleTo(window))
+        topmost = window.childAt(QPoint(*self.PROBE))
+        self.assertIs(view.viewport(), topmost,
+                      'something other than the playlist covers the list\'s '
+                      'left region while the panel is closed')
+
+        # The matrix' frame boundary: open, hide the window, show it again.
+        # Before the ``showEvent`` guard the restore repainted the panel here.
+        # Twelve libraries so the panel is tall enough to cover the probe --
+        # the fixture guards that itself, or the open-half would assert nothing.
+        window.set_libraries(_libraries(12))
+        window.toggle_library_panel()
+        self.app.processEvents()
+        self.assertTrue(sidebar.isVisible())
+        probe_local = sidebar.mapFrom(window, QPoint(*self.PROBE))
+        self.assertTrue(sidebar.rect().contains(probe_local),
+                        'the probe point is outside the open panel, so the '
+                        'fixture no longer separates panel from playlist')
+        self.assertTrue(sidebar.isAncestorOf(window.childAt(QPoint(*self.PROBE))),
+                        'the open panel does not cover the probe point')
+        window.hide()
+        self.app.processEvents()
+        window.show()
+        self.app.processEvents()
+
+        self.assertFalse(sidebar.is_panel_open())
+        self.assertFalse(sidebar.isVisible(),
+                         'the closed panel survived the window round trip on '
+                         'screen -- the blank 240 px stripe in the matrix frame')
+        self.assertFalse(sidebar.isVisibleTo(window))
+        self.assertIs(view.viewport(), window.childAt(QPoint(*self.PROBE)),
+                      'the restored panel still paints over the list')
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')

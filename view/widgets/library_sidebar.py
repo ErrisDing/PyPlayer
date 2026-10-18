@@ -343,10 +343,24 @@ class LibrarySidebar(QFrame):
         call cannot answer "did the user open this" and ``toggle()`` would drift
         out of step with the rail button.
 
-        The flag is only meaningful while it tracks real visibility, and Qt can
-        hide the panel without asking this class -- so :meth:`hideEvent` writes
-        ``False`` here whenever a ``QEvent.Hide`` arrives, which keeps the rail
-        button's one-press-per-toggle arithmetic true for every route out.
+        The flag is only an honest answer while it tracks real visibility, and Qt
+        can move visibility without asking this class in *both* directions --
+        hiding a top-level fires ``QEvent.Hide`` on the visible children, but
+        re-showing it silently restores them (``QWidgetPrivate::showChildren``
+        replays the child visibilities that were on screen at hide time, and a
+        ``QEvent.Show`` is not a ``show_panel()`` call). The two hooks below make
+        the divergence impossible rather than merely unlikely:
+
+        * :meth:`hideEvent` -- any route out, including a bypass ``hide()``,
+          writes ``False``;
+        * :meth:`showEvent` -- any show that did not follow ``show_panel()``
+          (``_is_open`` still ``False``) is refused by re-hiding immediately.
+
+        Together: while the window is on screen, ``is_panel_open()`` is true
+        exactly when the panel paints, and the only state where the flag leads
+        the pixels is the intended one -- ``show_panel()`` against a hidden
+        window records the intent, and the pending ``show`` delivers it when the
+        window returns.
         """
         return self._is_open
 
@@ -388,6 +402,31 @@ class LibrarySidebar(QFrame):
         super().hideEvent(event)
         self._remove_outside_filter()
         self._is_open = False
+
+    def showEvent(self, event) -> None:
+        """Refuse any show that did not come from :meth:`show_panel`.
+
+        The mirror half of the :meth:`is_panel_open` invariant, and the fix for
+        the one divergence ``hideEvent`` alone could not close: when a top-level
+        is hidden, Qt fires ``QEvent.Hide`` on the children that were on screen
+        (clearing ``_is_open`` here), but when it is shown again Qt *restores*
+        those children's visibility without any caller asking -- ``show_panel()``
+        is not in the loop, so the flag says closed and the widget paints. The
+        render matrix met this as a closed frame wearing a blank 240 px stripe
+        of panel over the playlist, and the harness only stayed honest by closing
+        through ``hide_panel()`` on every frame (see ``apply_state``).
+
+        The guard is ``hide()``, not ``hide_panel()``: an explicit hide is what
+        clears the attribute ``showChildren`` replays, so the refusal also stops
+        the *next* restore from bringing the panel back. ``hide_panel()`` would
+        do the same calls but reads as if a dismissal happened, and none did.
+        Calling ``hide()`` from inside ``showEvent`` is Qt's own documented
+        pattern for refusing a show; the resulting ``QEvent.Hide`` re-enters
+        :meth:`hideEvent`, which is idempotent by contract.
+        """
+        super().showEvent(event)
+        if not self._is_open:
+            self.hide()
 
     def toggle(self) -> None:
         """Open when closed, close when open. Two calls are therefore a no-op."""
