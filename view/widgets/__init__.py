@@ -10,6 +10,7 @@ from .library_selector import LibrarySelector
 from .bottom_panel import BottomPanel
 from .action_rail import ActionRail
 from .library_sidebar import LibrarySidebar
+from .now_playing_strip import NowPlayingStrip
 
 __all__ = [
     'NowPlayingPanel',
@@ -18,4 +19,5 @@ __all__ = [
     'BottomPanel',
     'ActionRail',
     'LibrarySidebar',
+    'NowPlayingStrip',
 ]

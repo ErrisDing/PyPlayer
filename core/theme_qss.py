@@ -42,11 +42,12 @@ without a display (see ``tests/test_theme_qss.py``).
 contract with the widget tree: Task 5 guarantees the widgets carry these
 names/properties, and ``build_qss`` guarantees every one of them is styled.
 The reverse implication does not hold in batch 2: ``#actionRail``/``#railButton``
-(Task 3) and ``#librarySidebar``/``#sidebarTitle``/``#libraryRow``/
-``#sidebarEmpty`` (Task 4) are emitted here before they are registered there,
-because the tuple is asserted against the live ``MainWindow`` tree and those
-widgets only enter it in Task 7. See the action-rail and library-sidebar
-sections for the full ruling.
+(Task 3), ``#librarySidebar``/``#sidebarTitle``/``#libraryRow``/``#sidebarEmpty``
+(Task 4) and ``#nowPlayingStrip``/``#stripArt``/``#stripTitle``/``#stripArtist``
+(Task 5) are emitted here before they are registered there, because the tuple is
+asserted against the live ``MainWindow`` tree and those widgets only enter it in
+Task 7. See the action-rail, library-sidebar and now-playing-strip sections for
+the full ruling.
 """
 
 from core.theme import (
@@ -545,6 +546,42 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     # First launch (spec §6): the panel is not empty, it is *explaining*.
     emit(_rule('#sidebarEmpty', [
         ('color', t.text_muted),
+        ('font-size', _px(FONT_SIZE_SM)),
+    ]))
+
+    # -- 底部正在播放条 / now-playing strip (batch 2, Task 5) -------------------
+    # Registration ruling as above: four names, styled now, in
+    # ``REQUIRED_OBJECT_NAMES`` in Task 7.
+    #
+    # ``transparent`` rather than a fill of its own: the strip sits *inside*
+    # ``#bottomPanel``, whose background is ``surface`` composited at the user's
+    # controls alpha. Painting any token here would put an opaque plate over that
+    # composite -- the exact divergence the theme layer was built to remove. The
+    # box below is the one thing the strip may paint, because it is an inset frame
+    # around an image, not a surface.
+    emit(_rule('#nowPlayingStrip', [
+        ('background-color', 'transparent'),
+    ]))
+    # The same box ``#albumArt`` draws around the 200 px panel cover, at the size
+    # the 48 px thumbnail needs: ``surface_alt`` behind the image (so a partially
+    # transparent PNG does not sit on the composited bar), ``border`` and a radius
+    # one step down from the panel's.
+    emit(_rule('#stripArt', [
+        ('border', f'1px solid {t.border}'),
+        ('border-radius', _px(RADIUS_SM)),
+        ('background-color', t.surface_alt),
+    ]))
+    # Two lines, not three: the old ``#trackTitle`` was 18 px bold in a column of
+    # its own, and a bar one row taller than the transport buttons cannot carry that.
+    # ``font-weight: 600`` matches the sheet's other heading weights rather than
+    # ``bold``, which at 13 px makes an elided title look like a header.
+    emit(_rule('#stripTitle', [
+        ('color', t.text_primary),
+        ('font-size', _px(FONT_SIZE_MD)),
+        ('font-weight', '600'),
+    ]))
+    emit(_rule('#stripArtist', [
+        ('color', t.text_secondary),
         ('font-size', _px(FONT_SIZE_SM)),
     ]))
 
