@@ -319,7 +319,7 @@ git commit -m "feat(view): 限时反馈浮层 Toast"
 - Modify: `view/main_window.py`（删 `_setup_menu`、`_on_*` 菜单 handler 改接 rail；`_setup_ui` 重写；删 `set_status_message`）
 - Modify: `view/widgets/bottom_panel.py`（顶部插入 `NowPlayingStrip` 一行；`update_track_info`/`update_album_art`/`clear` 转发）
 - Modify: `tests/test_view_smoke.py`、`tests/test_view_structure.py`
-- Modify: `core/theme_qss.py`（`#playlistContainer` 若需要）
+- Modify: `core/theme_qss.py`（`#nowPlayingStrip` 等 strip 规则的宿主容器无需新规则——`#playlistContainer` 只是布局容器，保持透明继承窗口底色，**不要**为它加规则或塞进 `REQUIRED_OBJECT_NAMES`）
 
 **Interfaces:**
 - Consumes: Task 3-6 的全部产出（确切签名见各任务 Interfaces 块）
@@ -350,9 +350,11 @@ main_layout → QVBoxLayout[ contentRow, BottomPanel ]
 
 `_setup_menu()` 整段删除。`_setup_connections()` 里改为：`rail.action_triggered` → 一个 `match`/字典分派到 `_on_open_file`、`_on_open_folder`、`_on_refresh_library`、`_on_refresh_all`、`manage_appearance_requested.emit`、`_on_about`；`rail.library_panel_requested` → `toggle_library_panel()`；`sidebar.library_selected` → `_on_library_selected`；`sidebar.add_library_requested` → 新信号 `add_library_requested`。`_on_open_file` 的多文件行为**不改**（spec §6 记为已知缺陷）。
 
-- [ ] **Step 5: 删 `set_status_message`，加 `show_toast` / `set_action_progress`**
+- [ ] **Step 5: 加 `show_toast` / `set_action_progress`，暂留 `set_status_message` 转发**
 
-`set_status_message` 从 View 移除；`_base_title` 与 `setWindowTitle` 只在 `_setup_window` 发生一次。新增三个转发方法。
+新增 `show_toast(message, msec=2500)` → `self._toast.show_toast(...)`，`set_action_progress(action_id, running)` → `self._rail.set_progress(...)`，`toggle_library_panel()` / `is_library_panel_open()` → sidebar。
+`set_status_message` 本任务**不删**，改为一行转发到 `show_toast`，并加注释 `# Task 8 分流后删除`。理由：presenter 的 14 个调用点在 Task 8 才改，若此处直接删掉，Task 7 的提交会让全量测试变红，违反「每任务不新增失败」的全局约束；留着 presenter 写窗口标题又违反判据 3。一行转发是让两个约束都能满足的最短路径，Task 8 的 `test_no_status_message_calls_left` 负责确保它不会变成永久接口。
+`_base_title` 与 `setWindowTitle` 只在 `_setup_window` 发生一次。
 
 - [ ] **Step 6: `BottomPanel` 加 strip 行**
 
@@ -410,6 +412,7 @@ spec 把 `status.theme_save_failed` 归到「错误 → 保持 QMessageBox」，
 反馈 toast：`:229` library_refreshed、`:248`、`:270`、`:302` library_removed、`:362` theme_save_failed、`:369`、`:373`、`:461` completed、`:536`。
 删除：`:402` playing、`:405` paused、`:439` Now playing —— 三者与传输按钮状态和 `NowPlayingStrip` 重复，且都违反判据 3。
 `:248`、`:270`、`:536`、`:439` 是硬编码英文，一并换成新 key。
+最后删掉 Task 7 留下的 `MainWindow.set_status_message` 一行转发——`test_no_status_message_calls_left` 同时扫 `view/`，会抓住任何残留。
 
 - [ ] **Step 5: 运行确认通过**
 
