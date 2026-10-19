@@ -215,7 +215,8 @@ PLAY_SIZE = 50
 # is the icon rail's fixed width -- 56 px holds a 40 px button with 8 px of
 # gutter on each side, so a rail button and a transport button are the same
 # object on screen; ``SIDEBAR_WIDTH`` is the floating library panel's preferred
-# width, clamped by the window as ``min(SIDEBAR_WIDTH, window - RAIL_WIDTH)``.
+# width, clamped by its parent container, which in the shipped shell is the
+# window minus the rail.
 STRIP_ART_SIZE = 48
 RAIL_WIDTH = 56
 SIDEBAR_WIDTH = 240

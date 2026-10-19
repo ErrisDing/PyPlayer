@@ -34,15 +34,37 @@
 
 - **56 px 图标栏 (ActionRail)**: 固定在左侧的七个动作（打开文件、打开文件夹、刷新当前库、刷新全部、媒体库切换、外观设置、关于），Ctrl+Q 退出挂在窗口级快捷键上。
 - **全宽播放列表**: 列表宽度恒等于窗口宽度减 56 px，不再被任何左栏占用。
-- **浮层媒体库面板 (LibrarySidebar)**: 由图标栏的媒体库按钮开合，浮在列表之上而不向其取宽；页脚集中了添加媒体库与管理媒体库两个入口。选择库、点击面板外或 Esc 都会收起面板。
+- **浮层媒体库面板 (LibrarySidebar)**: 由图标栏的媒体库按钮开合，浮在列表之上而不向其取宽；页脚集中了添加媒体库与管理媒体库两个入口。选择库、点击面板外或 Esc 都会收起面板。面板左边缘与其父容器（图标栏右侧的内容区）原点重合，因此**与图标栏之间没有间隙**（批次 3 修正了批次 2 在这里双重扣除 56 px 的坐标假设；渲染矩阵的 `--sidebar-open` 帧把这条量成 `gap=0 FLUSH ON THE RAIL`）。
 - **正在播放条**: 见上，位于底部栏第一行。
 - **限时提示 (Toast)**: 一两行文字的瞬时反馈，2.5 秒后自动消失。
 
 状态反馈按三类分流 / status is routed three ways: 进度显示在发起它的图标栏按钮上（running 态），成功反馈走 toast，错误仍是模态对话框；窗口标题恒为应用名，不再被任何运行时状态改写。
 Progress rides on the rail button that started it, feedback is a transient toast, errors stay dialogs -- and the window title is never rewritten by runtime state.
 
-- ⚠️ **macOS 注意 / macOS caveat**: 批次 2 删除了原生菜单栏。Qt 在没有任何 `QMenuBar` 内容时是否仍会合成一个最小应用菜单（应用名、退出等），**尚未在真实 macOS 硬件上验证**（本仓库在 Windows 上开发，离屏平台无法回答该问题）。macOS 用户在升级到此版本前必须先在实际设备上确认这一点；若 Qt 不再合成应用菜单，Cmd+Q 之外的系统级菜单项将不复存在。
-  The native menu bar was removed in batch 2. Whether Qt still synthesises an application menu with no `QMenuBar` content has **not been verified on real macOS hardware**; confirm it on an actual device before a macOS user upgrades.
+- ⚠️ **macOS 注意 / macOS caveat**: 批次 2 删除了原生菜单栏。Qt 在没有任何 `QMenuBar` 内容时是否仍会合成一个最小应用菜单（应用名、退出等），**尚未在真实 macOS 硬件上验证**（本仓库在 Windows 上开发，离屏平台无法回答该问题）。批次 3 没有触及外壳或菜单结构，这条声明原样保留。macOS 用户在升级到此版本前必须先在实际设备上确认这一点；若 Qt 不再合成应用菜单，Cmd+Q 之外的系统级菜单项将不复存在。
+  The native menu bar was removed in batch 2. Whether Qt still synthesises an application menu with no `QMenuBar` content has **not been verified on real macOS hardware**; batch 3 changed nothing about the shell or the menu structure, so the caveat stands unchanged. Confirm it on an actual device before a macOS user upgrades.
+
+## 播放列表交互 / Playlist Interaction (批次 3 / batch 3)
+
+- 🖱️ **多选语义 = Windows 资源管理器**: `Ctrl+点击` 切换单行、`Shift+点击` 选择区间、`Ctrl+A` 全选。选区读回是 `PlaylistView.selected_display_indices()`，**升序去重的显示索引**（可见列表里的行号），不是队列的 `node_idx`。
+- 🎯 **右键目标规则**: 光标下那行不在选区内 → 选区收缩为它，菜单只作用于它；已在选区内 → 不改选区，菜单作用于整批；空白区（最后一行以下、header 条、空列表）→ 不弹菜单、不发信号、不动选区。
+- 📋 **右键菜单三项**: `播放`（目标批次里含正在播放那行时改成 `暂停`）、`从播放列表移除`（多行时是 `移除 {count} 项`）、分隔线之后 `清空播放列表`。文案全部走 `ctx.*` 两组 locale 同步；不用 `menu.*` 前缀——那是批次 2 拆掉 `QMenuBar` 后遗留的菜单栏文案块。
+- ⌨️ **快捷键 / Shortcuts**:
+
+  | 键 | 动作 | 归属 |
+  |---|---|---|
+  | `Delete` | 移除整个选区（按显示索引**降序**删，否则交错删除会删错歌） | `PlaylistView.keyPressEvent` |
+  | `Enter` / 小键盘 `Enter` | 播放选区中显示索引最小的那行（与双击同源） | 同上 |
+  | `Ctrl+Space` | 播放 / 暂停 | `MainWindow._setup_shortcuts()` |
+  | `Ctrl+↑` / `Ctrl+↓` | 上一首 / 下一首 | 同上 |
+  | `Ctrl+Q` | 退出 | 同上（批次 2） |
+  | `Ctrl+O` | 打开文件 | `ActionRail`（批次 2 刻意钉在按钮上） |
+  | `↑` / `↓` / 裸 `Space` | **列表原生导航，本批次不劫持** | `QListView` |
+  | `Ctrl+A` | 全选 | **Qt 原生 `selectAll`，仓库没有自己实现**，只有一条测试钉住它仍是原生行为 |
+
+  裸 `Space` 让给列表而不是播放/暂停，是实测决定的：`QListView` 的 `Space` 会把当前行下移一行并选中它，一次按下就能塌缩整个选区，所以播放/暂停退到 `Ctrl+Space`。`Delete`/`Enter` 之所以是**窗口层绑定的两个例外**：`QAction.setShortcutWidget` 在 PyQt6 6.11 里根本不存在，而窗口级快捷键一旦匹配 Qt 就已消费按键——槽里再判焦点也还不回按钮和输入框（实测 `#playButton` 的 `keyPressEvent` 计数 0）。反过来，`QListView` 不吃这三个键，它们才会冒泡到外层视图，所以「能进这个 handler 的按键」定义上就是列表此刻没在用的按键。
+- 🎨 **行状态一律 delegate 绘制**: 底色优先级 `playing_bg` > `selection_bg` > `hover_bg` > 无，三条是 `elif` 链、从不叠加；hover 还需要 `QListView.viewport()` 上的 `WA_Hover`，否则 Qt 根本不发 `State_MouseOver`。QSS 的 `#playlistView::item` 规则在本项目**从不渲染**（delegate 覆写 `paint()` 且不咨询 style），所以一条也没有。
+- 🧯 **删除的两种危险形状**: 移除**正在播放**那行 → 清空正在播放条并保持停止态，不会把高亮指向另一首；移除播放行**上方**的行 → 播放中曲目不变（presenter 以曲目身份重解析新的显示索引）。
 
 ## 外观设置 / Appearance Settings
 
@@ -56,8 +78,8 @@ Progress rides on the rail button that started it, feedback is a transient toast
   Twelve hand-authored SVGs in `resource/icons/`, rasterised through a theme token instead of being drawn as polygons or typed as characters, so a glyph can never keep a light-mode colour in dark mode.
 - 🧾 **播放状态区分**: 「正在播放」行用 `playing_bg` 底色 + `playing_text` 文字 + 左侧 3px `playing_bar` 色条，与仅选中行的中性 `selection_bg` 分属两族；进度条与音量条共用同一套滑块规则。
 - 🎛️ **统一配置**: 通过图标栏的 `外观设置` 按钮打开配置弹窗（批次 2 起不再有 `文件` 菜单）
-- 📸 **渲染矩阵 / Render matrix**: `python tests/tools/render_matrix.py --out DIR` 在离屏环境渲染 12 张对比图（`light|dark` × `空|有数据|三十库` × `820×520|1100×720`，其中三十库帧浮层面板展开），另有 `--sidebar-open` / `--toast` 两张可选浮层帧与 `--crops` 2x 局部放大，用于改动主题层或外壳后的目视核对。注意离屏 harness 的中文字形会退化为方框，文字正确性需在真实桌面（`--capture window`）运行确认。
-  `python tests/tools/render_matrix.py --out DIR` renders the 12-frame shell matrix (light|dark × empty|populated|thirty-libraries × 820×520|1100×720), plus opt-in sidebar/toast overlay frames and 2x crops. Offscreen, CJK glyphs degrade to boxes, so copy still needs a real desktop run (`--capture window`).
+- 📸 **渲染矩阵 / Render matrix**: `python tests/tools/render_matrix.py --out DIR` 在离屏环境渲染 12 张对比图（`light|dark` × `空|有数据|三十库` × `820×520|1100×720`，其中三十库帧浮层面板展开），另有三类可选帧：`--sidebar-open`（面板展开，量出面板与图标栏的间隙并打印 `FLUSH ON THE RAIL`）、`--toast`（真实 toast 文案压在有数据的列表上）、`--interaction`（批次 3 的三个状态：`hover` / `multi-selected` / `context-menu`，**深浅两套各一张**），以及 `--crops` 2x 局部放大，用于改动主题层或外壳后的目视核对。交互帧自带前置断言：光标没落上、选区不是点的那三行、菜单不是真 handler 建的那一份，脚本直接停下，不会交出一张「看起来像」的图。注意离屏 harness 的中文字形会退化为方框，文字正确性需在真实桌面（`--capture window`）运行确认；反过来，**行 hover 只有离屏跑得起来**——真实 QPA 下 `QTest.mouseMove` 与 `QCursor.setPos` 都不会让 `underMouse()` 变真，所以 `--capture window` 会为 hover 帧打印一条跳过说明而不是图片。
+  `python tests/tools/render_matrix.py --out DIR` renders the 12-frame shell matrix (light|dark × empty|populated|thirty-libraries × 820×520|1100×720), plus opt-in `--sidebar-open` / `--toast` / `--interaction` frames and 2x crops. The interaction frames assert their own preconditions and stop the run rather than photographing a state that is not on screen. Offscreen, CJK glyphs degrade to boxes, so copy still needs a real desktop run (`--capture window`) -- and row hover needs the offscreen run, because a real QPA will not let the harness move the pointer.
 
 ## NCM 格式支持 / NCM Format Support
 
