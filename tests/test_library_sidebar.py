@@ -240,6 +240,12 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         # deleted.
         self.addCleanup(sidebar.deleteLater)
         self.addCleanup(parent.deleteLater)
+        # ``close`` runs first (addCleanup is LIFO): a visible top-level left at
+        # the offscreen origin swallows ``QTest.mouseMove`` for every module that
+        # runs after this one, and ``deleteLater`` alone never lands because
+        # ``unittest`` enters no event loop.
+        self.addCleanup(parent.close)
+        self.addCleanup(sidebar.close)
         self.addCleanup(sidebar.hide_panel)
         self.app.processEvents()
         return sidebar, manager, parent, content
@@ -756,6 +762,9 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         self.addCleanup(sidebar.hide_panel)
         self.addCleanup(sidebar.deleteLater)
         self.addCleanup(window.deleteLater)
+        # Off screen before they die -- see the note in ``_sidebar`` above.
+        self.addCleanup(window.close)
+        self.addCleanup(sidebar.close)
         sidebar.set_libraries(_libraries(2))
         sidebar.show_panel()
         self.app.processEvents()
@@ -1059,6 +1068,9 @@ class LibrarySidebarSheetTest(unittest.TestCase):
         sidebar = LibrarySidebar(manager, parent)
         self.addCleanup(sidebar.deleteLater)
         self.addCleanup(parent.deleteLater)
+        # Off screen before they die -- see the note in ``_sidebar`` above.
+        self.addCleanup(parent.close)
+        self.addCleanup(sidebar.close)
         sidebar.set_libraries(_libraries(2))
         return sidebar, manager, parent
 
