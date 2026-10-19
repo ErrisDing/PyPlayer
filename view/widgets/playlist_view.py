@@ -45,6 +45,8 @@ class PlaylistView(QWidget):
     Features:
     - Double-click to play
     - Current track highlighting
+    - Hover feedback on the row under the cursor: the delegate paints
+      ``tokens.hover_bg`` for it, below the playing and selection tints
     - Windows-Explorer multi-selection (Ctrl/Shift+click), readable through
       :meth:`selected_display_indices` and :meth:`display_index_at`
     - Windows-Explorer right-click: a row outside the selection is narrowed to,
@@ -111,6 +113,17 @@ class PlaylistView(QWidget):
         self._list_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._list_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._list_view.setAlternatingRowColors(True)
+
+        # Hover tracking for the row delegate (batch 3, C2). ``QListView`` only
+        # puts ``QStyle.State_MouseOver`` on the option of the row under the
+        # cursor while this attribute is set, and it has to be the *viewport*'s
+        # attribute: measured on this host (Qt 6.11.0, offscreen), setting it on
+        # the ``QListView`` leaves every option at ``State_Enabled|State_Active``
+        # and only the viewport one flips the bit -- so without this line
+        # ``PlaylistItemDelegate``'s hover branch is dead code. It is also what
+        # makes the view repaint on a hover change, which is the other half of
+        # why a row stops being tinted once the cursor leaves it.
+        self._list_view.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover, True)
 
         # Enable smooth scrolling
         self._list_view.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)

@@ -40,8 +40,10 @@ class PlaylistItemDelegate(QStyledItemDelegate):
     Paint order (Task 9, audit A5/D1, plus the row divider), each layer in full:
 
     1. Background: ``playing_bg`` on the playing row, else ``selection_bg``
-       when selected -- playing wins over selection so the playing row never
-       looks merely selected.
+       when selected, else ``hover_bg`` when the cursor is on this row --
+       playing wins over selection so the playing row never looks merely
+       selected, and both win over hover (batch 3, C2, spec §4.1). The three
+       are an ``elif`` chain, never painted on top of each other.
     2. 1px ``divider`` along the bottom edge of the row: the only thing that
        separates two rows that are neither selected nor playing.
     3. A 3px ``playing_bar`` strip down the left edge of the playing row, drawn
@@ -55,12 +57,16 @@ class PlaylistItemDelegate(QStyledItemDelegate):
        collide in a narrow window (and the muted text is the contrast-checked
        token, not the old ``QColor(136,136,136,160)``).
 
-    Hover background is batch 3 (C2) and deliberately absent here. The
-    alternating row tint is *not* painted by this class either: ``PlaylistView``
-    asks ``QListView`` for alternating rows and the view fills them from the
-    palette's ``AlternateBase`` (mapped to ``surface_alt`` by ``ThemeManager``,
-    measured ``#f5f5f5`` on odd rows in the render matrix), which is why the
-    layers below are drawn over a band that is already tinted.
+    The hover fill is layer 1's third branch and lives here because nothing else
+    can paint it: a ``#playlistView::item:hover`` rule in the sheet is parsed and
+    discarded for a view whose delegate overrides ``paint()`` (the batch 2 audit
+    finding this batch is not allowed to repeat). The alternating row tint, by
+    contrast, is *not* painted by this class: ``PlaylistView`` asks ``QListView``
+    for alternating rows and the view fills them from the palette's
+    ``AlternateBase`` (mapped to ``surface_alt`` by ``ThemeManager``, measured
+    ``#f5f5f5`` on odd rows in the render matrix), which is why the layers below
+    are drawn over a band that is already tinted -- and why a hovered odd row
+    reads as ``hover_bg`` laid over that tint, not as a blend of the two.
 
     Row height comes from the shared ``ROW_HEIGHT`` token via ``sizeHint``.
 
@@ -102,12 +108,22 @@ class PlaylistItemDelegate(QStyledItemDelegate):
         # Save painter state
         painter.save()
 
-        # 1. Background: playing wins over selection, so a playing row that is
-        # also selected still reads as "playing", not "just selected" (A5).
+        # 1. Background: playing wins over selection, and selection wins over
+        # hover (spec §4.1). A playing row that is also selected still reads as
+        # "playing", not "just selected" (A5); a hovered row that is playing or
+        # selected keeps *its* tint, because hover is the weakest of the three
+        # states and they must never stack. ``State_MouseOver`` reaches this
+        # branch only because ``PlaylistView`` gives the list view's viewport
+        # ``Qt.WidgetAttribute.WA_Hover`` -- measured on this host, without that
+        # attribute ``QListView`` never sets the bit for any row, and the branch
+        # below would be dead code (the same shape as batch 2's dead ``::item``
+        # rule, which is why the hover test asserts the bit as well as the pixel).
         if is_playing:
             painter.fillRect(option.rect, QColor(tokens.playing_bg))
         elif option.state & QStyle.StateFlag.State_Selected:
             painter.fillRect(option.rect, QColor(tokens.selection_bg))
+        elif option.state & QStyle.StateFlag.State_MouseOver:
+            painter.fillRect(option.rect, QColor(tokens.hover_bg))
 
         # 2. Row divider: the bottom pixel of the row in ``divider``. This is
         # the layer that makes the "separates two rows that are neither selected
