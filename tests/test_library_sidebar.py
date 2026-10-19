@@ -48,12 +48,21 @@ mechanics rather than about colour:
   dismissing press, which is what a real popup does, and
   :meth:`test_toggle_is_idempotent` pins that two ``toggle()`` calls are a no-op
   from either starting state.
-* **Geometry is spec §6**: width ``min(SIDEBAR_WIDTH, parent - RAIL_WIDTH)``,
-  internal scrolling, no horizontal scrollbar, no clipping of a long name. The
-  narrow-parent case is asserted too, because ``<= min(...)`` on an 820 px parent
-  is also satisfied by a panel that never resizes at all -- and it is asserted by
-  shrinking the window *while the panel floats*, because a clamp computed at show
-  time is a snapshot, not a contract.
+* **Geometry is spec §6, measured in the parent's own space**: the panel is placed
+  at its **parent's** origin -- ``x = 0``, width ``min(SIDEBAR_WIDTH,
+  parent.width())`` -- because batch 2 reparented it to ``content_stack``, the
+  container that already begins right of the 56 px rail. Subtracting the rail a
+  second time inside that container is the double offset this batch fixes: 56 px of
+  playlist left showing between rail and panel, and a clamp 56 px narrower than the
+  parent. The parent's own window-space origin is ``RAIL_WIDTH``, and
+  :class:`LibrarySidebarMainWindowTest` asserts exactly that pair -- left edge in
+  parent space, left edge in window space -- because either one alone cannot tell
+  "no double offset" from "the offset moved somewhere else".
+  Internal scrolling, no horizontal scrollbar and no clipping of a long name are
+  asserted alongside them. The narrow-parent case is asserted too, because
+  ``<= min(...)`` on an 820 px parent is also satisfied by a panel that never
+  resizes at all -- and it is asserted by shrinking the window *while the panel
+  floats*, because a clamp computed at show time is a snapshot, not a contract.
 * **No track counts** (controller constraint, batch 1 ruling):
   ``library_manager.scan_directory()`` never reads metadata, so a per-library
   count is not obtainable this batch. A row shows the name only, and
@@ -333,7 +342,7 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         from PyQt6.QtCore import Qt
         from PyQt6.QtWidgets import QScrollArea
 
-        from core.theme import RAIL_WIDTH, SIDEBAR_WIDTH
+        from core.theme import SIDEBAR_WIDTH
 
         sidebar, _manager, parent, _content = self._sidebar()
         libraries = _libraries(30)
@@ -341,9 +350,12 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         sidebar.show_panel()
         self.app.processEvents()
 
-        clamp = min(SIDEBAR_WIDTH, parent.width() - RAIL_WIDTH)
+        # The parent, not the parent-minus-rail: this fixture's container is the
+        # whole surface the panel floats in, and in the shipped shell that surface
+        # is already the window minus the rail.
+        clamp = min(SIDEBAR_WIDTH, parent.width())
         self.assertLessEqual(sidebar.width(), clamp,
-                             f'the panel is wider than min(SIDEBAR_WIDTH, {parent.width()} - RAIL_WIDTH)')
+                             f'the panel is wider than min(SIDEBAR_WIDTH, {parent.width()})')
         self.assertEqual(clamp, sidebar.width(),
                          'the panel does not take its clamped width')
         self.assertLess(sidebar.height(), parent.height(),
@@ -380,13 +392,21 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         # floats is the case the user actually produces. Re-showing here would
         # hide the missing hook: ``show_panel`` re-places anyway, so the assert
         # below would pass on a panel that never watches the parent.
-        parent.resize(260, 600)
+        # NARROW is *below* ``SIDEBAR_WIDTH`` rather than just beside it, because
+        # the clamp is the parent's width alone: a width the parent can still hand
+        # out in full would prove nothing about the clamp.
+        narrow_width = SIDEBAR_WIDTH - 40          # 200 px
+        self.assertLess(narrow_width, SIDEBAR_WIDTH)
+        parent.resize(narrow_width, 600)
         self.app.processEvents()
+        self.assertEqual(narrow_width, parent.width(),
+                         'the fixture did not actually shrink the parent to the '
+                         'width its clamp is measured against')
         self.assertTrue(sidebar.is_panel_open(),
                         'the panel closed on its own, so the geometry check below '
                         'would be measuring a fresh show rather than a re-place')
         self.assertTrue(sidebar.isVisible())
-        narrow = min(SIDEBAR_WIDTH, 260 - RAIL_WIDTH)
+        narrow = min(SIDEBAR_WIDTH, parent.width())
         self.assertEqual(narrow, sidebar.width(),
                          'the panel did not re-clamp to the shrunk window')
         self.assertLess(sidebar.width(), SIDEBAR_WIDTH,
@@ -394,6 +414,8 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         self.assertLessEqual(sidebar.x() + sidebar.width(), parent.width(),
                              'the panel overhangs the window: the B3 overflow this '
                              'panel exists to remove, reintroduced by a stale clamp')
+        self.assertEqual(0, sidebar.x(),
+                         'the re-place moved the panel off its parent\'s origin')
 
     def test_long_library_name_is_elided_not_clipped(self):
         """An 80-character name: ellipsis inside the control, full name on hover."""
@@ -455,7 +477,7 @@ class LibrarySidebarPanelTest(unittest.TestCase):
 
     def test_toggle_is_idempotent(self):
         """``toggle()`` twice is a no-op, from either starting state."""
-        from core.theme import RAIL_WIDTH
+        from core.theme import SPACE_2
 
         sidebar, _manager, parent, _content = self._sidebar()
         sidebar.set_libraries(_libraries(3))
@@ -475,8 +497,20 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         sidebar.show_panel()
         self.app.processEvents()
         self.assertTrue(sidebar.isVisible())
-        self.assertGreaterEqual(sidebar.x(), RAIL_WIDTH,
-                                'the panel covers the rail it was opened from')
+        # Placement, re-checked on the *reopen* path rather than only the first
+        # show: the panel sits at its parent's origin. It was formerly asserted as
+        # ``x >= RAIL_WIDTH`` ("does not cover the rail"), which was batch 2's
+        # wrong premise -- the rail exclusion belongs to the parent (in the shipped
+        # shell, ``content_stack`` begins at ``RAIL_WIDTH``), so an inset here is a
+        # *second* deduction. The window-space half of that claim is pinned by
+        # ``test_panel_left_edge_aligns_with_its_parent`` below, on a real
+        # ``MainWindow``, which is the only fixture where a rail exists to be
+        # avoided; asserting it from this rail-less fixture could only ever
+        # restate the offset.
+        self.assertEqual(0, sidebar.x(),
+                         'the panel is not flush with its parent\'s left edge')
+        self.assertEqual(SPACE_2, sidebar.y(),
+                         'the vertical inset is unchanged by the horizontal fix')
         sidebar.toggle()
         sidebar.toggle()
         self.assertTrue(sidebar.is_panel_open())
@@ -792,6 +826,7 @@ class LibrarySidebarPanelTest(unittest.TestCase):
 
     def test_click_outside_closes_panel(self):
         """A posted mouse press on the content area dismisses; one inside does not."""
+        from PyQt6.QtCore import QPoint
         from PyQt6.QtWidgets import QPushButton
 
         sidebar, _manager, parent, content = self._sidebar()
@@ -825,12 +860,31 @@ class LibrarySidebarPanelTest(unittest.TestCase):
         # The rail's library button is the case the filter has to *consume* for:
         # a press that is dismissed-but-delivered becomes a click on that button,
         # ``toggle()`` runs, and the panel re-opens behind the user's own click.
+        # The stand-in has to sit on the *far* side of the parent now: the panel is
+        # flush with the parent's left edge (spec §6), so the strip of window that
+        # used to separate rail from panel is list, and the old ``x = 0`` toggle
+        # would land under the panel -- where the position gate is right to ignore
+        # the press, and this test would pass by closing through ``toggle()`` rather
+        # than by consuming. The guard below is what keeps that from being silent.
         toggle = QPushButton('toggle', parent)
-        toggle.setGeometry(0, 0, 30, 30)      # left of the panel, outside its rect
+        toggle.setGeometry(parent.width() - 35, 0, 30, 30)
         toggle.clicked.connect(sidebar.toggle)
         sidebar.show_panel()
         self.app.processEvents()
         self.assertTrue(sidebar.is_panel_open())
+        # The filter's own route -- global out of the presser, global into the
+        # panel. ``sidebar.mapFrom(toggle, point)`` cannot be used here: measured on
+        # this Qt, ``mapTo``/``mapFrom`` only honour their widget argument when that
+        # widget is an *ancestor*, and the toggle is a sibling, so the call returns
+        # (13, 5) -- the global point read as if local -- for a press the filter
+        # actually sees at (800, 7), and the guard would have claimed the opposite
+        # of the truth.
+        press_global = toggle.mapToGlobal(
+            QPoint(toggle.width() // 2, toggle.height() // 2))
+        self.assertFalse(sidebar.rect().contains(
+            sidebar.mapFromGlobal(press_global)),
+            'the toggle stand-in sits under the panel, so this fixture exercises the '
+            'position gate instead of the consuming dismissal')
         self._click_on(toggle)
         self.assertFalse(
             sidebar.is_panel_open(),
@@ -978,11 +1032,24 @@ class LibrarySidebarMainWindowTest(unittest.TestCase):
     list's left region. The assertion that catches that shape is which widget
     is *topmost* at a point in that region -- a flag check passed on every one
     of the 236 tests while the pixels were wrong.
+
+    This is also the only fixture in the file that has a rail to be offset
+    against, so it is where the panel's *coordinate space* gets pinned (spec §6,
+    plan Task 7): the parent it floats in is the container the shell already
+    places right of that rail, and a panel that also insets itself by the rail
+    pays for it twice. The standalone fixture's parent is the whole window and
+    has no rail, so it can only ever prove the parent-space half.
     """
 
-    #: A point in the list's left region that the open panel covers: the panel
-    #: sits at ``RAIL_WIDTH`` inside a ``content_stack`` that itself starts at
-    #: ``RAIL_WIDTH``, so window x=150 is inside it and inside the list.
+    #: A point in the list's left region that the open panel covers. The panel
+    #: sits at ``x = 0`` inside ``content_stack``, and it is the *container* that
+    #: begins at ``RAIL_WIDTH`` -- so the panel's window-space left edge is 56 and
+    #: window x=150 is inside both the panel and the list. (The double offset this
+    #: batch removes put the panel at window x=112, where x=150 was *also* inside,
+    #: so this point cannot discriminate the offset and does not try to: the two
+    #: coordinate-space assertions in
+    #: :meth:`test_panel_left_edge_aligns_with_its_parent` are what do that. What
+    #: this probe pins is which widget paints, open and closed.)
     PROBE = (150, 300)
 
     def setUp(self):
@@ -1047,6 +1114,126 @@ class LibrarySidebarMainWindowTest(unittest.TestCase):
         self.assertFalse(sidebar.isVisibleTo(window))
         self.assertIs(view.viewport(), window.childAt(QPoint(*self.PROBE)),
                       'the restored panel still paints over the list')
+
+    def test_panel_is_parented_to_the_content_stack_not_the_window(self):
+        """The batch-2 final-review fact, pinned: the parent already excludes the rail.
+
+        ``_place_panel``'s geometry is *relative* to its parent, so a change to it
+        is only correct for the parent the shipped shell actually gives the panel.
+        Batch 2 reparented the panel from the window to ``content_stack`` -- the
+        container the shell lays out right of the rail -- and left the placement
+        arithmetic reading as if the parent still spanned the window. Measured
+        before this task: at 1100x720 the parent's own left edge is already at
+        window x=56 and it is ``window width - RAIL_WIDTH`` wide, so the old
+        ``x = RAIL_WIDTH`` put the panel at window x=112 and clamped it against 988
+        rather than 1044. Asserting the parent's identity and its geometry is what
+        makes the next test's ``x == 0`` a fact about the shell rather than a
+        constant that happens to look tidy.
+        """
+        from PyQt6.QtCore import QPoint
+
+        from core.theme import RAIL_WIDTH
+        from view.widgets import ActionRail
+
+        window, sidebar, view = self._window()
+        window.show()
+        self.app.processEvents()
+
+        parent = sidebar.parentWidget()
+        self.assertIsNotNone(parent, 'the panel has no parent widget at all')
+        self.assertIsNot(parent, window,
+                         'the panel is parented to the MainWindow itself, so a '
+                         'parent-space x of 0 would cover the rail')
+        self.assertIsNot(parent, window.centralWidget(),
+                         'the panel is parented to the central widget, which spans '
+                         'the window including the rail column')
+        self.assertTrue(window.centralWidget().isAncestorOf(parent),
+                        'the parent is not inside the shell\'s layout')
+
+        rail = window.findChild(ActionRail)
+        self.assertIsNotNone(rail, 'the fixture shell has no rail to exclude')
+        self.assertEqual(RAIL_WIDTH, rail.width(),
+                         f'#actionRail is not {RAIL_WIDTH} px wide, so the number the '
+                         'placement is measured against is not the rail')
+        self.assertFalse(parent.isAncestorOf(rail),
+                         'the rail ended up inside the panel\'s parent: then an inset '
+                         'would not be a double deduction after all')
+        self.assertTrue(parent.isAncestorOf(view),
+                        'the playlist is not inside the panel\'s parent, so the panel '
+                        'does not float over the list here')
+
+        stack = getattr(window, '_content_stack', None)
+        self.assertIsNotNone(
+            stack, 'MainWindow no longer exposes the content container this test '
+                   'names -- re-read _setup_ui before changing the assertion')
+        self.assertIs(parent, stack,
+                      'the panel floats somewhere other than the shell\'s '
+                      'rail-excluded content container')
+
+        origin = parent.mapTo(window, QPoint(0, 0))
+        self.assertEqual(RAIL_WIDTH, origin.x(),
+                         "the parent itself does not begin at the rail's right edge")
+        self.assertEqual(window.centralWidget().width() - RAIL_WIDTH, parent.width(),
+                         'the parent is not the window-minus-rail area')
+        self.assertEqual(RAIL_WIDTH + parent.width(), window.centralWidget().width(),
+                         'the rail and the parent do not tile the content row')
+
+    def test_panel_left_edge_aligns_with_its_parent(self):
+        """One placement, two coordinate spaces -- and both assertions are needed.
+
+        ``x == 0`` (parent space) and ``mapTo(window, (0, 0)).x() == RAIL_WIDTH``
+        (window space) are not the same claim twice. The first alone is also true
+        of a panel that was *never* given an inset and whose parent happens to
+        start at the window origin; the second alone is also true of a panel that
+        dropped the parent-space inset and grew one in the window's own space
+        instead -- the offset moved, not removed. Only the pair says "flush with
+        the container, and the container is what sits against the rail". Keeping
+        them separate is this batch's ruling on coordinate sources (plan R6): the
+        space a geometry number is read in is part of the claim, not an
+        implementation detail.
+        """
+        from PyQt6.QtCore import QPoint
+
+        from core.theme import RAIL_WIDTH, SIDEBAR_WIDTH
+        from view.widgets import ActionRail
+
+        window, sidebar, _view = self._window()
+        window.show()
+        self.app.processEvents()
+        window.set_libraries(_libraries(3))
+        window.toggle_library_panel()     # the rail button's own route
+        self.app.processEvents()
+
+        parent = sidebar.parentWidget()
+        self.assertTrue(sidebar.is_panel_open())
+        self.assertTrue(sidebar.isVisible(),
+                        'the panel never painted, so the geometry below would be '
+                        'measuring an unshown widget')
+
+        # (1) Parent space: flush with the container's left edge.
+        self.assertEqual(0, sidebar.x(),
+                         'the panel insets itself inside a parent that already '
+                         'begins right of the rail -- the double offset')
+
+        # (2) Window space: the panel\'s left edge IS the rail\'s right edge.
+        origin = sidebar.mapTo(window, QPoint(0, 0))
+        self.assertEqual(RAIL_WIDTH, origin.x(),
+                         'the panel does not begin at the rail\'s right edge in '
+                         'window coordinates')
+        rail = window.findChild(ActionRail)
+        rail_right = rail.mapTo(window, QPoint(0, 0)).x() + rail.width()
+        self.assertEqual(rail_right, origin.x(),
+                         'a stripe of the playlist shows between the rail and the '
+                         'panel -- the gap spec §1 criterion 7 names')
+
+        # The width follows the same rule: clamped by the parent alone, and it
+        # still cannot overhang the window it floats in.
+        self.assertEqual(min(SIDEBAR_WIDTH, parent.width()), sidebar.width(),
+                         'the panel width is not clamped by its parent')
+        self.assertLessEqual(sidebar.x() + sidebar.width(), parent.width(),
+                             'the panel overhangs its parent')
+        self.assertLessEqual(origin.x() + sidebar.width(), window.width(),
+                             'the panel overflows the window')
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
