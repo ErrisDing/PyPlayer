@@ -144,6 +144,11 @@ class PlaylistView(QWidget):
     def selected_display_indices(self) -> list:
         """Every selected row, ascending and without duplicates.
 
+        These are *display* rows -- positions in the visible list -- not the
+        queue's node indices, which the two differ by once folders are expanded
+        (``DisplayEntry.node_idx``). Feed them to the display-index API the
+        presenter already has, never straight to the node list.
+
         Batch 3's removal path is the consumer. The indices have to come back
         ascending here because they describe the *selection*: the batch-removal
         loop reverses them itself (spec §4.2 -- deleting row 3 shifts row 5 up
@@ -155,13 +160,22 @@ class PlaylistView(QWidget):
                 self._list_view.selectionModel().selectedRows())
         return sorted(set(rows))
 
-    def display_index_at(self, pos: QPoint) -> int:
-        """The row under ``pos`` (viewport coordinates), or ``-1`` for blank space.
+    def display_index_at(self, pos: QPoint, widget: QWidget) -> int:
+        """The row under ``pos``, read in ``widget``'s coordinate space.
 
-        Blank means the strip below the last row: an invalid index, and spec
-        §4.3 requires the right-click menu to stay closed there.
+        ``widget`` is required, not defaulted to the viewport. The list does not
+        fill this widget -- a header label sits above it -- so the two spaces are
+        offset by the header's height, and a right-click arrives in whichever
+        widget took the event (spec §4.3). Guessing the space is not a cosmetic
+        error: outer-widget coordinates would target every row one header too
+        high and report the header strip as row 0. Pass the widget ``pos`` came
+        from and this maps it.
+
+        Blank means no row: the strip below the last entry, the header, or an
+        empty model. ``-1``, and spec §4.3 requires the context menu to stay
+        closed there.
         """
-        index = self._list_view.indexAt(pos)
+        index = self._list_view.indexAt(self._list_view.viewport().mapFrom(widget, pos))
         if not index.isValid():
             return -1
         return index.row()

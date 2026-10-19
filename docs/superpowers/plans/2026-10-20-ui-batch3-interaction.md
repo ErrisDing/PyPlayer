@@ -170,7 +170,11 @@ Run: `PY -m unittest tests.test_playlist_selection -v` → Expected: FAIL。
 
 - [ ] **Step 2: 实现 `contextMenuEvent`**
 
-顺序：`display_index_at(event.pos())` → `-1` 则直接返回不发信号；否则按目标规则调整选区；`targets = selected_display_indices()`；`menu = build_playlist_menu(targets, self._is_playing_index_in(targets), self)`；`menu.exec(event.globalPosition().toPoint())`；按 `action.data()` 分派到三个信号，并 emit `context_menu_requested(targets[0], event)`。
+顺序：`display_index_at(event.pos(), self)` → `-1` 则直接返回不发信号；否则按目标规则调整选区；`targets = selected_display_indices()`；`menu = build_playlist_menu(targets, self._is_playing_index_in(targets), self)`；`menu.exec(event.globalPosition().toPoint())`；按 `action.data()` 分派到三个信号，并 emit `context_menu_requested(targets[0], event)`。
+
+`display_index_at` 在 Task 1 修复轮改为**必须显式给出坐标来源控件**（`display_index_at(pos, widget)`，内部 `viewport().mapFrom(widget, pos)`）。理由：`_list_view` 上方还有一个 header，两个坐标空间差一个 header 高度；按 `event.pos()` 的原样传进去会让每个目标行整体上移一行，并把 header 当成真行弹菜单。**本任务不得省略第二个参数。**
+
+先探针、后实现（本仓库不允许假设 Qt 行为）：`QAbstractItemView` 自己实现了 `contextMenuEvent`，右键落在列表上时**事件是否真的传到外层 `PlaylistView`** 取决于它 accept 还是 ignore。写一个临时脚本，对 `_list_view.viewport()` 与外层 `PlaylistView` 各打一次右键，打印两处 `contextMenuEvent` 是否被调用；据此决定钩子挂在哪一层（若子级吃掉，改挂 `_list_view` 并传 `viewport()` 作坐标来源）。脚本用完即删，不进仓库。
 
 `globalPosition()` 在 Qt 6.1 才有，沿用批次 2 已确立的兜底写法。
 

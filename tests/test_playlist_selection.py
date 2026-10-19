@@ -33,8 +33,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
-    from PyQt6.QtWidgets import QAbstractItemView
-    from PyQt6.QtCore import QEvent, QPoint, Qt
+    from PyQt6.QtWidgets import QAbstractItemView, QLabel
+    from PyQt6.QtCore import PYQT_VERSION_STR, QEvent, QPoint, Qt
     from PyQt6.QtTest import QTest
     QT_AVAILABLE = True
 except ImportError:  # pragma: no cover - environment without PyQt6
@@ -44,13 +44,23 @@ from tests.test_view_smoke import make_app, make_manager
 
 
 def make_entries(count: int) -> list:
-    """``count`` flat (non-folder) display entries, named by row."""
+    """``count`` flat (non-folder) display entries, named by row.
+
+    ``node_idx`` is deliberately ``i + 100`` and never ``i``. Real queue data
+    keeps the two index spaces apart -- ``queue_service`` reads
+    ``_display_entries[display_idx]`` and then deletes ``_queue_nodes[node_idx]``
+    (service/queue_service.py:486-502), and a folder entry makes them diverge --
+    so a fixture where they coincide cannot tell which space a helper returned.
+    With this offset, an implementation that handed back ``node_idx`` instead of
+    the display row would fail every assertion below, and the batch removal path
+    (spec §4.2, Task 5) would delete the wrong tracks.
+    """
     from service.queue_service import DisplayEntry
 
     return [
         DisplayEntry(
             display_text=f'track {i}.flac',
-            node_idx=i,
+            node_idx=i + 100,
             is_folder=False,
             path=f'/tmp/music/track{i}.flac',
             full_path=f'/tmp/music/track{i}.flac',
@@ -150,7 +160,7 @@ class SpaceProbeTest(unittest.TestCase):
         Not a guard: spec §4.4 forbids assuming the answer, so the deltas are
         printed for every case and the conclusion they force is recorded under
         spec §4.4 for Task 6 to read. The assertions below re-pin the *measured*
-        facts (Qt 6.11): bare ``Space`` is already taken by the view, and so is
+        facts on the Qt of this host: bare ``Space`` is already taken by the view, and so is
         ``Ctrl+Space``, so play/pause has to be bound by something that consumes
         the key before the view sees it. If a Qt upgrade ever frees the key,
         these assertions fail loudly instead of Task 6 silently keeping a binding
@@ -181,17 +191,18 @@ class SpaceProbeTest(unittest.TestCase):
         view = self._view()
         view._list_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         range_obs = self._measure(view, Qt.KeyboardModifier.NoModifier, pre_select=(0, 2))
-        range_obs['case'] = 'ExtendedSelection + Space, rows 0..2 pre-selected'
+        range_obs['case'] = ('ExtendedSelection + Space, rows 0..2 selected '
+                             'programmatically (ClearAndSelect, not Ctrl/Shift clicks)')
         observations.append(range_obs)
         view.close()
         view.deleteLater()
 
-        print('\n[Space probe] spec 4.4 -- Qt 6.11, focused QListView with 3 rows, '
-              'current row 0, one key press delivered via app.sendEvent:')
+        print(f'\n[Space probe] spec 4.4 -- PyQt {PYQT_VERSION_STR}, focused QListView '
+              'with 3 rows, current row 0, one key press delivered via app.sendEvent:')
         for obs in observations:
             print(f"[Space probe]   {obs['case']}: "
                   f"receiver accepted={obs['accepted']}; "
-                  f"selected_display_indices changed={obs['selection_changed']} "
+                  f"selection model changed={obs['selection_changed']} "
                   f"({obs['before_rows']} -> {obs['after_rows']}); "
                   f"currentRow changed={obs['current_row_changed']} "
                   f"({obs['before_current_row']} -> {obs['after_current_row']})")
@@ -199,8 +210,6 @@ class SpaceProbeTest(unittest.TestCase):
 
         self.assertEqual(len(observations), 5, 'four key cases plus the range case')
         for obs in observations:
-            self.assertIsInstance(obs['selection_changed'], bool)
-            self.assertIsInstance(obs['current_row_changed'], bool)
             self.assertEqual(obs['before_current_row'], 0,
                              f"{obs['case']}: probe setup lost the current row")
 
@@ -217,6 +226,36 @@ class SpaceProbeTest(unittest.TestCase):
             'a bare Space used to collapse a 3-row range; if it no longer does, '
             're-read spec §4.4 before re-binding plain Space',
         )
+
+        # Spec §4.4 records two further facts as prose. Pinned as data: the view
+        # *consumes* the key (the original claim, and the reason a window-level
+        # binding has to eat it first), and Ctrl+Space is indistinguishable from
+        # bare Space (so neither is free either).
+        for obs in observations:
+            self.assertTrue(
+                obs['accepted'],
+                f"{obs['case']}: the view stopped consuming the press, so the key "
+                f"may be free for play/pause -- re-read spec §4.4",
+            )
+        fields = ('accepted', 'before_rows', 'after_rows',
+                  'before_current_row', 'after_current_row',
+                  'selection_changed', 'current_row_changed')
+        for space_obs, ctrl_obs in ((observations[0], observations[1]),
+                                    (observations[2], observations[3])):
+            self.assertEqual(
+                [space_obs[name] for name in fields],
+                [ctrl_obs[name] for name in fields],
+                'Ctrl+Space no longer behaves exactly like bare Space -- spec §4.4 '
+                'binds Ctrl+Space on the strength of that identity',
+            )
+
+        # The exact measured outcome, not merely "something changed": every case
+        # walks the cursor 0 -> 1 and leaves row 1 as the whole selection.
+        for obs in observations:
+            self.assertEqual([1], obs['after_rows'],
+                             f"{obs['case']}: spec §4.4 records [..] -> [1]")
+            self.assertEqual(1, obs['after_current_row'],
+                             f"{obs['case']}: spec §4.4 records current row 0 -> 1")
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
@@ -296,28 +335,113 @@ class SelectionTest(unittest.TestCase):
             self._ctrl_click(row)
 
         indices = self.view.selected_display_indices()
-        self.assertEqual([0, 1, 2, 3, 4], indices)
-        self.assertEqual(sorted(indices), indices, 'indices must come back ascending')
-        self.assertEqual(len(set(indices)), len(indices),
-                         'indices must come back deduplicated')
+        self.assertEqual([0, 1, 2, 3, 4], indices,
+                         'display rows, not the node_idx=100..104 the fixture carries')
         self.assertIsInstance(indices, list)
+
+    def test_no_selection_returns_an_empty_list(self):
+        """Spec §7: an empty selection is ``[]`` for the caller to act on.
+
+        ``None`` here would reach the presenter as a missing target instead of a
+        no-op, so the empty case is pinned before any click happens.
+        """
+        self.assertEqual([], self.view.selected_display_indices())
+
+    def test_selection_normalisation_survives_a_scrambled_collaborator(self):
+        """``sorted(set(...))`` is pinned at its own seam, not by click order.
+
+        ``QItemSelectionModel::selectedRows()`` returns rows in model order, one
+        per row, so no click sequence can make the live view hand back something
+        unsorted or repeated -- and an assertion against the live widget therefore
+        cannot fail. The normalisation is defensive against that guarantee, so the
+        only way to test it is to replace the collaborator with the shape it
+        exists to absorb.
+        """
+        from unittest import mock
+
+        model = self.view._model
+
+        class ScrambledSelectionModel:
+            def selectedRows(self, column=0):
+                return [model.index(row) for row in (3, 1, 3, 0, 1)]
+
+        with mock.patch.object(self.view._list_view, 'selectionModel',
+                               return_value=ScrambledSelectionModel()):
+            self.assertEqual([0, 1, 3], self.view.selected_display_indices(),
+                             'rows must come back ascending and deduplicated '
+                             'whatever order the selection model handed them over')
 
     def test_display_index_at_returns_minus_one_on_empty_area(self):
         """The strip under the last row is not a row: -1, so no context menu (spec §4.3)."""
         list_view = self.view._list_view
+        viewport = list_view.viewport()
         last_bottom = list_view.visualRect(
             self.view._model.index(self.ROW_COUNT - 1)).bottom()
 
         self.assertEqual(
-            -1, self.view.display_index_at(QPoint(50, last_bottom + 200)),
+            -1, self.view.display_index_at(QPoint(50, last_bottom + 200), viewport),
             'a point 200px below the last row must resolve to no row')
+        blank_in_viewport = QPoint(50, last_bottom + 20)
+        self.assertTrue(
+            viewport.rect().contains(blank_in_viewport),
+            'this point must still be inside the viewport, or the assertion below '
+            'silently degrades into the out-of-bounds branch it exists to distinguish')
         self.assertEqual(
-            -1, self.view.display_index_at(QPoint(50, last_bottom + 20)),
+            -1, self.view.display_index_at(blank_in_viewport, viewport),
             'the blank strip that is still inside the viewport must also resolve '
             'to no row -- that is the area a right-click actually lands in')
 
         row_two = QPoint(list_view.visualRect(self.view._model.index(2)).center())
-        self.assertEqual(2, self.view.display_index_at(row_two))
+        self.assertEqual(2, self.view.display_index_at(row_two, viewport))
+
+    def test_display_index_at_maps_from_the_widget_it_is_told(self):
+        """``pos`` is read in the coordinate space of the ``widget`` argument.
+
+        The list sits below a header inside this widget, so the outer widget's
+        space is the viewport's shifted down by the header. An implementation
+        that assumed one space for both would answer row 1 for a point over row
+        2, and would report the header as a real row -- opening the menu the
+        spec §4.3 target rule is built on top of.
+        """
+        list_view = self.view._list_view
+        viewport = list_view.viewport()
+
+        # The same physical pixels, expressed in the outer widget's space.
+        # ``viewport.mapTo(view, p)`` and not ``view.mapFrom(viewport, p)``:
+        # ``mapFrom`` expects an *ancestor*, and the viewport is a descendant, so
+        # the wrong direction silently treats the point as window-global and
+        # answers a point three pixels off. Measured on this host: the correct
+        # pair round-trips exactly, the inverted one shifts by (-3, -2).
+        #
+        # One pixel above each row's bottom edge, not its centre: an unmapped
+        # read adds the header offset, and 13px of slack still lands a centre on
+        # its own row, so a centre-only probe passes the bug it exists to catch.
+        for row in range(self.ROW_COUNT):
+            rect = list_view.visualRect(self.view._model.index(row))
+            outer_point = viewport.mapTo(
+                self.view, QPoint(rect.center().x(), rect.bottom() - 1))
+            self.assertEqual(
+                row, self.view.display_index_at(outer_point, self.view),
+                f'row {row}: a header-height offset must be taken off the outer space')
+
+        # A point that is over the header in outer space is over nothing in the
+        # viewport: without the mapping it would land on row 0 or 1 and pop the
+        # menu for a row the user did not click.
+        header = self.view.findChild(QLabel, 'playlistHeader')
+        self.assertGreater(header.height(), 0, 'the fixture must have a real header')
+        header_point = QPoint(header.width() // 2, header.height() // 2)
+        self.assertEqual(-1, self.view.display_index_at(header_point, self.view),
+                         'the header strip is not a row')
+
+    def test_display_index_at_on_an_empty_model(self):
+        """No rows at all: every point is blank, including one the list covers."""
+        self.view.set_entries([])
+        self.app.processEvents()
+
+        self.assertEqual(
+            -1, self.view.display_index_at(QPoint(50, 50),
+                                           self.view._list_view.viewport()),
+            'an empty playlist has no row for any point to resolve to')
 
 
 if __name__ == '__main__':
