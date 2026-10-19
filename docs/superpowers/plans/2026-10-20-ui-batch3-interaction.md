@@ -247,6 +247,13 @@ git commit -m "feat(view): 列表行 hover 反馈，优先级低于播放与选�
 
 **Interfaces:**
 - Consumes: 队列已有的 `remove_at_display_index(int) -> bool`、`set_position_by_display_index(int)`、`clear()`；`MainWindow` 转发信号（Task 6 接线，本任务先测 presenter）
+
+**裁定 R8（2026-10-20，控制器实测）：`remove_at_display_index` 不维护播放位置，队列的 `PlaybackPosition` 在删除后是陈旧值。** 实测（5 条扁平队列、播 T2）：删掉 **T2 本身** → `get_current_track()` 返回 **T3**；删掉 **T0（播放行上方的任意行）** → 同样返回 **T3**，且 `_position.display_index` 也停旧。`clear()` 会重置 `_position`，而按行删除不会（`service/queue_service.py:486-513` 只 `_rebuild_display_entries()`）。全仓 `remove_at_display_index` **零调用方、零测试**——本任务它是第一个调用者，也是第一个把这个隐患变成活路径的人。
+
+后果与要求：
+1. **不得改队列**（本批次范围线）。所以 presenter 必须**以曲目身份**重解析：删除前先 `get_current_track()` 取路径，删完后在 `get_display_entries()` 里按路径找它的新显示索引——找到就 `set_position_by_display_index(new_idx)` 把位置钉回去，找不到（播的那首被删了）就 `clear_now_playing()` 并保持停止态。绝不能把 `get_current_track()` 的删除后读数当作真相。
+2. 交错用例（Review Focus 2）之外，**必须各有专测**：「删掉播放行本身」与「删掉播放行上方一行」，两条都断言现在播的仍是原来那首（或按语义清空）——上面实测过，这两条正是原实现会静默播错歌的形状。
+3. 另加一条**特征化测试**（characterization）直接打在队列上，把「删除后 `get_current_track()` 指向另一首」这个事实钉住并写明是队列层的待修债，交给批次 5（队列变更契约）。没有它，后来人只会在 presenter 里看到一段解释不清的补偿逻辑。
 - Produces: `MainPresenter._on_remove_tracks(indices: list[int]) -> None`、`_on_play_tracks(indices: list[int]) -> None`
 
 - [ ] **Step 1: 写失败的测试**
