@@ -53,6 +53,9 @@ class PlaylistView(QWidget):
       a row inside it keeps the batch, blank space opens nothing -- and the
       clicked entry leaves as one of ``play_requested`` / ``remove_requested`` /
       ``clear_playlist_requested``.
+    - ``Delete`` removes the batch and ``Enter`` plays it. Those two keys are the
+      exception to "all key bindings live on ``MainWindow``" (spec §5), and ruling
+      R11 put them here on purpose: see :meth:`keyPressEvent`.
 
     The header and the list are styled by the application sheet through
     ``#playlistHeader`` / ``#playlistView``; the row states are painted by
@@ -334,13 +337,64 @@ class PlaylistView(QWidget):
         playing = self._model.get_playing_index()
         return playing >= 0 and playing in targets
 
-    # -- keyboard requests (batch 3, Task 6) -------------------------------
+    # -- keyboard (batch 3, Task 6 / ruling R11) ---------------------------
+
+    #: The two keys whose meaning is "the rows this list is showing", answered here
+    #: rather than by a window ``QAction`` (ruling R11, fix round 1).
+    #:
+    #: Why they are not window bindings: ``QAction.setShortcutWidget`` -- the API that
+    #: would scope a window-level shortcut to this subtree -- **does not exist in
+    #: PyQt6 6.11** (measured: ``hasattr(QAction, 'setShortcutWidget')`` is ``False``,
+    #: calling it raises ``AttributeError``), and the in-slot focus gate that was
+    #: shipped in their place cannot undo a match. Once a window-level shortcut matches,
+    #: Qt has consumed the press; returning early from the slot leaves the focused
+    #: widget with nothing. Measured at ``3356222`` with ``#playButton`` focused: the
+    #: button's own ``keyPressEvent`` saw the ``Enter`` and the ``Delete`` **zero**
+    #: times, while the same button in a window with no bindings at all saw each of
+    #: them once.
+    #:
+    #: What this widget does see (measured, focus on the inner ``QListView``):
+    #: ``Delete``, ``Enter`` and numpad ``Key_Enter`` -- ``QListView`` accepts neither,
+    #: so Qt walks the press up the parent chain and lands here -- and **not** bare
+    #: ``Space`` or the bare arrows, which the list accepts downstairs. That asymmetry
+    #: is the design: a key that reaches this method is by construction a key the list
+    #: was not using, so the override cannot steal the native navigation the spec §5
+    #: "不劫持" criterion protects, and it needs no focus bookkeeping to know that.
+    REMOVE_KEYS = (Qt.Key.Key_Delete,)
+    PLAY_KEYS = (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+
+    def keyPressEvent(self, event) -> None:
+        """``Delete`` removes the batch, ``Enter`` plays it (spec §5).
+
+        Both go through :meth:`request_remove_selection` /
+        :meth:`request_play_selection`, the same two entries the right-click menu
+        uses, so the keyboard and the menu cannot drift apart and the
+        "empty selection emits nothing" rule (spec §7) is enforced in exactly one
+        place.
+
+        Modifiers are deliberately not consulted. Numpad ``Enter`` arrives with
+        ``KeypadModifier`` set, so a ``NoModifier`` test would silently drop half of
+        spec §5's ``Enter`` row, and neither key carries a second meaning inside this
+        list. ``Ctrl+Space`` / ``Ctrl+Up`` / ``Ctrl+Down`` are not this method's
+        business either: those three stay window-level (they are not about rows), and
+        the window consumes them before the press reaches here.
+        """
+        if event.key() in self.REMOVE_KEYS:
+            event.accept()
+            self.request_remove_selection()
+            return
+        if event.key() in self.PLAY_KEYS:
+            event.accept()
+            self.request_play_selection()
+            return
+        super().keyPressEvent(event)
 
     def request_play_selection(self) -> None:
         """Emit ``play_requested`` for the selection the way ``Enter`` means it.
 
-        Called by ``MainWindow``'s ``Enter`` binding, which is why it lives here and
-        not in the window: the selection's meaning is this widget's to decide (plan
+        Reached from :meth:`keyPressEvent` (this widget's own ``Enter``) and from the
+        context menu's Play entry, which is why it lives here and not in the window:
+        the selection's meaning is this widget's to decide (plan
         Architecture -- 选择与索引解析留在 `PlaylistView`), and routing the keyboard
         through the same signal the context menu emits gives the two entries one
         forward, one presenter handler and one empty-selection rule.
@@ -362,7 +416,8 @@ class PlaylistView(QWidget):
     def request_remove_selection(self) -> None:
         """Emit ``remove_requested`` for the whole selection, ascending.
 
-        ``MainWindow``'s ``Delete`` binding calls this. Same no-empty rule as
+        Reached from :meth:`keyPressEvent` (this widget's own ``Delete``). Same
+        no-empty rule as
         :meth:`request_play_selection`, and the batch -- not one row -- is the point:
         the removal is multi-row by design, and the presenter sorts it into
         descending order itself (spec §4.2), so this layer must not re-order anything
