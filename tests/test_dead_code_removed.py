@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dead code removal guards for Task 2.
+"""Dead code removal guards for Task 2 and Task 9.
 
 Pins these claims so a later restyle task cannot accidentally re-introduce
 them:
@@ -18,6 +18,10 @@ them:
      dialog, and calling the presenter's slot straight from the helper skipped the
      action connection and the presenter's ``connect``, so the live route could be
      deleted with this file still green.
+  5. batch 2 Task 9: the left panel and the library chip row are deleted, *and* no
+     ``*.py`` in the repo still names either class -- comments and docstrings
+     included, because a prose pointer at a file that no longer exists is the same
+     stale claim one layer further down.
 
 ``context_menu_requested`` is the batch-3 right-click interface: it is declared
 but never emitted on purpose, so it must survive this cleanup.
@@ -34,7 +38,24 @@ import unittest
 from pathlib import Path
 
 # Make the project root importable no matter how the test is invoked.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+# The two widgets batch 2 Task 9 deletes, and the names they must vanish from.
+SUPERSEDED_PANEL_MODULES = (
+    'view.widgets.now_playing_panel',
+    'view.widgets.library_selector',
+)
+
+# Built from parts, deliberately: a scan for a name has to be able to say the name
+# without containing it, or the test file becomes the one place the deleted class
+# may still be mentioned -- and mentions are exactly what this census forbids.
+SUPERSEDED_PANEL_CLASSES = ('NowPlaying' + 'Panel', 'Library' + 'Selector')
+
+#: Directories with no source under them: a virtualenv (it ships PyQt6 stubs and
+#: third-party code that mention nothing here), the object store, and the build
+#: output a frozen copy leaves behind.
+SKIP_SCAN_PARTS = frozenset({'.git', '.venv', '__pycache__', 'build', 'dist'})
 
 try:
     import PyQt6.QtCore  # noqa: F401  (importing view.models needs QtCore)
@@ -66,15 +87,67 @@ class DeadCodeRemovedTest(unittest.TestCase):
                     f'{module} is still importable',
                 )
 
+    def test_superseded_panels_are_gone(self):
+        """Batch 2 Task 9: the left panel and the chip row are gone, not unused.
+
+        :data:`SUPERSEDED_PANEL_CLASSES` are the two widget classes those files
+        exported. The cover and its two text lines moved to the control bar's
+        strip; the chip row -- which overflowed at three libraries, exactly audit
+        item B3 -- moved to the floating sidebar. Task 7 took both out of the
+        widget tree, and leaving the files behind is what made them rot: they
+        still wore the five object names whose rules this task deletes, and a
+        reader cannot tell dead paint from live.
+        """
+        for module in SUPERSEDED_PANEL_MODULES:
+            with self.subTest(module=module):
+                self.assertIsNone(
+                    importlib.util.find_spec(module),
+                    f'{module} is still importable',
+                )
+
+        import view.widgets as widgets
+
+        for class_name in SUPERSEDED_PANEL_CLASSES:
+            with self.subTest(package_class=class_name):
+                self.assertIs(
+                    hasattr(widgets, class_name), False,
+                    f'view.widgets still re-exports {class_name}',
+                )
+        self.assertEqual([], [
+            name for name in getattr(widgets, '__all__', ())
+            if name in SUPERSEDED_PANEL_CLASSES],
+            'the export list still advertises a deleted panel')
+
+    def test_no_reference_to_superseded_panels(self):
+        """No ``*.py`` in the repo may name either class -- comments and tests too.
+
+        A prose mention of a deleted widget is a pointer a later reader cannot
+        follow: Task 7's shell, ``tests/test_theme_qss.py``'s transparency pin and
+        two batch-1 docstrings all described behaviour through these two names, and
+        every one of them went stale when the files did. The scan therefore covers
+        comments and docstrings, not just code, and covers this file: the two names
+        are assembled from parts above so the census itself is not an exception.
+        """
+        hits = []
+        for source in ROOT.rglob('*.py'):
+            if SKIP_SCAN_PARTS & set(source.parts):
+                continue
+            text = source.read_text(encoding='utf-8', errors='replace')
+            for needle in SUPERSEDED_PANEL_CLASSES:
+                for number, line in enumerate(text.splitlines(), 1):
+                    if needle in line:
+                        hits.append(f'{source.relative_to(ROOT)}:{number}')
+        self.assertEqual(
+            [], hits,
+            f'these files still name a class deleted in Task 9: {hits}',
+        )
+
     def test_dead_signals_are_gone(self):
         """Each of these had no reachable emitter or no listener."""
         from view.main_window import MainWindow
         from view.widgets.playlist_view import PlaylistView
 
         for owner, name in (
-            # MainWindow._on_add_library was never wired to any action, so the
-            # emit - and therefore the presenter connection - was unreachable.
-            (MainWindow, 'add_library_requested'),
             # never emitted by MainWindow (only LibraryManagementDialog has one)
             (MainWindow, 'remove_library_requested'),
             # emitted on click but no presenter/view ever connected to it
@@ -85,6 +158,14 @@ class DeadCodeRemovedTest(unittest.TestCase):
                     hasattr(owner, name), False,
                     f'{owner.__name__}.{name} is still declared',
                 )
+
+        # ``MainWindow.add_library_requested`` was on this list while its only
+        # emitter (the never-wired ``_on_add_library`` slot) was gone. Task 7's
+        # shell revived it with a live producer: the floating panel's footer
+        # add entry, pinned by
+        # ``tests/test_view_structure.py::test_sidebar_add_reaches_the_window_exactly_once``.
+        # A revived signal belongs to the surviving side of this file, not here.
+        self.assertTrue(hasattr(MainWindow, 'add_library_requested'))
 
     def test_background_dead_chain_is_gone(self):
         """MainWindow.background_image_changed lost its only emitters in Task 2.
@@ -236,9 +317,22 @@ class AppearanceBackgroundPathTest(unittest.TestCase):
         )
         self.assertFalse(self.view._background_pixmap.isNull())
         self.config.set_background_image.assert_called_once_with(self.bg_path)
-        self.assertNotEqual(
+        # The report still has to reach the view -- but since Task 7 the carrier
+        # is the toast, not the window title (spec §1 criterion 3 froze the
+        # title, §5 made results transient feedback; Task 8 rewrites the
+        # presenter's call sites onto ``show_toast`` directly). What this
+        # assertion refuses to tolerate is the report vanishing.
+        from PyQt6.QtWidgets import QFrame
+
+        toast = self.view.findChild(QFrame, 'toast')
+        self.assertIsNotNone(toast, '#toast must be part of the shell')
+        self.assertNotEqual('', toast.current_message(),
+                            'presenter did not report the background change on the view')
+        self.assertTrue(toast.isVisibleTo(self.view),
+                        'the report must be shown, not merely stored')
+        self.assertEqual(
             self.view.windowTitle(), self.view._base_title,
-            'presenter did not report the background change on the view',
+            'the title is no longer a status channel (spec §1 criterion 3)',
         )
 
     def test_dialog_clear_background_reaches_view(self):

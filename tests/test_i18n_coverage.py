@@ -56,10 +56,14 @@ VIEW_KEYS = (
 )
 
 MODIFIED_SOURCE_FILES = (
-    'view/widgets/now_playing_panel.py',
+    # Batch 1 Task 9 scanned the left panel and the chip row. Both were deleted
+    # by batch 2 Task 9, and the two widgets that took over their copy are
+    # substituted here so the scan keeps the same reach instead of quietly
+    # losing a file.
+    'view/widgets/now_playing_strip.py',
+    'view/widgets/library_sidebar.py',
     'view/widgets/playlist_view.py',
     'view/widgets/bottom_panel.py',
-    'view/widgets/library_selector.py',
     'view/delegates/playlist_delegate.py',
     # Review finding 1: this class of leak survived the original scan because
     # the scan only watched ``view/``. The presenter sits one layer up and can

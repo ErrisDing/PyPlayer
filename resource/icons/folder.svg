@@ -1,0 +1,12 @@
+<!-- folder: open-folder glyph (batch 2 Task 3) and, from Task 4, the glyph a
+     media-library row carries. Body drawn as four 2-unit bands (top y 8..10,
+     bottom y 17..19, left/right 2 units wide) so the centre stays hollow and
+     the glyph matches the page weight of file rather than reading as a solid
+     block; the tab is a solid band x 3..11, y 6..8, which is what makes the
+     silhouette a folder and not a tray. Ink spans x 3..21 (18 units) and
+     y 6..19 (13): the widest glyph in the rail family, because a folder is a
+     horizontal object, and 18 units still leaves 3 units of margin on both
+     sides of the 24 grid. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M3 6h8v2H3zM3 8h18v2H3zM3 8h2v11H3zM19 8h2v11h-2zM3 17h18v2H3z"/>
+</svg>

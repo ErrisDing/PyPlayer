@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from core import i18n
 from core.theme import PLAY_SIZE, TRANSPORT_SIZE
 from view.icons import icon
+from view.widgets.now_playing_strip import NowPlayingStrip
 
 # Glyph sizes, both derived from the geometry tokens so a button and its glyph
 # cannot drift apart. ``TRANSPORT_SIZE // 2`` is the 20 px the transport row has
@@ -88,9 +89,12 @@ class ClickableSlider(QSlider):
 
 class BottomPanel(QWidget):
     """
-    Combined bottom panel with progress slider and playback controls.
+    Combined bottom panel with the now-playing strip, progress slider and
+    playback controls.
 
     Features:
+    - Now-playing strip row (cover thumbnail + title/artist, Task 5's widget,
+      fed through the three forwarding methods below)
     - Progress slider with time labels
     - Play/Pause, Stop, Previous, Next buttons
     - Volume slider
@@ -99,10 +103,11 @@ class BottomPanel(QWidget):
 
     Styling is the application sheet's job (``#bottomPanel``, ``#progressSlider``
     / ``#volumeSlider``, ``[role="transport"]``, ``#playButton``,
-    ``#loopButton``, ``#timeLabel``, ``#volumeLabel``). What QSS cannot reach is
-    the *glyphs*: every one of them is an SVG from ``resource/icons`` rasterised
-    through :func:`view.icons.icon` with a theme token, which is why
-    :meth:`recolor` still exists and why no widget here owns a stylesheet.
+    ``#loopButton``, ``#timeLabel``, ``#volumeLabel``, and the strip's own
+    ``#nowPlayingStrip`` family). What QSS cannot reach is the *glyphs*: every
+    one of them is an SVG from ``resource/icons`` rasterised through
+    :func:`view.icons.icon` with a theme token, which is why :meth:`recolor`
+    still exists and why no widget here owns a stylesheet.
     """
 
     # Signals
@@ -172,6 +177,16 @@ class BottomPanel(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(10, 5, 10, 5)
         main_layout.setSpacing(5)
+
+        # === Now playing row ===
+        # The strip is the bar's first row (spec §3.2: the left column is gone,
+        # the cover/title/artist read-out comes home to the control bar). It
+        # owns its own names -- ``#nowPlayingStrip`` / ``#stripArt`` /
+        # ``#stripTitle`` / ``#stripArtist`` -- and the panel below only
+        # forwards to it (``update_track_info`` / ``update_album_art`` /
+        # ``clear_now_playing``) and re-exports its recolor hook.
+        self._strip = NowPlayingStrip()
+        main_layout.addWidget(self._strip)
 
         # === Progress row ===
         progress_layout = QHBoxLayout()
@@ -378,6 +393,18 @@ class BottomPanel(QWidget):
 
     # === Public API ===
 
+    def update_track_info(self, title: str, artist: str = "", album: str = "") -> None:
+        """Forward the track text line to the strip (signature unchanged)."""
+        self._strip.update_track_info(title, artist, album)
+
+    def update_album_art(self, art_data) -> None:
+        """Forward the cover bytes to the strip."""
+        self._strip.update_album_art(art_data)
+
+    def clear_now_playing(self) -> None:
+        """Return the strip to its initial (no track) state."""
+        self._strip.clear()
+
     def recolor(self, tokens) -> None:
         """Regenerate every glyph for a new theme.
 
@@ -385,8 +412,15 @@ class BottomPanel(QWidget):
         button chrome itself is QSS's business; the glyphs are the one thing
         here that QSS cannot restyle, so they are the one thing redrawn --
         from the tokens handed in, whatever the manager may say later.
+
+        The strip gets the same call for shape, not need: it draws no glyph
+        and its labels are sheet-styled (see
+        :class:`view.widgets.now_playing_strip.NowPlayingStrip`), but one
+        ``recolor(tokens)`` fan-out across every batch-2 widget is the
+        contract ``MainWindow.recolor`` keeps.
         """
         self._generate_icons(tokens)
+        self._strip.recolor(tokens)
 
     def set_playing_state(self, is_playing: bool, is_paused: bool = False) -> None:
         """Update the play/pause button state."""

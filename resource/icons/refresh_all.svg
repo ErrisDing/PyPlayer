@@ -1,0 +1,18 @@
+<!-- refresh_all: refresh-every-library glyph, the double arrow the plan asks
+     for. Two 140-degree annulus segments of the same 5..7 ring as refresh (top
+     band running 200 degrees to 340 degrees through the top, bottom band its
+     exact half turn about (12,12)), each ending in a solid tangential
+     arrowhead, so the pair reads as a cycle with no gap and no start.
+
+     Why two arcs rather than a second copy of refresh at half size: two 8-unit
+     rings inside a 20 px button lose the 2-unit wall to antialiasing. The half
+     turn symmetry is exact, every bottom-band point is (24-x, 24-y) of its
+     top-band twin, which is what keeps the glyph from listing to one side (the
+     same property prev/next are pinned on in tests/test_icons.py). Ink spans
+     x 4.18..19.82 (15.6 units) and y 5..19 (14). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M5.42 9.61A7 7 0 0 1 18.58 9.61L16.7 10.29A5 5 0 0 0 7.3 10.29Z"/>
+  <path fill="currentColor" d="M19.82 8.63L18.67 12.77L15.12 10.34Z"/>
+  <path fill="currentColor" d="M18.58 14.39A7 7 0 0 1 5.42 14.39L7.3 13.71A5 5 0 0 0 16.7 13.71Z"/>
+  <path fill="currentColor" d="M4.18 15.37L5.33 11.23L8.88 13.66Z"/>
+</svg>

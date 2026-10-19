@@ -174,11 +174,52 @@ class ThemeContrastTest(unittest.TestCase):
         ('accent', 'button_bg', 3.0),
         ('accent', 'button_hover', 3.0),
         ('accent', 'button_pressed', 3.0),
+        # Batch 2 Task 3's icon rail: seven 20 px glyphs rasterised from
+        # ``tokens.icon`` over the four ``#railButton`` fills the sheet emits.
+        # Same rule as the transport row above -- QSS paints the background and
+        # the pipeline paints the glyph, so nothing but this tuple keeps the two
+        # on speaking terms.
+        #   * resting: the button is transparent, so the glyph lands on
+        #     ``#actionRail``'s ``surface_alt`` fill;
+        #   * hover: ``hover_bg``;
+        #   * blocked: ``button_disabled_bg``, the fill a running action's
+        #     partner wears;
+        #   * running: ``accent_soft``, the progress fill under the spinner.
+        # ``:pressed`` is deliberately not repeated: it emits ``button_pressed``,
+        # already pinned three lines up for the transport buttons.
+        # Measured at authoring: LIGHT 8.53-9.09, DARK 7.63-9.29, so this pin
+        # records pairings that hold rather than ones that need a colour change.
+        ('icon', 'surface_alt', 3.0),
+        ('icon', 'hover_bg', 3.0),
+        ('icon', 'button_disabled_bg', 3.0),
+        ('icon', 'accent_soft', 3.0),
+        # Batch 2 Task 4's library rows: the ``folder`` glyph is rasterised from
+        # ``tokens.icon`` and the row it sits on can be the current library, whose
+        # fill ``#libraryRow[current="true"]`` emits as ``selection_bg``. For the
+        # glyph alone, the other three grounds the row can wear -- ``surface``
+        # (the panel), ``hover_bg`` and ``button_pressed`` -- are pinned above.
+        ('icon', 'selection_bg', 3.0),
+        # The text and the marker of those same four grounds were *not* covered,
+        # because the block above is a glyph set and ``TEXT_PAIRS`` only lists
+        # ``surface``/``surface_alt``/``selection_bg``/``playing_bg``: the two
+        # fills ``#libraryRow:hover`` and ``#libraryRow:pressed`` emit under
+        # ``text_primary`` had no text pin, and the 2 px ``accent`` current-marker
+        # on the selection fill had none at all. Measured at authoring --
+        # ``text_primary``/``hover_bg`` 14.46 LIGHT, 10.91 DARK;
+        # ``text_primary``/``button_pressed`` 12.49, 6.94 (both the 4.5 text bar,
+        # WCAG 1.4.3); ``accent``/``selection_bg`` 3.98, 5.67 (the 3.0 non-text
+        # bar, WCAG 1.4.11 -- a 2 px marker is a UI component, not text, so it is
+        # not held to 4.5). All six pass: these three tuples close a coverage
+        # hole, they do not change a colour.
+        ('text_primary', 'hover_bg', 4.5),
+        ('text_primary', 'button_pressed', 4.5),
+        ('accent', 'selection_bg', 3.0),
         # The ``icon_muted`` / ``surface`` pair above is a deliberate superset:
         # the loop-off glyph paints on the button, never on the panel. It stays
         # because #loopButton's fill is one QSS edit away from transparent (the
-        # sheet already emits ``transparent`` for #nowPlayingPanel), and a guard
-        # must not be the thing that notices such a change.
+        # sheet already emits ``transparent`` for #railButton and
+        # #nowPlayingStrip), and a guard must not be the thing that notices such
+        # a change.
     )
 
     @staticmethod
@@ -220,6 +261,40 @@ class ThemeContrastTest(unittest.TestCase):
                     )
 
         self.assertEqual([], failures, '\n'.join(failures))
+
+
+class Batch2GeometryTest(unittest.TestCase):
+    """Batch 2's size tokens: the rail, the strip and the floating panel.
+
+    ``core/theme.py`` is the only place a geometry value may be written down, so
+    the three new constants are pinned by *value* here (a widget that invents its
+    own 56 would not fail any other test) and the retired one is pinned by
+    absence: ``ART_SIZE`` sized the left panel's cover box, and the left panel is
+    what batch 2 deletes, so the constant must not survive into a theme that no
+    longer has a consumer for it.
+    """
+
+    def test_batch2_sizes_are_the_planned_values(self):
+        from core.theme import RAIL_WIDTH, SIDEBAR_WIDTH, STRIP_ART_SIZE
+
+        self.assertEqual(48, STRIP_ART_SIZE)
+        self.assertEqual(56, RAIL_WIDTH)
+        self.assertEqual(240, SIDEBAR_WIDTH)
+
+    def test_art_size_is_gone(self):
+        """``ART_SIZE`` must not come back as a re-export or a renamed alias.
+
+        Its one remaining reader was the left panel, which held a literal 200
+        while batch 2 replaced the token with ``STRIP_ART_SIZE``; Task 9 deleted
+        that widget, so nothing may reach back to this module for the value.
+        """
+        import core.theme as theme
+
+        self.assertFalse(
+            hasattr(theme, 'ART_SIZE'),
+            'ART_SIZE still lives in core.theme; batch 2 replaced it with '
+            'STRIP_ART_SIZE / RAIL_WIDTH / SIDEBAR_WIDTH',
+        )
 
 
 if __name__ == '__main__':

@@ -278,7 +278,15 @@ class ThemeManagerTest(unittest.TestCase):
             window.deleteLater()
 
     def test_recolor_forwards_to_the_widgets_that_paint(self):
-        """``MainWindow.recolor`` is the fan-out point for the theme signal."""
+        """``MainWindow.recolor`` is the fan-out point for the theme signal.
+
+        Task 7 grew the fan-out from two entries to four: the rail's seven
+        glyphs and the sidebar row/footer glyphs join the bottom panel's icons
+        and the playlist viewport as the things QSS cannot restyle by itself.
+        ``NowPlayingStrip`` rides inside ``BottomPanel.recolor`` (its own
+        ``recolor`` draws no glyph; the forward keeps one call shape per
+        batch-2 widget), so it is not a fifth entry here.
+        """
         from core.theme import DARK
 
         from view.main_window import MainWindow
@@ -288,14 +296,18 @@ class ThemeManagerTest(unittest.TestCase):
         window = MainWindow(mgr)
         try:
             seen = []
+            window._rail.recolor = lambda tokens: seen.append(('rail', tokens))
+            window._sidebar.recolor = lambda tokens: seen.append(('sidebar', tokens))
             window._bottom_panel.recolor = lambda tokens: seen.append(
                 ('bottom', tokens))
             window._playlist_view.recolor = lambda: seen.append(('playlist', None))
             window.recolor(DARK)
             self.assertEqual(
-                [('bottom', DARK), ('playlist', None)], seen,
-                'recolor() must reach the bottom panel icons and the playlist '
-                'viewport, the two things QSS cannot restyle by itself',
+                [('rail', DARK), ('sidebar', DARK),
+                 ('bottom', DARK), ('playlist', None)], seen,
+                'recolor() must reach the rail and sidebar glyphs, the bottom '
+                'panel icons and the playlist viewport -- everything that '
+                'paints a colour QSS cannot restyle',
             )
         finally:
             window.close()
@@ -1109,16 +1121,23 @@ class PresenterThemeFlowTest(unittest.TestCase):
         keep the old mode while the click did nothing visible. The presenter's
         job is to say so on the view's one status surface, not to add a second
         apply path.
+
+        Batch 2 Task 8 moved that surface: the status slot that used to carry it
+        was split into progress / feedback / error (spec §5), and this string --
+        a result the user has to see once, not a modal interruption -- is the
+        feedback class, so the assertion now reads the toast channel. Same claim,
+        one layer closer to what the user sees: ``show_toast`` is what actually
+        paints, and the channel's old name no longer exists on the view.
         """
         from unittest.mock import patch
 
         from core import i18n
 
         self.config.set_theme.return_value = False
-        with patch.object(self.view, 'set_status_message') as status:
+        with patch.object(self.view, 'show_toast') as report:
             self.presenter._handle_theme_change('dark')
 
-        status.assert_called_once_with(i18n.get('status.theme_save_failed'))
+        report.assert_called_once_with(i18n.get('status.theme_save_failed'))
         self.assertEqual(
             'auto', self.manager.mode,
             'a refused write emits nothing, so a failed save may not restyle')

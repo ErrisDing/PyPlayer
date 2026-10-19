@@ -61,6 +61,33 @@ class ViewSmokeTest(unittest.TestCase):
 
         w.close()
 
+    def test_empty_app_launches(self):
+        """First launch, spec §6: nothing configured, zero libraries, zero entries.
+
+        The shell built in Task 7 adds three always-present overlays (rail,
+        floating panel, toast) and the strip row, and every one of them must
+        survive construction and paint with no data fed through any public
+        ``set_*``/``update_*`` call -- an empty player is the first screen a
+        fresh install shows, not an error path.
+        """
+        from view.main_window import MainWindow
+
+        app = make_app()
+
+        w = MainWindow(make_manager())
+        try:
+            w.show()
+            app.processEvents()
+
+            self.assertFalse(w.is_library_panel_open(),
+                             'the floating panel starts closed, never pre-shown')
+            pm = w.grab()
+            self.assertFalse(pm.isNull(), 'the empty shell painted nothing')
+            self.assertGreater(pm.width(), 0)
+        finally:
+            w.close()
+            w.deleteLater()
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

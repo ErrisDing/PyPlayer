@@ -31,21 +31,73 @@ SCOPED_NEEDING_CLASSES = ('QPushButton', 'QSlider', 'QListView', 'QLabel')
 # chrome that stays bare *by decision* -- the brief's mapping table mandates
 # these rules bare. This is NOT a single-instance claim: ``QMenu``, ``QScrollBar``
 # and ``QGroupBox`` recur many times per window and are still named globally by
-# the table (per-widget scoping would be noise and is not what the brief asks).
-# Adding a class here is a review-visible decision, not a blind spot.
-# ``QMainWindow`` is the seventh entry: the ruling named six, and the gate then
-# caught the bare ``QMainWindow`` of the table's first row (brief line 33,
-# ``QMainWindow, #nowPlayingPanel``). It belongs here rather than in the blind
-# spot, so it is listed and explained.
+# the table (per-widget scoping would be noise and not what the brief asks).
+# Adding a class here is a review-visible decision, not a blind spot, and
+# :meth:`BuildQssTest.test_the_chrome_exemption_contents_are_pinned` pins its
+# contents name by name.
+# ``QMainWindow`` is the seventh entry of the original ruling: the ruling named
+# six, and the gate then caught the bare ``QMainWindow`` of the table's first row
+# (brief line 33, which scoped the window together with the left panel). It
+# belongs here rather than in the blind spot, so it is listed and explained.
+# ``QSplitter`` is the name that has *left* the list: batch-2 Task 7 replaced
+# ``QSplitter[左栏 | 列表]`` with ``QHBoxLayout[ActionRail | 列表]``, so its two
+# ``::handle`` rules had zero wearers, and the batch-2 final review deleted them.
+# They survived the sheet -> tree guard only because that guard inspected
+# ``#name``/``[prop="value"]`` tokens and let bare classes through unexamined; the
+# guard now reads them too (see
+# ``tests/test_view_structure.py::StyleSheetSelectorsHaveWearersTest``), which is
+# what makes a name here need a *reason* and not merely a line in a tuple: each is
+# recorded in :data:`EXEMPT_CHROME_DECISIONS`, and the three that genuinely have no
+# wearer are pinned against the live tree.
 EXEMPT_CHROME_CLASSES = (
     'QMenuBar',
     'QMenu',
     'QScrollBar',
     'QToolTip',
-    'QSplitter',
     'QGroupBox',
     'QMainWindow',
 )
+
+#: The one reason each exempted chrome name may stay bare, and -- for the three
+#: names no constructed tree can produce -- may stay without a wearer.
+#:
+#: This is the record the sheet -> tree guard reads bare-class selectors against.
+#: Batch-2 final-review finding 1 was that the exemption here was a *syntax* claim
+#: ("chrome may be global") with no *existence* claim behind it, which is exactly
+#: how two ``QSplitter::handle`` rules sat emitted, un-worn and unreported. The
+#: three zero-wearer names stay because Qt builds them outside the widget tree,
+#: not because anybody checked:
+#:
+#: * ``QMenuBar`` / ``QMenu`` -- spec §8: batch 2 deleted ``menuBar()``, but
+#:   whether Qt still synthesises an application menu (and the context menus these
+#:   rules paint) on macOS is **unverified on this Windows host**. Deleting them as
+#:   dead paint would answer that question by accident, so they stay as a recorded
+#:   decision, pinned as zero-wearer in ``tests/test_view_structure.py``.
+#: * ``QToolTip`` -- Qt instantiates the tip on demand as a top-level popup, so it
+#:   is never a descendant of the window or the dialog and can never be worn.
+#:
+#: The other three *are* worn by the live tree (the dialog's group box, every
+#: viewport's scroll bars, the window itself), so their exemption buys them only
+#: freedom from ``#objectName`` scoping, not freedom from having a wearer.
+EXEMPT_CHROME_DECISIONS = {
+    'QMenuBar': 'spec §8 macOS: menuBar() was deleted by Task 7 but Qt may still '
+                'synthesise an application menu; unverified on this host, so the '
+                'rule is kept as a recorded decision rather than deleted as dead '
+                'paint',
+    'QMenu': 'spec §8 macOS, the same unresolved question as QMenuBar -- and '
+             'context menus are created on demand, so no constructed tree holds '
+             'one',
+    'QToolTip': 'Qt popup built on demand as a top-level window: never a '
+                'descendant of MainWindow or the dialog, so it can have no wearer '
+                'in the tree whatever the platform',
+    'QScrollBar': 'worn: every scroll-able viewport in the tree owns one (the '
+                  'playlist and the sidebar list), and the mapping table mandates '
+                  'the family bare',
+    'QGroupBox': 'worn: the appearance dialog groups its controls, and grouping is '
+                 'chrome rather than a per-widget style',
+    'QMainWindow': 'worn: the window itself, and the only rule carrying its '
+                   'window_bg fill (table row 1)',
+}
 
 # Bare-widget gate, line-anchored: a scoped-needing class at the start of a
 # selector that is NOT immediately followed by an id (``#``), a property
@@ -218,6 +270,12 @@ class SelectedChipContrastTest(unittest.TestCase):
     This lives here, not in Task 3's ``ThemeContrastTest.EXTRA_PAIRS``, because
     it is an invariant of the *mapping*, not of the palette: ``core/theme.py``
     is untouched and Task 3's file stays as it shipped.
+
+    Review finding 4, stated so the two documents agree: since Task 9 deleted the
+    chip row, **no widget wears these colours** -- this class pins the declaration
+    of a family that is listed in :data:`core.theme_qss.KNOWN_DEAD_SELECTORS` and
+    whose fate (delete the five rules and this class, or bring a chip-wearing
+    widget back) is Task 10's to decide.
     """
 
     def _blocks(self):
@@ -264,6 +322,71 @@ class SelectedChipContrastTest(unittest.TestCase):
         self.assertEqual([], failures, '\n'.join(failures))
 
 
+class KnownDeadSelectorsTest(unittest.TestCase):
+    """Batch-2 review finding 4: the dead-paint allowlist is chip-only, and pinned.
+
+    ``core.theme_qss.KNOWN_DEAD_SELECTORS`` is the exception list of the sheet ->
+    tree guard, so it decides which rules may survive with no wearer. Left as an
+    open list it would be a way to *hide* dead paint: add a name here and the
+    reverse guard stops complaining about it. These two tests are what make the
+    list a decision instead of an escape hatch -- the contents are re-spelled here
+    as literals (not derived from the module, which is the thing under test), and
+    every entry has to still be emitted.
+
+    Task 10 owns the only legal edit: either the five chip rules and this list
+    both go, or a chip-wearing widget comes back and the list empties while the
+    rules stay. Either way the change is made here, in review.
+    """
+
+    #: Re-spelled, deliberately: ``core/theme_qss.py`` owns the strings, this owns
+    #: the claim that *only* these are dead.
+    CHIP_FAMILY = (
+        'QPushButton[chip="true"]',
+        'QPushButton[chip="true"]:hover',
+        'QPushButton[chip="true"][selected="true"]',
+        'QPushButton[chip="true"]:disabled',
+        'QPushButton[chip="true"]:focus',
+    )
+
+    def _emitted(self):
+        """Yield ``(theme, {selector member})`` for both themes."""
+        from core.theme import DARK, LIGHT, AlphaSettings
+        from core.theme_qss import build_qss
+
+        for name in ('LIGHT', 'DARK'):
+            tokens = LIGHT if name == 'LIGHT' else DARK
+            yield name, set(_selector_members(build_qss(tokens, AlphaSettings())))
+
+    def test_allowlist_is_exactly_the_chip_family(self):
+        """Nothing else may join the list -- and no duplicate entries."""
+        from core.theme_qss import KNOWN_DEAD_SELECTORS
+
+        self.assertEqual(
+            set(self.CHIP_FAMILY), set(KNOWN_DEAD_SELECTORS),
+            f'KNOWN_DEAD_SELECTORS changed: {sorted(KNOWN_DEAD_SELECTORS)} -- a '
+            'new dead selector is a Task 10 decision (delete the rule), not an '
+            'allowlist entry',
+        )
+        self.assertEqual(
+            len(KNOWN_DEAD_SELECTORS), len(set(KNOWN_DEAD_SELECTORS)),
+            'a duplicated allowlist entry means the list was edited blind',
+        )
+
+    def test_every_allowlisted_selector_is_still_emitted(self):
+        """An entry may not outlive the rule it excuses (the five chip rules)."""
+        from core.theme_qss import KNOWN_DEAD_SELECTORS
+
+        for theme, members in self._emitted():
+            unemitted = [entry for entry in KNOWN_DEAD_SELECTORS if entry not in members]
+            with self.subTest(theme=theme):
+                self.assertEqual(
+                    [], unemitted,
+                    f'{unemitted} still sit in KNOWN_DEAD_SELECTORS but are no '
+                    'longer emitted -- an allowlist entry cannot outlive the rule '
+                    'it excuses, or the list hides whatever replaces it',
+                )
+
+
 class MainWindowFillTest(unittest.TestCase):
     """Whole-branch review finding 2: the window fill is pinned by *value*.
 
@@ -277,10 +400,13 @@ class MainWindowFillTest(unittest.TestCase):
     token-coloured and still paint nothing, so this reads the declaration out of
     the emitted block and compares it to the token.
 
-    ``#nowPlayingPanel`` is pinned in the same breath from the other side: its
-    ``transparent`` is a decision (it is what lets a configured background image
-    show through), not an oversight, so a later "consistency" pass that fills it
-    fails here instead of quietly killing the feature.
+    The transparent half is pinned in the same breath from the other side. Task 9
+    deleted the left panel and the ``#nowPlayingPanel`` rule that let a configured
+    background image through it; the surface that inherited the decision is
+    ``#nowPlayingStrip``, which sits inside the alpha-composited
+    ``#bottomPanel``. Its ``transparent`` is a decision, not an oversight, so a
+    later "consistency" pass that fills it fails here instead of quietly
+    flattening the controls alpha.
     """
 
     def _blocks(self):
@@ -291,10 +417,10 @@ class MainWindowFillTest(unittest.TestCase):
             qss = build_qss(tokens, AlphaSettings())
             yield (name, tokens,
                    _rule_block(qss, 'QMainWindow'),
-                   _rule_block(qss, '#nowPlayingPanel'))
+                   _rule_block(qss, '#nowPlayingStrip'))
 
     def test_window_is_filled_with_the_window_bg_token(self):
-        for name, tokens, block, _panel in self._blocks():
+        for name, tokens, block, _strip in self._blocks():
             with self.subTest(theme=name):
                 self.assertNotIn(
                     'transparent', block,
@@ -312,16 +438,18 @@ class MainWindowFillTest(unittest.TestCase):
                     f'`playlist`/`controls` alphas composite against',
                 )
 
-    def test_now_playing_panel_stays_transparent(self):
-        for name, _tokens, _block, panel in self._blocks():
+    def test_now_playing_strip_stays_transparent(self):
+        for name, _tokens, _block, strip in self._blocks():
             with self.subTest(theme=name):
                 self.assertEqual(
                     ['transparent'],
-                    [value for prop, value in _declarations(panel)
+                    [value for prop, value in _declarations(strip)
                      if prop == 'background-color'],
-                    f'{name}: `#nowPlayingPanel` must keep no fill of its own -- '
-                    f'that is how a configured background image reaches the user '
-                    f'through the panel (core/theme_qss.py, the Task 10 ruling)',
+                    f'{name}: `#nowPlayingStrip` must keep no fill of its own -- '
+                    f'it lives inside `#bottomPanel`, whose background is '
+                    f'`surface` composited at the user\'s controls alpha, and an '
+                    f'opaque plate here would hide that (core/theme_qss.py, the '
+                    f'Task 5 section and the Task 10 ruling)',
                 )
 
     def test_delegated_view_carries_no_item_rule(self):
@@ -453,6 +581,38 @@ class BuildQssTest(unittest.TestCase):
             'a per-instance class was added to the chrome exemption',
         )
 
+    def test_the_chrome_exemption_contents_are_pinned(self):
+        """No name joins the bare-chrome list -- or keeps a rule on it -- quietly.
+
+        Batch-2 final-review finding 1 made this exemption load-bearing in a new
+        way: the sheet -> tree guard now rejects a bare-class rule whose class has
+        no wearer unless the class is listed here, so the tuple is no longer only a
+        syntax allowance but also an existence claim. A literal pin is what keeps it
+        that way -- an edit that adds ``QStatusBar``, or restores ``QSplitter`` after
+        seeing the splitter rule fail, has to change a name written out here as well
+        as the reason recorded beside it, and both edits are review-visible.
+        """
+        self.assertEqual(
+            ('QGroupBox', 'QMainWindow', 'QMenu', 'QMenuBar', 'QScrollBar',
+             'QToolTip'),
+            tuple(sorted(EXEMPT_CHROME_CLASSES)),
+            'the bare-chrome exemption changed: every name here needs a wearer in '
+            'the live tree or a macOS/on-demand reason in EXEMPT_CHROME_DECISIONS, '
+            'and adding or restoring one is a reviewed decision',
+        )
+        self.assertNotIn(
+            'QSplitter', EXEMPT_CHROME_CLASSES,
+            'QSplitter left the exemption with the splitter (batch-2 Task 7): a '
+            'bare rule nobody can wear is dead paint, not chrome',
+        )
+        # One reason per name, and no reason without a rule: an entry that outlives
+        # its exemption would let the next bare class in on an inherited argument.
+        self.assertEqual(
+            set(EXEMPT_CHROME_CLASSES), set(EXEMPT_CHROME_DECISIONS),
+            'EXEMPT_CHROME_CLASSES and EXEMPT_CHROME_DECISIONS disagree -- the '
+            'list and its justifications are one record, not two',
+        )
+
     def test_dialog_family_is_ancestor_scoped(self):
         """Finding 5: dialog buttons and the library list keep their styling.
 
@@ -515,7 +675,16 @@ class BuildQssTest(unittest.TestCase):
             )
 
     def test_declares_every_required_selector(self):
-        """The selector inventory is the Task 5 contract, one for one."""
+        """The selector inventory is the Task 5 contract, one for one.
+
+        Direction: tuple -> sheet, i.e. nothing registered goes unstyled. The
+        other direction (sheet -> live tree: no emitted selector may name a name or
+        property nobody can construct, unless it is listed in
+        ``KNOWN_DEAD_SELECTORS``) lives in
+        ``tests/test_view_structure.py::StyleSheetSelectorsHaveWearersTest``,
+        because it needs a built ``MainWindow`` and this module deliberately runs
+        without PyQt6.
+        """
         from core.theme import DARK, LIGHT, AlphaSettings
         from core.theme_qss import (
             REQUIRED_DYN_PROPERTIES,
@@ -658,9 +827,13 @@ class PaletteOnlyColoursTest(unittest.TestCase):
         )
         self.assertEqual(
             {'background-color', 'color', 'border', 'border-top', 'border-bottom',
-             'border-color', 'outline'},
+             'border-left', 'border-right', 'border-color', 'outline'},
             {prop for prop, _value in declarations},
-        )
+            'the colour-property inventory changed; ``border-right`` arrived with '
+            'the batch 2 rail divider and ``border-left`` with the batch 2 sidebar '
+            'row\'s current-marker (a transparent one at rest, so the marker cannot '
+            'shift the text by two pixels), and a new colour-bearing property must '
+            'be added to COLOUR_PROPERTIES so the no-literal guards keep reading it')
         self.assertTrue(
             any('rgba(' in value for _prop, value in declarations),
             'the alpha-composited surfaces vanished from the sheet',

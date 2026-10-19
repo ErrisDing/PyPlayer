@@ -2,14 +2,23 @@
 """
 Main Window - Primary application window
 Assembles all UI components and provides the public View interface
+
+Shell (batch 2, spec §3.3): a 56 px ``ActionRail`` column, a full-width
+playlist, the ``LibrarySidebar`` floating over the list as a sibling of the
+container rather than a layout item, and a ``BottomPanel`` whose first row is
+the ``NowPlayingStrip``. There is no menu bar -- every action it carried lives
+on the rail, except Ctrl+Q, which hangs off the window itself (spec §6) -- and
+no left column: the cover/title/artist read-out moved to the control bar, the
+library picker moved to the floating panel.
 """
 
-from typing import Optional, List, Any
+from typing import Any, List, Optional
+
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QApplication, QSplitter,
-    QFileDialog, QMessageBox, QSizePolicy
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QApplication,
+    QFileDialog, QMessageBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QRect
+from PyQt6.QtCore import QEvent, pyqtSignal, QRect
 from PyQt6.QtGui import QAction, QKeySequence, QCloseEvent, QPixmap, QPainter, QColor
 
 import sys
@@ -18,7 +27,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import i18n
-from view.widgets import NowPlayingPanel, PlaylistView, BottomPanel
+from view.widgets import ActionRail, BottomPanel, LibrarySidebar, PlaylistView, Toast
+from view.widgets.action_rail import (
+    ACTION_ABOUT,
+    ACTION_APPEARANCE,
+    ACTION_OPEN_FILE,
+    ACTION_OPEN_FOLDER,
+    ACTION_REFRESH,
+    ACTION_REFRESH_ALL,
+)
 from view.models import PlaylistModel, DisplayEntry
 
 
@@ -34,9 +51,18 @@ class MainWindow(QMainWindow):
     Styling: the window owns no stylesheet. ``view.theme_manager.ThemeManager``
     pushes one application-wide sheet and palette; this class only reacts to
     ``theme_changed`` for the things QSS cannot restyle by itself -- the
-    token-coloured SVG glyphs of the bottom panel (``view.icons``), the
-    delegate-painted playlist rows and the background scrim -- through
-    :meth:`recolor`.
+    token-coloured SVG glyphs of the icon rail and the bottom panel
+    (``view.icons``), the sidebar row glyphs, the delegate-painted playlist
+    rows and the background scrim -- through :meth:`recolor`.
+
+    Layout: ``central`` is a ``QVBoxLayout`` of a content row and the bottom
+    panel; the content row is ``[ActionRail | content stack]``. The stack holds
+    ``#playlistContainer`` (a layout host only -- no QSS rule, no registration
+    in ``REQUIRED_OBJECT_NAMES``) and the two overlays parent to it or into it:
+    the floating panel sits over the stack as a sibling of the container, the
+    toast sits inside the container and re-places with it. Overlays are not
+    layout items: their geometry is theirs, this class only decides *when* a
+    re-place happens (see :meth:`eventFilter`).
     """
 
     # === User Action Signals ===
@@ -53,6 +79,7 @@ class MainWindow(QMainWindow):
     refresh_all_requested = pyqtSignal()        # refresh all libraries
     scan_folder_requested = pyqtSignal(str)     # folder path
     library_selected = pyqtSignal(str)          # library path selected
+    add_library_requested = pyqtSignal(str)     # new library path from the panel
     manage_libraries_requested = pyqtSignal()   # open library management dialog
     manage_appearance_requested = pyqtSignal()  # open appearance settings dialog
 
@@ -77,7 +104,6 @@ class MainWindow(QMainWindow):
         self._overlay_alpha: float = theme_manager.alphas.overlay
 
         self._setup_window()
-        self._setup_menu()
         self._setup_ui()
         self._setup_connections()
 
@@ -85,8 +111,14 @@ class MainWindow(QMainWindow):
         self.recolor(theme_manager.tokens)
 
     def _setup_window(self) -> None:
-        """Set up window properties."""
-        self.setWindowTitle(i18n.get('window.title'))
+        """Set up window properties, including the window-level shortcuts."""
+        # The title is written exactly once, here. The status channel batch 1 left
+        # behind rewrote it on every event; spec §1 criterion 3 retires that, and
+        # Task 8 deleted the channel with it. Task 8's source scan of ``view/`` and
+        # ``presenter/`` is what keeps it from coming back as a one-line forwarder
+        # (ledger R1's transitional shim).
+        self._base_title = i18n.get('window.title')
+        self.setWindowTitle(self._base_title)
 
         # Size window relative to available screen space
         app = QApplication.instance()
@@ -102,108 +134,85 @@ class MainWindow(QMainWindow):
 
         self.setMinimumSize(800, 500)
 
-    def _setup_menu(self) -> None:
-        """Set up menu bar."""
-        menubar = self.menuBar()
-
-        # File menu
-        file_menu = menubar.addMenu(i18n.get('menu.file'))
-
-        open_action = QAction(i18n.get('menu.open'), self)
-        open_action.setShortcut(QKeySequence.StandardKey.Open)
-        open_action.triggered.connect(self._on_open_file)
-        file_menu.addAction(open_action)
-
-        open_folder_action = QAction(i18n.get('menu.open_folder'), self)
-        open_folder_action.triggered.connect(self._on_open_folder)
-        file_menu.addAction(open_folder_action)
-
-        file_menu.addSeparator()
-
-        manage_libraries_action = QAction(i18n.get('menu.manage_libraries'), self)
-        manage_libraries_action.triggered.connect(self.manage_libraries_requested.emit)
-        file_menu.addAction(manage_libraries_action)
-
-        file_menu.addSeparator()
-
-        refresh_library_action = QAction(i18n.get('menu.refresh_library'), self)
-        refresh_library_action.triggered.connect(self._on_refresh_library)
-        file_menu.addAction(refresh_library_action)
-
-        refresh_all_action = QAction(i18n.get('menu.refresh_all'), self)
-        refresh_all_action.triggered.connect(self._on_refresh_all)
-        file_menu.addAction(refresh_all_action)
-
-        file_menu.addSeparator()
-
-        appearance_action = QAction(i18n.get('menu.appearance', default='外观设置'), self)
-        appearance_action.triggered.connect(self.manage_appearance_requested.emit)
-        file_menu.addAction(appearance_action)
-
-        file_menu.addSeparator()
-
+        # Ctrl+Q has no rail button -- closing the window *is* quitting, and
+        # spec §6 keeps Exit off the column -- so it needs a window-level owner
+        # here or the shortcut dies with the menu bar. The platform standard
+        # stays the first entry (Cmd+Q on macOS, Ctrl+Q on Windows/Linux, which
+        # is what the deleted menu used); the literal ``Ctrl+Q`` rides along
+        # because it is the promise spec §6 makes and because the offscreen
+        # platform resolves ``StandardKey.Quit`` to the unusable string
+        # ``"Exit"`` -- measured, and the reason the shortcut regression test
+        # could not have been green here before the swap. Identical sequences
+        # collapse, so a real Windows desktop gets one shortcut, not two.
         exit_action = QAction(i18n.get('menu.exit'), self)
-        exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        exit_action.setShortcuts([
+            QKeySequence(QKeySequence.StandardKey.Quit),
+            QKeySequence('Ctrl+Q'),
+        ])
         exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-
-        # Help menu
-        help_menu = menubar.addMenu(i18n.get('menu.help'))
-
-        about_action = QAction(i18n.get('menu.about'), self)
-        about_action.triggered.connect(self._on_about)
-        help_menu.addAction(about_action)
+        self.addAction(exit_action)
 
     def _setup_ui(self) -> None:
-        """Set up the main UI layout."""
-        # Central widget
+        """Set up the main UI layout: rail | full-width list, control bar below."""
         central = QWidget()
         self.setCentralWidget(central)
 
-        # Main layout with splitter
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Horizontal splitter for now playing and playlist
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        content_row = QHBoxLayout()
+        content_row.setContentsMargins(0, 0, 0, 0)
+        content_row.setSpacing(0)
 
-        # Left panel - Now Playing (fixed size)
-        self._now_playing = NowPlayingPanel()
-        self._now_playing.setMinimumWidth(250)
-        self._now_playing.setSizePolicy(
-            QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding
-        )
-        splitter.addWidget(self._now_playing)
+        # The rail owns its width (``RAIL_WIDTH``, fixed inside the widget);
+        # the list gets every remaining pixel -- spec §1 criterion 1.
+        self._rail = ActionRail(self._theme)
 
-        # Right panel - Playlist
-        playlist_container = QWidget()
-        playlist_layout = QVBoxLayout(playlist_container)
-        playlist_layout.setContentsMargins(0, 0, 0, 0)
-        playlist_layout.setSpacing(0)
+        # ``content_stack`` is the area right of the rail. The sidebar is its
+        # child but not a layout item, so it floats over the list without
+        # taking width from it; ``_place_panel`` clamps it inside the stack and
+        # the app-level filter re-places it on resize.
+        self._content_stack = QWidget()
+        stack_layout = QVBoxLayout(self._content_stack)
+        stack_layout.setContentsMargins(0, 0, 0, 0)
+        stack_layout.setSpacing(0)
+
+        # Layout host only: named so the tests and the toast wiring can find
+        # it, deliberately unstyled and deliberately *not* in
+        # ``REQUIRED_OBJECT_NAMES`` (ledger R2 -- a registered name the sheet
+        # does not emit would fail the structure contract it exists to guard).
+        self._playlist_container = QWidget()
+        self._playlist_container.setObjectName('playlistContainer')
+        container_layout = QVBoxLayout(self._playlist_container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(0)
 
         self._playlist_view = PlaylistView(self._theme)
-        playlist_layout.addWidget(self._playlist_view)
+        container_layout.addWidget(self._playlist_view)
+        stack_layout.addWidget(self._playlist_container)
 
-        splitter.addWidget(playlist_container)
+        content_row.addWidget(self._rail)
+        content_row.addWidget(self._content_stack, stretch=1)
+        main_layout.addLayout(content_row, stretch=1)
 
-        # Set initial sizes (30% now playing, 70% playlist)
-        splitter.setSizes([300, 700])
+        self._sidebar = LibrarySidebar(self._theme, self._content_stack)
 
-        # Make splitter handle resizable but keep now playing fixed
-        splitter.setStretchFactor(0, 0)  # Now playing doesn't stretch
-        splitter.setStretchFactor(1, 1)  # Playlist stretches
+        # The toast floats in the list container, so "above the control bar"
+        # is the container's own bottom edge and needs no bar height here
+        # (Task 6's ruling). It re-places with the container via eventFilter.
+        self._toast = Toast(self._playlist_container)
+        self._playlist_container.installEventFilter(self)
 
-        main_layout.addWidget(splitter, stretch=1)
-
-        # Bottom panel - Combined progress and controls
+        # Bottom panel - now-playing strip, progress and playback controls
         self._bottom_panel = BottomPanel(self._theme)
         main_layout.addWidget(self._bottom_panel)
 
-        # Store base window title for status updates
-        self._base_title = i18n.get('window.title')
-        self.setWindowTitle(self._base_title)
-
+    # spec §8 asks whether Qt still synthesises a minimal application menu on
+    # macOS once no QMenuBar content exists. That is unverifiable on this
+    # Windows host, so no invisible fallback bar is pre-implemented here;
+    # Task 10's closing report carries the item as "unverified, macOS users
+    # must confirm before merge".
     def _setup_connections(self) -> None:
         """Connect internal widget signals to main window signals."""
         # Bottom panel connections
@@ -218,13 +227,55 @@ class MainWindow(QMainWindow):
         # Playlist connections
         self._playlist_view.track_double_clicked.connect(self.track_double_clicked.emit)
 
-        # Now playing panel connections
-        self._now_playing.library_selected.connect(self._on_library_selected)
+        # Rail: connect *only* ``action_triggered``. A click on a rail button
+        # already routes ``clicked -> action.trigger() -> triggered``, and
+        # ``ActionRail._make_button`` listens on the action side only (Task 3's
+        # critical fix), so a second connection on the buttons would deliver
+        # every click to the presenter twice -- pinned by
+        # ``tests/test_view_structure.py::test_rail_dispatch_reaches_the_window_exactly_once``.
+        self._rail.action_triggered.connect(self._on_rail_action)
+        self._rail.library_panel_requested.connect(self.toggle_library_panel)
 
-    # === Menu handlers ===
+        # Same rule on the panel side: its signals already carry their own
+        # de-duplication (Task 4), the window just re-exports them. Both footer
+        # entries -- add and manage (spec §3.2's Task 8 correction) -- reach the
+        # presenter through a window signal, so the panel knows nothing about
+        # dialogs or configuration.
+        self._sidebar.library_selected.connect(self._on_library_selected)
+        self._sidebar.add_library_requested.connect(self.add_library_requested.emit)
+        self._sidebar.manage_requested.connect(self.manage_libraries_requested.emit)
+
+    # === Rail handlers ===
+
+    def _on_rail_action(self, action_id: str) -> None:
+        """Dispatch one ``action_triggered`` emission to the slot the menu used.
+
+        The ids are the rail module's constants, not local literals: the wire
+        format and this table are the same declaration (``ActionRail`` docstring,
+        Task 3). ``ACTION_LIBRARY`` never arrives here -- the panel toggle is
+        its own signal because the window, not the presenter, owns it. An
+        unknown id is ignored on purpose: the rail cannot emit one, and a
+        crash in a click handler is worse than a no-op.
+        """
+        handlers = {
+            ACTION_OPEN_FILE: self._on_open_file,
+            ACTION_OPEN_FOLDER: self._on_open_folder,
+            ACTION_REFRESH: self._on_refresh_library,
+            ACTION_REFRESH_ALL: self._on_refresh_all,
+            ACTION_APPEARANCE: self.manage_appearance_requested.emit,
+            ACTION_ABOUT: self._on_about,
+        }
+        handler = handlers.get(action_id)
+        if handler is not None:
+            handler()
 
     def _on_open_file(self) -> None:
-        """Handle open file action."""
+        """Handle open file action.
+
+        Known pre-existing defect, deliberately preserved (spec §6): with
+        several files selected only the *first* file's parent directory is
+        scanned. Fixing it is out of scope for batch 2.
+        """
         files, _ = QFileDialog.getOpenFileNames(
             self,
             i18n.get('dialog.open_file'),
@@ -259,7 +310,7 @@ class MainWindow(QMainWindow):
         self.refresh_all_requested.emit()
 
     def _on_library_selected(self, library_path: str) -> None:
-        """Handle library selection from now playing panel."""
+        """Handle library selection from the floating panel."""
         self._current_library_path = library_path
         self.library_selected.emit(library_path)
 
@@ -270,6 +321,49 @@ class MainWindow(QMainWindow):
             i18n.get('dialog.about.title'),
             i18n.get('dialog.about.text')
         )
+
+    # === Overlay plumbing ===
+
+    def eventFilter(self, watched, event) -> bool:
+        """Re-place a visible toast when its container gets a new size.
+
+        ``Toast.show_toast`` positions only at show time (Task 6's contract),
+        so after a drag-shrink a live toast would sit off-centre or overhang
+        the narrower container for the rest of its interval. The widget keeps
+        its own placement maths; this window owns the *when*, and watches the
+        container directly because the resize that matters is the container's
+        own (already clamped by the layout), not the window's.
+        """
+        if (event.type() == QEvent.Type.Resize
+                and watched is self._playlist_container
+                and self._toast.isVisible()):
+            self._toast.reposition()
+        return super().eventFilter(watched, event)
+
+    def toggle_library_panel(self) -> None:
+        """Open or close the floating library panel (rail's library button)."""
+        self._sidebar.toggle()
+
+    def is_library_panel_open(self) -> bool:
+        """Whether the panel is currently showing."""
+        return self._sidebar.is_panel_open()
+
+    def show_toast(self, message: str, msec: int = 2500) -> None:
+        """Show a timed feedback line above the control bar (spec §5)."""
+        self._toast.show_toast(message, msec)
+
+    def set_action_progress(self, action_id: str, running: bool) -> None:
+        """Put a rail action into (or out of) its running state.
+
+        The presenter's two library-scan call sites use this instead of a message
+        (spec §5's 进度态 row); the three-layer name (``set_action_progress`` here,
+        ``set_progress`` on the rail) is the plan's, not a typo. Which ids may be in
+        flight is the rail's decision, not the caller's -- it raises for anything
+        outside :data:`view.widgets.action_rail.PROGRESSABLE_IDS`, and this forwarder
+        deliberately adds no guard of its own: a second whitelist two layers up is a
+        second place for the two lists to disagree.
+        """
+        self._rail.set_progress(action_id, running)
 
     def _check_background_image(self, config) -> None:
         """
@@ -328,11 +422,15 @@ class MainWindow(QMainWindow):
         """React to ``ThemeManager.theme_changed``.
 
         The application sheet and palette are already re-pushed by the manager;
-        what is left are the things it cannot reach: the bottom panel's SVG
-        glyphs (rasterised from the tokens, so they need re-rasterising), the
-        delegate-painted playlist rows, and this window's scrim.
+        what is left are the things it cannot reach: the three widgets that
+        rasterise token-coloured SVG glyphs -- the rail, the sidebar rows, the
+        bottom panel (whose strip takes the call too for shape, see
+        :meth:`BottomPanel.recolor`) -- the delegate-painted playlist rows, and
+        this window's scrim.
         """
         self._overlay_alpha = self._theme.alphas.overlay
+        self._rail.recolor(tokens)
+        self._sidebar.recolor(tokens)
         self._bottom_panel.recolor(tokens)
         self._playlist_view.recolor()
         self.update()
@@ -348,6 +446,8 @@ class MainWindow(QMainWindow):
 
             # Restrict painting to the content area (central widget), avoiding the
             # native title bar on macOS and window frame area on all platforms.
+            # Since Task 7 there is no menu bar row above the central widget,
+            # so the content area is the whole client rect.
             cw = self.centralWidget()
             if cw:
                 content_rect = QRect(cw.mapTo(self, cw.rect().topLeft()), cw.size())
@@ -379,13 +479,13 @@ class MainWindow(QMainWindow):
 
     def set_libraries(self, libraries: List[Any]) -> None:
         """
-        Set the list of available libraries for the selector.
+        Set the list of available libraries for the floating panel.
 
         Args:
             libraries: List of LibraryConfig objects
         """
         self._libraries = libraries
-        self._now_playing.set_libraries(libraries)
+        self._sidebar.set_libraries(libraries)
 
     def set_current_library(self, library_path: str) -> None:
         """
@@ -395,15 +495,15 @@ class MainWindow(QMainWindow):
             library_path: Path to the current library
         """
         self._current_library_path = library_path
-        self._now_playing.set_current_library(library_path)
+        self._sidebar.set_current(library_path)
 
     def update_track_info(self, title: str, artist: str = "", album: str = "") -> None:
-        """Update the now playing info display."""
-        self._now_playing.update_track_info(title, artist, album)
+        """Update the now playing strip's info display."""
+        self._bottom_panel.update_track_info(title, artist, album)
 
     def update_album_art(self, art_data: Optional[bytes]) -> None:
-        """Update the album art display."""
-        self._now_playing.update_album_art(art_data)
+        """Update the now playing strip's cover thumbnail."""
+        self._bottom_panel.update_album_art(art_data)
 
     def update_progress(self, position: float, duration: float) -> None:
         """Update the progress slider."""
@@ -434,15 +534,8 @@ class MainWindow(QMainWindow):
         self._playlist_view.clear()
 
     def clear_now_playing(self) -> None:
-        """Clear the now playing display."""
-        self._now_playing.clear()
-
-    def set_status_message(self, message: str) -> None:
-        """Update window title with status message."""
-        if message:
-            self.setWindowTitle(f"{self._base_title} - {message}")
-        else:
-            self.setWindowTitle(self._base_title)
+        """Clear the now playing strip."""
+        self._bottom_panel.clear_now_playing()
 
     def reset_progress(self) -> None:
         """Reset the progress slider."""

@@ -1,0 +1,21 @@
+<!-- settings: appearance-settings glyph. Three slider rows: a 16-unit,
+     2-unit-thick track at y 5..7, y 11..13 and y 17..19, each carrying a 5-unit
+     disc, with the knobs parked at x 8, 15 and 10. A gear was the other
+     candidate and is the one this set rejects: a cog's teeth are 2-unit details
+     around a 6-unit hub, and at the rail's 20 px glyph they merge into a blob,
+     whereas three tracks at three offsets read instantly and are the metaphor
+     the appearance dialog itself uses (three transparency sliders).
+
+     The knob is 5 units, not 4, for a reason that only shows up in pixels: a
+     2-unit track is 1.67 px wide at 20 px, so nothing in the glyph would have a
+     fully covered pixel, and the colour the rasteriser hands back is the token
+     un-premultiplied through a partial alpha (measured: #444444 came out
+     #454545). A 5-unit disc has an interior, which is also what makes it read
+     as a knob rather than a smudge.
+     Ink spans x 4..20 and y 3.5..20.5. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path fill="currentColor" d="M4 5h16v2H4zM4 11h16v2H4zM4 17h16v2H4z"/>
+  <path fill="currentColor" d="M5.5 6a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0z"/>
+  <path fill="currentColor" d="M12.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0z"/>
+  <path fill="currentColor" d="M7.5 18a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0z"/>
+</svg>
