@@ -36,7 +36,7 @@
 
 | 文件 | 变化 |
 |---|---|
-| `view/widgets/playlist_view.py` | `SingleSelection` → `ExtendedSelection`；新增 `contextMenuEvent` 使 `context_menu_requested`（批次 1 起声明、至今无 emit）终于有主；新增 `selected_display_indices() -> list[int]`、`display_index_at(pos: QPoint) -> int`；新信号 `play_requested(list[int])`、`remove_requested(list[int])`、`clear_playlist_requested` |
+| `view/widgets/playlist_view.py` | `SingleSelection` → `ExtendedSelection`；新增 `contextMenuEvent` 使 `context_menu_requested`（批次 1 起声明、至今无 emit）终于有主；新增 `selected_display_indices() -> list[int]`、`display_index_at(pos: QPoint, widget: QWidget) -> int`（坐标来源显式传入，见 §4.3 与裁定 R6）；新信号 `play_requested(list[int])`、`remove_requested(list[int])`、`clear_playlist_requested` |
 | **新建** `view/widgets/playlist_context_menu.py` | `build_playlist_menu(target_indices: list[int], target_is_playing: bool, parent: QWidget) -> QMenu` |
 | `view/delegates/playlist_delegate.py` | 补 `State_MouseOver` 分支，画 `tokens.hover_bg` |
 | `view/main_window.py` | 转发三个新信号为 View 公开 API；新增 `_setup_shortcuts()` |

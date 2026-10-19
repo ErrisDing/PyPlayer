@@ -63,7 +63,7 @@
 
 **Interfaces:**
 - Consumes: 既有 `PlaylistModel`、`DisplayEntry`
-- Produces: `PlaylistView` 上 `SelectionMode.ExtendedSelection`；`selected_display_indices() -> list[int]`（升序去重）；`display_index_at(pos: QPoint) -> int`（无行时 `-1`）；信号 `play_requested(list[int])`、`remove_requested(list[int])`、`clear_playlist_requested`（本任务只声明，Task 3 才发）
+- Produces: `PlaylistView` 上 `SelectionMode.ExtendedSelection`；`selected_display_indices() -> list[int]`（升序去重）；`display_index_at(pos: QPoint, widget: QWidget) -> int`（`pos` 按 `widget` 的坐标空间解释，见裁定 R6；无行时 `-1`）；信号 `play_requested(list[int])`、`remove_requested(list[int])`、`clear_playlist_requested`（本任务只声明，Task 3 才发）
 
 - [ ] **Step 1: 写 Space 默认行为探针测试**
 
@@ -82,13 +82,13 @@ Run: `QT_QPA_PLATFORM=offscreen PY -m unittest tests.test_playlist_selection -v`
 - `test_ctrl_click_toggles_individual_rows`：模拟 Ctrl+点击第 0、2 行，断言 `selected_display_indices() == [0, 2]`；再 Ctrl+点击第 2 行，断言 `[0]`。
 - `test_shift_click_selects_a_contiguous_range`：点击第 1 行后 Shift+点击第 4 行，断言 `[1, 2, 3, 4]`。
 - `test_selected_display_indices_is_sorted_and_deduplicated`：乱序多选后断言返回值升序且无重复。
-- `test_display_index_at_returns_minus_one_on_empty_area`：在最后一行以下 200px 处取一点，断言返回 `-1`；在第 2 行中点取一点，断言返回 `2`。
+- `test_display_index_at_returns_minus_one_on_empty_area`：在最后一行以下 200px 与仍在 viewport 内的空白带各取一点，断言返回 `-1`；在第 2 行中点取一点，断言返回 `2`。三点均传 `viewport()` 作坐标来源。
 
 Run: `PY -m unittest tests.test_playlist_selection -v` → Expected: FAIL（仍是 SingleSelection、方法不存在）。
 
 - [ ] **Step 4: 实现**
 
-`view/widgets/playlist_view.py:70` 改 `ExtendedSelection`。`selected_display_indices()` 从 `self._list_view.selectionModel().selectedRows()` 取行号排序去重。`display_index_at(pos)` 用 `self._list_view.indexAt(pos)`，无效索引返回 `-1`，否则返回 `index.row()`。声明三个新信号。
+`view/widgets/playlist_view.py:70` 改 `ExtendedSelection`。`selected_display_indices()` 从 `self._list_view.selectionModel().selectedRows()` 取行号排序去重。`display_index_at(pos, widget)` 先 `self._list_view.viewport().mapFrom(widget, pos)` 再 `indexAt(...)`，无效索引返回 `-1`，否则返回 `index.row()`（R6：坐标来源必须是参数，不能假定成 viewport）。声明三个新信号。
 
 - [ ] **Step 5: 运行确认通过** → Expected: PASS（6 tests）。
 
@@ -118,7 +118,7 @@ git commit -m "feat(view): 播放列表升级为资源管理器式多选并暴�
 
 `tests/test_playlist_context_menu.py`：
 - `test_returns_none_for_no_target`：`build_playlist_menu([], False, parent)` 返回 `None`。
-- `test_menu_actions_and_labels`：目标 `[3]` 且未播放 → 动作顺序为 播放、移除、清空，文案分别等于 `i18n.get('ctx.play')`、`i18n.get('ctx.remove')`、`i18n.get('ctx.clear_playlist')`，且都不含子串 `MISSING`（缺失标记实际是 `[[MISSING: key]]`，双左括号开头——断言必须按子串写，`startswith('[MISSING')` 对它是恒真的空守卫）、不含 `{`。
+- `test_menu_actions_and_labels`：目标 `[3]` 且未播放 → 动作顺序为 播放、移除、清空，文案分别等于 `i18n.get('ctx.play')`、`i18n.get('ctx.remove')`、`i18n.get('ctx.clear_playlist')`，且都不含子串 `MISSING`、不含 `{`。（控制器一度以为标记是 `[[MISSING: key]]` 双括号、故判定 `startswith('[MISSING')` 是空守卫——**错了**：`core/i18n.py:190`/`:223` 返回单括号 `[MISSING: key]`，全仓 20 处测试也都按单括号写。双括号只存在于 i18n 的两条 docstring，已一并改正。子串断言比仓库既有的 `assertNotIn('[MISSING', ...)` 更宽，仍然保留。）
 - `test_playing_target_shows_pause_instead_of_play`：`target_is_playing=True` 时第一项文案用 `ctx.pause`。
 - `test_batch_labels_show_count`：目标 `[1,2,3]` 时移除项文案含 `3`（参数化文案走 `i18n.get('ctx.remove_count', count=3)`）。
 - `test_every_action_carries_its_menu_id`：所有动作的 `data()` 集合恰为 `set(MENU_IDS)`。
@@ -134,7 +134,7 @@ Run: `PY -m unittest tests.test_playlist_context_menu -v` → Expected: FAIL（�
 
 - [ ] **Step 3: 实现 `build_playlist_menu`**
 
-单行目标用 `menu.remove`，多行用 `menu.remove_count` 带 count。`清空播放列表` 始终追加在最后，与目标之间放一个 separator。
+单行目标用 `ctx.remove`，多行用 `ctx.remove_count` 带 count。`清空播放列表` 始终追加在最后，与目标之间放一个 separator。
 
 - [ ] **Step 4: 运行确认通过** → Expected: PASS（6 tests）。
 

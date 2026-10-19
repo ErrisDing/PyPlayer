@@ -20,8 +20,9 @@ Spec §4.4 refuses to assume whether ``QListView`` already consumes ``Space``
 (the shell could bind it to play/pause) and asks for a measurement instead. It
 prints what a Space press does to the selection and to the current row, in both
 selection modes, and the answer recorded under spec §4.4 is what Task 6 binds.
-It asserts only the measurement's shape -- a probe that asserted a guessed
-expectation would be circular.
+The measurement came first; the assertions below it now pin that measurement, so
+a Qt upgrade that frees the key fails loudly instead of leaving Task 6 holding a
+binding that quietly double-fires.
 
 Run with an offscreen Qt platform:
     QT_QPA_PLATFORM=offscreen python -m unittest tests.test_playlist_selection -v
@@ -213,24 +214,21 @@ class SpaceProbeTest(unittest.TestCase):
             self.assertEqual(obs['before_current_row'], 0,
                              f"{obs['case']}: probe setup lost the current row")
 
-        # Measured: every case moves the cursor, and bare Space in the shipped
-        # mode replaces the whole selection -- Space is NOT free for play/pause.
+        # Measured: every case walks the cursor 0 -> 1 and leaves row 1 as the
+        # whole selection, in both selection modes and under Ctrl. These are the
+        # numbers spec §4.4 records, pinned exactly -- Space is NOT free for
+        # play/pause. They subsume the weaker "something changed" and
+        # "the range survived" forms the first fix round carried.
         for obs in observations:
-            self.assertTrue(
-                obs['selection_changed'] or obs['current_row_changed'],
-                f"{obs['case']}: Space looks free -- spec §4.4's recorded "
-                f"decision (bind Ctrl+Space) needs re-measuring",
-            )
-        self.assertNotEqual(
-            range_obs['after_rows'], [0, 1, 2],
-            'a bare Space used to collapse a 3-row range; if it no longer does, '
-            're-read spec §4.4 before re-binding plain Space',
-        )
+            self.assertEqual([1], obs['after_rows'],
+                             f"{obs['case']}: spec §4.4 records [..] -> [1]")
+            self.assertEqual(1, obs['after_current_row'],
+                             f"{obs['case']}: spec §4.4 records current row 0 -> 1")
 
-        # Spec §4.4 records two further facts as prose. Pinned as data: the view
-        # *consumes* the key (the original claim, and the reason a window-level
-        # binding has to eat it first), and Ctrl+Space is indistinguishable from
-        # bare Space (so neither is free either).
+        # Two further facts spec §4.4 records as prose: the view *consumes* the
+        # key (the original claim, and the reason a window-level binding has to
+        # eat it before the focused view sees it), and Ctrl+Space is
+        # indistinguishable from bare Space (so neither one is free either).
         for obs in observations:
             self.assertTrue(
                 obs['accepted'],
@@ -240,22 +238,16 @@ class SpaceProbeTest(unittest.TestCase):
         fields = ('accepted', 'before_rows', 'after_rows',
                   'before_current_row', 'after_current_row',
                   'selection_changed', 'current_row_changed')
-        for space_obs, ctrl_obs in ((observations[0], observations[1]),
-                                    (observations[2], observations[3])):
+        by_case = {obs['case']: obs for obs in observations}
+        for mode in ('SingleSelection', 'ExtendedSelection'):
+            space_obs = by_case[f'{mode} + Space']
+            ctrl_obs = by_case[f'{mode} + Ctrl+Space']
             self.assertEqual(
                 [space_obs[name] for name in fields],
                 [ctrl_obs[name] for name in fields],
                 'Ctrl+Space no longer behaves exactly like bare Space -- spec §4.4 '
                 'binds Ctrl+Space on the strength of that identity',
             )
-
-        # The exact measured outcome, not merely "something changed": every case
-        # walks the cursor 0 -> 1 and leaves row 1 as the whole selection.
-        for obs in observations:
-            self.assertEqual([1], obs['after_rows'],
-                             f"{obs['case']}: spec §4.4 records [..] -> [1]")
-            self.assertEqual(1, obs['after_current_row'],
-                             f"{obs['case']}: spec §4.4 records current row 0 -> 1")
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
@@ -330,7 +322,13 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual([1, 2, 3, 4], self.view.selected_display_indices())
 
     def test_selected_display_indices_is_sorted_and_deduplicated(self):
-        """Ascending and unique whatever the click order was (spec §4.2 consumer)."""
+        """Click order must not decide the answer (spec §4.2's consumer).
+
+        Pins the ascending half against the live widget. The dedup half is not
+        reachable this way -- a row is never listed twice by the selection model --
+        and is pinned separately in
+        :meth:`test_selection_normalisation_survives_a_scrambled_collaborator`.
+        """
         for row in (4, 1, 3, 0, 2):
             self._ctrl_click(row)
 
@@ -348,14 +346,18 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual([], self.view.selected_display_indices())
 
     def test_selection_normalisation_survives_a_scrambled_collaborator(self):
-        """``sorted(set(...))`` is pinned at its own seam, not by click order.
+        """Deduplication pinned at its own seam, which no click can reach.
 
-        ``QItemSelectionModel::selectedRows()`` returns rows in model order, one
-        per row, so no click sequence can make the live view hand back something
-        unsorted or repeated -- and an assertion against the live widget therefore
-        cannot fail. The normalisation is defensive against that guarantee, so the
-        only way to test it is to replace the collaborator with the shape it
-        exists to absorb.
+        ``QItemSelectionModel::selectedRows()`` leaves its order unspecified in
+        Qt's own docs, and on this host it returns *click* order -- measured: with
+        the ``sorted(...)`` removed, the click-order test above fails as
+        ``[4, 1, 3, 0, 2]``. So sorting has a live pin, and it is portable only
+        as long as Qt keeps handing rows back in click order.
+
+        Deduplication has no such pin, because a row is never listed twice by the
+        selection model whatever the user did. This replaces the collaborator with
+        the shape the normalisation exists to absorb, so ``set(...)`` is tested
+        rather than assumed.
         """
         from unittest import mock
 
@@ -407,11 +409,11 @@ class SelectionTest(unittest.TestCase):
         viewport = list_view.viewport()
 
         # The same physical pixels, expressed in the outer widget's space.
-        # ``viewport.mapTo(view, p)`` and not ``view.mapFrom(viewport, p)``:
-        # ``mapFrom`` expects an *ancestor*, and the viewport is a descendant, so
-        # the wrong direction silently treats the point as window-global and
-        # answers a point three pixels off. Measured on this host: the correct
-        # pair round-trips exactly, the inverted one shifts by (-3, -2).
+        # ``viewport.mapTo(view, p)`` is the direction that round-trips against
+        # the mapping this method performs. Measured on this host, the inverted
+        # call ``view.mapFrom(viewport, p)`` answers a *different* point -- off by
+        # (-3, -2) -- so it cannot stand in for it here. Why Qt answers that way
+        # is not established; that it does is.
         #
         # One pixel above each row's bottom edge, not its centre: an unmapped
         # read adds the header offset, and 13px of slack still lands a centre on
@@ -424,12 +426,14 @@ class SelectionTest(unittest.TestCase):
                 row, self.view.display_index_at(outer_point, self.view),
                 f'row {row}: a header-height offset must be taken off the outer space')
 
-        # A point that is over the header in outer space is over nothing in the
-        # viewport: without the mapping it would land on row 0 or 1 and pop the
-        # menu for a row the user did not click.
+        # A point over the header is over nothing in the viewport: without the
+        # mapping it lands on row 0 and pops the menu for a row the user did not
+        # click. ``header.geometry()`` is already in this widget's space -- the
+        # header is a child of ``self.view`` -- so the centre needs no conversion.
         header = self.view.findChild(QLabel, 'playlistHeader')
-        self.assertGreater(header.height(), 0, 'the fixture must have a real header')
-        header_point = QPoint(header.width() // 2, header.height() // 2)
+        header_point = header.geometry().center()
+        self.assertTrue(header.geometry().contains(header_point),
+                        'the probe point must sit in the header strip')
         self.assertEqual(-1, self.view.display_index_at(header_point, self.view),
                          'the header strip is not a row')
 
