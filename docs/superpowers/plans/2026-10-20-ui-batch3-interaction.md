@@ -171,7 +171,9 @@ Run: `PY -m unittest tests.test_playlist_selection -v` → Expected: FAIL。
 
 - [ ] **Step 2: 实现 `contextMenuEvent`**
 
-顺序：`display_index_at(event.pos(), self)` → `-1` 则直接返回不发信号；否则按目标规则调整选区；`targets = selected_display_indices()`；`menu = build_playlist_menu(targets, self._is_playing_index_in(targets), self)`；`menu.exec(event.globalPosition().toPoint())`；按 `action.data()` 分派到三个信号，并 emit `context_menu_requested(targets[0], event)`。
+顺序：`display_index_at(event.pos(), self)` → `-1` 则直接返回不发信号；否则按目标规则调整选区；`targets = selected_display_indices()`；`menu = build_playlist_menu(targets, self._is_playing_index_in(targets), self)`；**先 emit `context_menu_requested(targets[0], event)`，再** `menu.exec(...)`；最后按 `action.data()` 分派到三个信号。
+
+emit 在弹窗**之前**、分派之后（与本页原稿「分派后 emit」相反，Task 3 实施时按语义纠正并已用 `_names()` 顺序断言锁死）：`context_menu_requested` 播报的是「用户请求了这个目标的菜单」，其载荷 `targets[0]` 只在没有任何动作跑过之前才保证仍描述用户指的那一行；一旦动作信号触发 Task 5 的移除，行可能已不存在。
 
 `display_index_at` 在 Task 1 修复轮改为**必须显式给出坐标来源控件**（`display_index_at(pos, widget)`，内部 `viewport().mapFrom(widget, pos)`）。理由：`_list_view` 上方还有一个 header，两个坐标空间差一个 header 高度；按 `event.pos()` 的原样传进去会让每个目标行整体上移一行，并把 header 当成真行弹菜单。**本任务不得省略第二个参数。**
 

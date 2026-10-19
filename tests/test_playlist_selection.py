@@ -590,6 +590,8 @@ class ContextMenuTargetTest(unittest.TestCase):
             snapshot['labels'] = tuple(action.text() for action in entries)
             snapshot['parent'] = menu.parent()
             snapshot['global_pos'] = global_pos
+            snapshot['point'] = point
+            snapshot['widget'] = widget
             if choose is None:
                 return None
             return next(action for action in entries if action.data() == choose)
@@ -635,6 +637,24 @@ class ContextMenuTargetTest(unittest.TestCase):
         self.assertIs(self.view, snapshot['parent'],
                       'the menu is parented to this view, so its disposal is this '
                       "view's business (ruling R7)")
+
+    def test_menu_opens_at_the_cursor_not_at_local_coordinates(self):
+        """The point handed to the popup is the event's global position.
+
+        A wrong value here is invisible to every other assertion in this class --
+        the seam is patched, so nothing else looks at where the menu would have
+        appeared -- and the user would see the popup open offset from the cursor.
+        """
+        snapshot = self._right_click_row(2)
+
+        self.assertIsNotNone(snapshot['global_pos'], 'the seam must be given a point')
+        self.assertEqual(
+            snapshot['widget'].mapToGlobal(snapshot['point']), snapshot['global_pos'],
+            'the popup must be told the cursor position in global coordinates')
+        self.assertNotEqual(
+            snapshot['point'], snapshot['global_pos'],
+            'on a host where the widget-local point equals the global point this '
+            'assertion compares a value with itself and proves nothing')
 
     def test_right_click_inside_selection_keeps_the_batch(self):
         """Cursor row already selected: selection untouched, menu acts on all of it."""

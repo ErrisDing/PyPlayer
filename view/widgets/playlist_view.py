@@ -222,7 +222,11 @@ class PlaylistView(QWidget):
         :meth:`display_index_at` exists precisely so this line cannot guess.
 
         Blank space (``-1``) returns without touching the selection and without
-        emitting anything, per spec §4.3 and §7.
+        emitting anything, per spec §4.3 and §7. That path neither accepts nor
+        ignores the event, so nothing here asserts whether it then reaches an
+        ancestor: under ``offscreen`` the tests post the event directly, and the
+        behaviour of a spontaneous right-click is left to the real-hardware check
+        (Task 8) rather than guessed at from a docstring.
         """
         row = self.display_index_at(event.pos(), self)
         if row < 0:
@@ -304,7 +308,14 @@ class PlaylistView(QWidget):
             | QItemSelectionModel.SelectionFlag.Rows)
 
     def _is_playing_index_in(self, targets: list) -> bool:
-        """Whether the target batch includes the playing row: Play or Pause?"""
+        """Whether the target batch includes the playing row: Play or Pause?
+
+        This decides the first entry's *label* only -- the action keeps id
+        ``MENU_PLAY`` either way (Task 2's contract), so "any target is playing"
+        versus "the target is exactly the playing row" can never change what a
+        click dispatches to. Batch semantics: pausing a batch that contains the
+        playing track is the reading that stays honest to the label.
+        """
         playing = self._model.get_playing_index()
         return playing >= 0 and playing in targets
 
