@@ -175,7 +175,11 @@ Run: `PY -m unittest tests.test_playlist_selection -v` → Expected: FAIL。
 
 `display_index_at` 在 Task 1 修复轮改为**必须显式给出坐标来源控件**（`display_index_at(pos, widget)`，内部 `viewport().mapFrom(widget, pos)`）。理由：`_list_view` 上方还有一个 header，两个坐标空间差一个 header 高度；按 `event.pos()` 的原样传进去会让每个目标行整体上移一行，并把 header 当成真行弹菜单。**本任务不得省略第二个参数。**
 
-菜单生命周期（R7）：`exec()` 返回后必须让本次菜单消亡——`menu.deleteLater()` 后补一次 `processEvents()`，或整体改成一次性构建并复用。别指望 `tests/test_view_structure.py:414` 那条「主窗口活树内无 `QMenu`」兜底：它只构造一个全新 `MainWindow`、从不触发右键，因此看不见「每次右键挂一个、常驻不删」这种泄漏（Task 2 审查已实测确认）。判据就是上面那条新测试。
+菜单生命周期（R7）：`exec()` 返回后必须让本次菜单消亡。生产写法是 `try/finally` 里 `menu.deleteLater()`，**不要**在事件处理器内补 `processEvents()`——计划原稿那句「deleteLater 后补一次 processEvents」经 Task 3 实测**不成立**：本机 Qt 的 `processEvents()`（以及不带事件类型的 `sendPostedEvents()`）不处理 `DeferredDelete`，只有事件循环展开时的定向 flush `sendPostedEvents(None, QEvent.Type.DeferredDelete)` 才真的删掉。测试自己做那次定向 flush 来观察回收结果；生产路径绝不为了测试而跑 `processEvents()`（重入隐患）。
+
+策略取「每次构建 + 弹完即弃」而非「一次性构建并复用」：复用也能让计数不增长，但它会在两次右键之间把一个 `QMenu` 常驻在窗口活树里，正顶撞 R7 要求 `:414` 继续为真的那条。所以残留用例的断言取 **0**，而不是「不增长」——一条断言同时区分两种策略。
+
+别指望 `tests/test_view_structure.py:414` 那条「主窗口活树内无 `QMenu`」兜底：它只构造一个全新 `MainWindow`、从不触发右键，因此看不见「每次右键挂一个、常驻不删」这种泄漏（Task 2 审查推断、Task 3 变异实测：删掉 `deleteLater()` 后只有新用例红，`:414` 全绿）。
 
 先探针、后实现（本仓库不允许假设 Qt 行为）：`QAbstractItemView` 自己实现了 `contextMenuEvent`，右键落在列表上时**事件是否真的传到外层 `PlaylistView`** 取决于它 accept 还是 ignore。写一个临时脚本，对 `_list_view.viewport()` 与外层 `PlaylistView` 各打一次右键，打印两处 `contextMenuEvent` 是否被调用；据此决定钩子挂在哪一层（若子级吃掉，改挂 `_list_view` 并传 `viewport()` 作坐标来源）。脚本用完即删，不进仓库。
 
