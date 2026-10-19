@@ -114,15 +114,17 @@ class PlaylistView(QWidget):
         self._list_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._list_view.setAlternatingRowColors(True)
 
-        # Hover tracking for the row delegate (batch 3, C2). ``QListView`` only
+        # Hover tracking for the row delegate (batch 3, C2). Mouse *motion* only
         # puts ``QStyle.State_MouseOver`` on the option of the row under the
         # cursor while this attribute is set, and it has to be the *viewport*'s
         # attribute: measured on this host (Qt 6.11.0, offscreen), setting it on
         # the ``QListView`` leaves every option at ``State_Enabled|State_Active``
-        # and only the viewport one flips the bit -- so without this line
-        # ``PlaylistItemDelegate``'s hover branch is dead code. It is also what
-        # makes the view repaint on a hover change, which is the other half of
-        # why a row stops being tinted once the cursor leaves it.
+        # -- so without this line ``PlaylistItemDelegate``'s hover branch is dead
+        # code. (Scoped to motion on purpose: a hand-posted ``QHoverEvent`` can
+        # set the bit without the attribute, which is why the tests move the
+        # cursor rather than invent events.) It is also what makes the view
+        # repaint when the hover changes, in both directions -- the leave half is
+        # pinned by the un-hover claim in ``tests/test_playlist_hover.py``.
         self._list_view.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover, True)
 
         # Enable smooth scrolling

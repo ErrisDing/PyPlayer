@@ -16,20 +16,23 @@ i.e. the branch would have shipped as dead code, the exact defect class this
 batch was warned about. Facts this file relies on, all measured on this host
 (Qt 6.11.0 / PyQt 6.11.0, offscreen):
 
-* ``QListView`` puts ``QStyle.State_MouseOver`` on exactly one item option -- the
-  row under the cursor -- **only** when the list view's *viewport* carries
-  ``WA_Hover``. The bit is absent with the attribute left off (default), and
-  absent when it is set on the ``QListView`` itself instead of the viewport. So
-  the attribute, not the branch, is what feeds this delegate, and that is why
-  ``PlaylistView`` sets it.
+* Mouse **motion** only puts ``QStyle.State_MouseOver`` on one item option -- the
+  row under the cursor -- when the list view's *viewport* carries ``WA_Hover``.
+  With the attribute left off, ``QTest.mouseMove`` still moves the platform cursor
+  and sets ``WA_UnderMouse``, but the view does not repaint and no option gets the
+  bit; setting the attribute on the ``QListView`` instead of the viewport does not
+  help either. (Scoped precisely: a hand-posted ``QHoverEvent`` *can* set the bit
+  without the attribute -- see the next bullet -- so the claim is about motion, not
+  about the bit being unreachable.) The attribute, not the branch, is what feeds
+  this delegate, and that is why ``PlaylistView`` sets it.
 * ``QTest.mouseMove`` is enough: under offscreen it moves the platform cursor,
   the view repaints, and ``grab()`` afterwards reproduces the same option state.
   No synthetic ``QHoverEvent`` is needed -- hand-posting one also flips the bit,
   but that is the path a test would have to invent, not the one production uses.
 * On real hardware the same two ingredients are what make hover work: the
-  spontaneous mouse moves Qt delivers to the viewport, and ``WA_Hover``, which
-  is exactly the attribute QSS's own ``::item:hover`` rule would have set during
-  polish. Nothing here is test-only scaffolding.
+  spontaneous mouse moves Qt delivers to the viewport, and ``WA_Hover``. Nothing
+  here is test-only scaffolding -- the attribute is set in ``PlaylistView``, not in
+  this file.
 * One harness fact is *not* a product fact: the offscreen platform positions
   every top-level window at the same origin, so a visible window left behind by
   another test file covers this one and ``QTest.mouseMove`` never reaches it.
@@ -64,9 +67,12 @@ from tests.test_view_smoke import make_app, make_manager
 
 # The recorded option states are plain ints (a ``QStyle.StateFlag`` is an enum,
 # and mixing the two in a bitmask read is exactly the kind of thing a future Qt
-# enum change gets wrong silently), so the two masks are taken as ints once.
-MOUSE_OVER = int(QStyle.StateFlag.State_MouseOver.value)
-SELECTED = int(QStyle.StateFlag.State_Selected.value)
+# enum change gets wrong silently), so the two masks are taken as ints once --
+# but only when the import above succeeded, otherwise this module must skip
+# rather than raise NameError during collection.
+if QT_AVAILABLE:
+    MOUSE_OVER = int(QStyle.StateFlag.State_MouseOver.value)
+    SELECTED = int(QStyle.StateFlag.State_Selected.value)
 
 # Sampled columns of a row, as offsets from its left/right edges. ``+12`` clears
 # both the ``SPACE_2`` gutter and the 3px ``playing_bar``; ``-12`` clears the
@@ -272,10 +278,22 @@ class PlaylistHoverTest(unittest.TestCase):
                              f'row {neighbour} changed colour while only row {row} '
                              'was hovered')
 
+        # Un-hover is the other half of a transient state, and the half most
+        # likely to regress silently: if Qt stopped repainting on hover-leave, the
+        # row would keep a stale tint after the cursor moved away and every claim
+        # above would still pass.
+        self._unhover(view)
+        left, left_states = self._grab_with_states(view)
+        self.assertFalse(any(state & MOUSE_OVER for state in left_states.values()),
+                         'a row still carries State_MouseOver after the cursor left '
+                         'the rows: hover paint must be transient, not sticky')
+        self.assertEqual(baseline, self._band(left, self._rect(view, row)),
+                         'the row kept its hover fill after the cursor left it')
+
         self.assertTrue(
             view._list_view.viewport().testAttribute(Qt.WidgetAttribute.WA_Hover),
-            'the viewport must keep carrying WA_Hover: it is the only thing that '
-            'makes QListView hand State_MouseOver to this delegate (measured -- the '
+            'the viewport must keep carrying WA_Hover: mouse motion only reaches '
+            'this delegate as a hover when the attribute is set (measured -- the '
             'attribute on the QListView itself does not do it)')
 
     def test_hover_never_overrides_playing_or_selected(self):

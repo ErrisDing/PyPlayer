@@ -132,7 +132,9 @@ class ThemeContrastTest(unittest.TestCase):
 
     # Text tokens against the backgrounds they are painted on in the playlist,
     # headers and cards (spec §4.6 D1).
-    TEXT_PAIRS = ('surface', 'surface_alt', 'selection_bg', 'playing_bg')
+    # ``hover_bg`` joined this list in batch 3: the delegate paints it as a row
+    #  ground, and the position read-out on a hovered row is ``text_muted``.
+    TEXT_PAIRS = ('surface', 'surface_alt', 'selection_bg', 'playing_bg', 'hover_bg')
     TEXT_TOKENS = ('text_primary', 'text_secondary', 'text_muted')
 
     # fg token, bg token, minimum ratio.

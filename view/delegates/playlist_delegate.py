@@ -66,7 +66,11 @@ class PlaylistItemDelegate(QStyledItemDelegate):
     ``AlternateBase`` (mapped to ``surface_alt`` by ``ThemeManager``, measured
     ``#f5f5f5`` on odd rows in the render matrix), which is why the layers below
     are drawn over a band that is already tinted -- and why a hovered odd row
-    reads as ``hover_bg`` laid over that tint, not as a blend of the two.
+    reads as ``hover_bg`` laid over that tint, not as a blend of the two. The
+    fill is opaque, so it covers whatever ground it is handed; which tint that
+    ground is under the shipped sheet is the render matrix's claim to make
+    (Task 7), not this class's -- the hover tests skip ``apply_to`` and so run
+    against Qt's default ``AlternateBase``.
 
     Row height comes from the shared ``ROW_HEIGHT`` token via ``sizeHint``.
 
