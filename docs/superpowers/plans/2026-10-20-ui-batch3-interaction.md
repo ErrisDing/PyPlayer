@@ -118,9 +118,9 @@ git commit -m "feat(view): 播放列表升级为资源管理器式多选并暴�
 
 `tests/test_playlist_context_menu.py`：
 - `test_returns_none_for_no_target`：`build_playlist_menu([], False, parent)` 返回 `None`。
-- `test_menu_actions_and_labels`：目标 `[3]` 且未播放 → 动作顺序为 播放、移除、清空，文案分别等于 `i18n.get('menu.play')`、`i18n.get('menu.remove')`、`i18n.get('menu.clear_playlist')`，且都不以 `[MISSING` 开头、不含 `{`。
-- `test_playing_target_shows_pause_instead_of_play`：`target_is_playing=True` 时第一项文案用 `menu.pause`。
-- `test_batch_labels_show_count`：目标 `[1,2,3]` 时移除项文案含 `3`（参数化文案走 `i18n.get('menu.remove_count', count=3)`）。
+- `test_menu_actions_and_labels`：目标 `[3]` 且未播放 → 动作顺序为 播放、移除、清空，文案分别等于 `i18n.get('ctx.play')`、`i18n.get('ctx.remove')`、`i18n.get('ctx.clear_playlist')`，且都不含子串 `MISSING`（缺失标记实际是 `[[MISSING: key]]`，双左括号开头——断言必须按子串写，`startswith('[MISSING')` 对它是恒真的空守卫）、不含 `{`。
+- `test_playing_target_shows_pause_instead_of_play`：`target_is_playing=True` 时第一项文案用 `ctx.pause`。
+- `test_batch_labels_show_count`：目标 `[1,2,3]` 时移除项文案含 `3`（参数化文案走 `i18n.get('ctx.remove_count', count=3)`）。
 - `test_every_action_carries_its_menu_id`：所有动作的 `data()` 集合恰为 `set(MENU_IDS)`。
 - `test_no_hardcoded_english_labels`：源码扫描该文件无 `"Play"`/`"Remove"`/`"Clear"` 字面量。
 
@@ -128,7 +128,9 @@ Run: `PY -m unittest tests.test_playlist_context_menu -v` → Expected: FAIL（�
 
 - [ ] **Step 2: 补 i18n key**
 
-两份 locale 各加 `menu.play`、`menu.pause`、`menu.remove`、`menu.remove_count`（`移除 {count} 项` / `Remove {count} items`）、`menu.clear_playlist`。注意 `menu.*` 前缀已被现有菜单文案占用，先 grep 确认不冲突；冲突则改用 `ctx.` 前缀并同步改测试。
+两份 locale 各加 `ctx.play`、`ctx.pause`、`ctx.remove`、`ctx.remove_count`（`移除 {count} 项` / `Remove {count} items`）、`ctx.clear_playlist`。
+
+裁定 R5（2026-10-20，控制器核查后定，本步即计划 Step 2 预留的「改用 `ctx.` 前缀」分支）：不用 `menu.*`。`menu.` 是批次 2 拆掉 `QMenuBar` 后遗留的菜单栏文案块（`main.zh_CN.properties:63-75` 共 13 键），全仓只剩 `menu.exit` 一个消费者（`view/main_window.py:147`），其余 12 键是待清理的死文案。把新的右键文案塞进同一前缀，会让批次 2 遗留的退役键清理从「整块删除」退化成「逐键甄别」；`ctx.` 也与既有的按控件命名前缀（`rail.*`、`sidebar.*`）一致。测试里的 key 同步用 `ctx.`。
 
 - [ ] **Step 3: 实现 `build_playlist_menu`**
 
