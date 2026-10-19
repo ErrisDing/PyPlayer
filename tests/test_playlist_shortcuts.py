@@ -10,8 +10,10 @@ NowPlayingStrip 复位了」上，没有一条是「存在一次 connect 调用�
 
 * **裁定 R10**（``test_shortcut_beats_the_focused_widget_to_the_key``）：按键投给
   **焦点控件**（`PlaylistView` 里的 `QListView`），既不投给 MainWindow，也不直接调
-  QAction。Task 1 的探针测的是 `QListView.keyPressEvent` 本身，绕开了窗口级 shortcut
-  派发，对这里绑什么键、是否消费按键**毫无约束力**。断言两半：① 播放/暂停恰好 emit
+  QAction。Task 1 的探针之所以对这里绑什么键、是否消费按键**毫无约束力**，原因不是
+  投递方式——修复轮实测：投给焦点控件的 `QKeyEvent` **照样**命中窗口级 shortcut
+  （本文件与 ``tests/test_view_structure.py::_press_shortcut`` 都走这条路）——而是
+  **当时仓库里根本没有任何绑定**。所以消费半必须由本任务自己钉。断言两半：① 播放/暂停恰好 emit
   一次，② `selected_display_indices()` 与当前行**一字未动**。少了 ②，「快捷键与列表
   导航双触发」这个形状（R4 当初要避免的事）在本仓测不出来。②的可失败性另由
   ``test_bare_space_is_left_to_the_list`` 做阳性对照：裸 `Space` 确实会改动选区，说明
@@ -28,8 +30,9 @@ NowPlayingStrip 复位了」上，没有一条是「存在一次 connect 调用�
   所以留给列表；`Delete`/`Enter`/`Ctrl+A`/小键盘 `Enter` 的原生行为也一并记录，免得
   后来人以为「快捷键本来不会和列表抢」。该探针还对照 `QListWidget` 与
   `QListView`+`PlaylistModel` 的 `Delete`（见
-  :class:`NativeDeleteModelProbeTest`）：R11 把 Delete 交给视图，靠的正是
-  「`PlaylistModel` 不实现 `removeRows`，所以列表不吃这个键」。
+  :class:`NativeDeleteModelProbeTest`）：R11 的依据是「**列表本身不吃这三个键**」这条
+  Qt 事实（按下后事件未被消费、行也不变），**不是**「`PlaylistModel` 不实现
+  `removeRows`」——后者只是同一条探针顺带记录的旁证，见 plan R11 第 10 条。
 * **裁定 R11（修复回合 1）**：`Delete`/`Enter` 由 `PlaylistView.keyPressEvent` 承接，
   窗口只剩 `Ctrl+Space`/`Ctrl+↑`/`Ctrl+↓`/`Ctrl+Q`。原先那两个窗口 `QAction` 用「槽里
   判断焦点再早退」冒充范围控制——快捷键一旦匹配，按键已经被消费，早退不会把它还给焦点
@@ -271,7 +274,7 @@ class ShortcutHarness:
         counter = KeyPressCounter()
         widget.installEventFilter(counter)
         self.addCleanup(widget.removeEventFilter, counter)
-        for event_type, is_press in ((QEvent.Type.KeyPress, True),
+        for event_type, _is_press in ((QEvent.Type.KeyPress, True),
                                      (QEvent.Type.KeyRelease, False)):
             event = QKeyEvent(event_type, key, mods)
             event.setAccepted(False)
@@ -877,6 +880,51 @@ class ShortcutOwnershipTest(ShortcutHarness, unittest.TestCase):
                     f'{name} installs a QShortcut')
 
 
+    def test_no_binding_exists_beyond_the_two_allowed_layers(self):
+        """The full set of key-bound things in this window, not just the keys it knows.
+
+        ``test_shortcuts_are_owned_by_the_main_window`` counts the sequences in
+        ``WINDOW_SHORTCUTS`` one at a time, so a *sixth* binding -- on the window or
+        on any descendant -- is invisible to it, and ruling R11's whole argument is
+        that the split between window keys (transport) and view keys ("these rows")
+        stays closed. This is the exhaustive version: union everything Qt reports as
+        bound anywhere under the window and compare against the allowed set.
+
+        Two keys are allowed by exception, and both are named here rather than
+        tolerated: ``Ctrl+Q`` is the exit action the window owns, and ``Ctrl+O`` is
+        ``ActionRail``'s, deliberately pinned on the rail in batch 2 -- the *first*
+        exception to spec §5's centralisation, which is why R11 is only the second.
+        """
+        bound = set()
+        for action in self.view.findChildren(QAction):
+            bound.update(QKeySequence(sequence) for sequence in action.shortcuts())
+        for action in self.view.actions():
+            bound.update(QKeySequence(sequence) for sequence in action.shortcuts())
+        for shortcut in self.view.findChildren(QShortcut):
+            bound.add(QKeySequence(shortcut.key()))
+
+        expected = {QKeySequence(literal) for literal in WINDOW_SHORTCUTS}
+        # The exit action carries both a StandardKey and the literal, because on this
+        # host ``StandardKey.Quit`` resolves to the string "Exit" rather than to a
+        # key at all -- measured in batch 2, and the reason the literal stays (see the
+        # note above ``_setup_shortcuts``). Referring to the same StandardKey instead of
+        # hardcoding what it resolves to keeps this guard honest on a host where the
+        # resolution differs.
+        expected.add(QKeySequence('Ctrl+Q'))
+        expected.add(QKeySequence(QKeySequence.StandardKey.Quit))
+        # ``ActionRail``'s, pinned on the rail in batch 2: the first exception to
+        # spec §5's centralisation, which is why R11 is only the second.
+        expected.add(QKeySequence(QKeySequence.StandardKey.Open))
+
+        self.assertEqual(
+            expected, bound,
+            'the window subtree carries bindings outside the allowed two layers: '
+            'transport keys belong to MainWindow, row-semantics keys to '
+            'PlaylistView.keyPressEvent (which registers no sequence at all -- see '
+            'test_the_widgets_bind_no_shortcuts_of_their_own), and nothing else may '
+            'join either set without a ruling')
+
+
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not available')
 class OutsideTheListTest(ShortcutHarness, unittest.TestCase):
     """A key pressed **outside** the playlist must reach the widget that had focus.
@@ -1026,7 +1074,10 @@ class OutsideTheListTest(ShortcutHarness, unittest.TestCase):
         self.assertEqual([True], submitted,
                          'Enter did not submit the line edit: something in this window '
                          'consumed it before the focused widget (R11)')
-        self.assertEqual(1, delivered)
+        self.assertEqual(
+            1, delivered,
+            'the focused QLineEdit never saw Enter: a window-level shortcut consumed '
+            'it -- the shape ruling R11 exists to stop (batch 6 will add this box)')
         self.assertEqual([], recorded['play_tracks_requested'],
                          'Enter outside the playlist still reached the batch route')
         self.assertEqual([0, 1], self.playlist.selected_display_indices(),
@@ -1076,6 +1127,44 @@ class OutsideTheListTest(ShortcutHarness, unittest.TestCase):
         self.assertTrue(dialog.isVisible(),
                         'the dialog lost its window to a window-level shortcut')
         dialog.close()
+
+
+    def test_the_delivery_counter_can_see_a_swallow(self):
+        """``delivered == 1`` is falsifiable, proved inside the suite.
+
+        Every "the key got back to the focused widget" assertion in this class reads
+        the ``KeyPressCounter``. If that counter could not see a consumed press, they
+        would all be green by construction. The fix round could not prove this by
+        editing production code (the harness refused the revert-mutation), so it is
+        proved the cheap way: bind a throwaway action to a key nothing else uses,
+        press that key at the watched widget, and require the counter to read **0**.
+        Then the same press with the binding removed must read 1.
+        """
+        from PyQt6.QtWidgets import QLineEdit
+
+        editor = QLineEdit(self.view._bottom_panel)
+        self.addCleanup(editor.deleteLater)
+        editor.setObjectName('probeCounterControl')
+        editor.setGeometry(10, 10, 140, 20)
+        editor.show()
+        self.app.processEvents()
+        self._focus_off_list(editor)
+
+        thief = QAction('counter-control', self.view)
+        self.addCleanup(thief.deleteLater)
+        self.addCleanup(self.view.removeAction, thief)
+        thief.setShortcut(QKeySequence('Ctrl+J'))
+        self.view.addAction(thief)
+
+        self.assertEqual(0, self._press_at(editor, Qt.Key.Key_J, CTRL),
+                         'the counter reported a delivery for a press a window action '
+                         'consumed: every "reaches the focused widget" assertion in '
+                         'this class is then unfalsifiable')
+
+        thief.setShortcut(QKeySequence())
+        self.assertEqual(1, self._press_at(editor, Qt.Key.Key_J, CTRL),
+                         'with the binding gone the same press must reach the focused '
+                         'widget -- the counter is not simply always zero')
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
@@ -1139,9 +1228,16 @@ class NativeDeleteModelProbeTest(unittest.TestCase):
     def test_probe_native_delete_is_not_the_view_or_the_model_to_answer(self):
         """``Delete`` is free at both list views and neither model removes rows.
 
-        Two independent reads per widget, because "the rows did not change" alone
-        cannot tell "the view ignored the key" from "the view asked and the model
-        refused": the press, then a direct ``removeRows`` call on the model.
+        Two **distinct kinds** of read, not two interchangeable ones. For
+        ``QListWidget``: the accept flag, the row count, the bound-action table, and
+        a direct ``model.removeRows(1, 0)``. For the playlist: the row count, the same
+        direct call, and a subclass that counts which presses actually arrive at
+        :meth:`PlaylistView.keyPressEvent` -- the last is the only read that can tell
+        "the view ignored the key" from "the view asked the model and the model
+        refused", because patching ``removeRows`` onto a ``QAbstractItemModel``
+        *instance* is inert: PyQt asks the type for a Python override, and
+        ``PlaylistModel`` defines none, so a recorder installed that way records
+        nothing and any assertion reading it would pass no matter what Qt did.
         """
         from view.widgets.playlist_view import PlaylistView
 
@@ -1184,14 +1280,6 @@ class NativeDeleteModelProbeTest(unittest.TestCase):
                       'keyboard hands everything upstairs (Task 6\'s R10 lesson)')
         self.addCleanup(view.deleteLater)
         model = view._model
-        calls = []
-        original = model.removeRows
-
-        def recording(row, count, parent=None):
-            calls.append((row, count))
-            return original(row, count, parent)
-
-        model.removeRows = recording
         before = model.rowCount()
 
         # Pressing into the inner QListView must land in PlaylistView.keyPressEvent,
@@ -1220,9 +1308,8 @@ class NativeDeleteModelProbeTest(unittest.TestCase):
                          f'{view._list_view.currentIndex().row()}'))
         playlist_result = {
             'rows': f'{before} -> {model.rowCount()}',
-            'removeRows_calls': calls,
             'reached': keys,
-            'model_remove_rows': original(1, 0),
+            'model_remove_rows': model.removeRows(1, 0),
             'model_rows_after_direct_call': model.rowCount(),
         }
 
@@ -1234,7 +1321,6 @@ class NativeDeleteModelProbeTest(unittest.TestCase):
               f'model.removeRows(1,0)={list_widget_result["model_remove_rows"]} '
               f'model_rows={list_widget_result["model_rows"]}')
         print(f'[Native Delete]   PlaylistModel    rows={playlist_result["rows"]} '
-              f'asked_by_the_view={playlist_result["removeRows_calls"]} '
               f'model.removeRows(1,0)={playlist_result["model_remove_rows"]} '
               f'model_rows_after_direct_call='
               f'{playlist_result["model_rows_after_direct_call"]}')
@@ -1259,14 +1345,12 @@ class NativeDeleteModelProbeTest(unittest.TestCase):
                          'the direct removeRows call changed the row count while the '
                          'method is supposed to be unsupported')
 
-        # the list asked nothing of the model, and the rows survived Delete
-        self.assertEqual([], calls,
-                         'the inner QListView asked the model to remove rows: it is no '
-                         'longer leaving Delete to the outer widget')
+        # the rows survived every press, including Delete
         self.assertEqual(3, model.rowCount(),
-                         'the playlist rows did change on Delete: the inner QListView '
-                         'is consuming the key, so PlaylistView.keyPressEvent stops '
-                         'being reached -- re-read ruling R11 before trusting the route')
+                         'the playlist rows changed under a press: the inner QListView '
+                         'is consuming keys it used to leave alone, so '
+                         'PlaylistView.keyPressEvent may stop being reached -- re-read '
+                         'ruling R11 before trusting the route')
 
         by_name = {name: (seen, accepted) for name, seen, accepted, _row in keys}
         for name in ('Key_Delete', 'Key_Return', 'Key_Enter'):
@@ -1347,8 +1431,8 @@ class NativeKeyBehaviourProbeTest(unittest.TestCase):
 
         ``QListView`` has no ``removeRows`` support in ``PlaylistModel`` (a
         ``QAbstractListModel`` that never implements it), so the native Delete must
-        leave the rows standing -- the reason the window has to bind the key to do
-        the removal itself, and not assume Qt will do it.
+        leave the rows standing -- the reason **the playlist widget itself** has to
+        answer the key (ruling R11) and not assume Qt will delete rows for it.
 
         Two pre-conditions, not one: the arrow cases start on row 1 with row 1
         alone selected, because from row 0 ``Up`` has nowhere to go and from an
@@ -1420,7 +1504,8 @@ class NativeKeyBehaviourProbeTest(unittest.TestCase):
         delete = by_case['Delete']
         self.assertEqual(3, delete['after'][2],
                          'the native Delete does not remove rows (the model does not '
-                         'implement removeRows), so the window has to bind the key')
+                         'implement removeRows), so PlaylistView has to answer the '
+                         'key itself -- ruling R11')
         self.assertEqual([], delete['removeRows'],
                          'PlaylistModel suddenly answers removeRows: re-read this '
                          'probe before trusting the batch route')
@@ -1428,8 +1513,8 @@ class NativeKeyBehaviourProbeTest(unittest.TestCase):
         enter = by_case['Enter']
         self.assertEqual([], enter['doubleClicked'],
                          'Enter did not activate the row natively: if it ever does, '
-                         'the window binding and the double-click route would both '
-                         'run -- see the Task 6 report')
+                         'PlaylistView.keyPressEvent and the double-click route would '
+                         'both run -- see the Task 6 report')
 
         self.assertEqual([0, 1, 2], by_case['Ctrl+A']['after'][0],
                          'Ctrl+A is Qt native here: the reason no QAction is bound '

@@ -305,7 +305,7 @@ git commit -m "feat(presenter): 批量移除按索引降序执行，播放取选
 - `test_play_pause_shortcut`：按 Task 1 决定的键，断言 `play_pause_requested` emit 一次。
 - `test_delete_removes_selection`：多选后按 `Delete` → `remove_tracks_requested` 收到升序索引列表。
 - `test_enter_plays_selection`：多选后按 `Enter` → `play_tracks_requested` 收到 `[最小索引]`。
-- `test_ctrl_a_selects_all`。
+- ~~`test_ctrl_a_selects_all`~~ → 实作为 `test_ctrl_a_is_left_to_qt_native_select_all`（R11 附带要求 8：仓库没实现 Ctrl+A，是 Qt 原生 `selectAll`）。
 - `test_ctrl_up_down_trigger_prev_next`：`Ctrl+↑` → `prev_track_requested`，`Ctrl+↓` → `next_track_requested`。
 - `test_plain_up_down_still_navigates_the_list`（判据 5）：裸 `↑`/`↓` 改变 `currentRow`，且**不**触发 prev/next。
 - `test_shortcuts_are_owned_by_the_main_window`：**裁定 R10（2026-10-20，源自 Task 1 审查的遗留洞）：必须有一条测试证明快捷键**抢在焦点控件之前**消费了按键。** Task 1 实测裸 `Space` 会推进当前行、把选区替换成那一行，而 `Ctrl+Space` 命中同一个内置 handler；它的探针测的是 `QListView.keyPressEvent` 本身（`app.sendEvent` 直投，绕开窗口级 shortcut 派发），**对 Task 6 绑什么键、是否消费按键毫无约束力**——也就是说 Task 1 的红线目前只活在 spec 的文字里。要求：向 `PlaylistView` 的**焦点控件**投按键（不是投给 MainWindow，也不是直接调 QAction），断言 ① 播放/暂停信号 emit 恰好一次，② `selected_display_indices()` 与当前行**一字未动**。少了 ②，「快捷键与列表导航双触发」这个形状在本仓测不出来，而它正是 R4 当初要避免的事。
@@ -327,12 +327,12 @@ Run: `PY -m unittest tests.test_playlist_shortcuts -v` → Expected: FAIL。
 6. **`PlaylistView.keyPressEvent` 为什么是自愈的**（探针 v7，焦点真在内部 `QListView` 上）：没有窗口绑定后，`Delete`/`Enter`/小键盘 `Key_Enter` 都会**冒泡到外层视图**（`reached_outer_view=1`，且列表自身的行/选区纹丝不动 `row 4->4 sel [4]->[4]`），而裸 `Space` 与裸 `↑↓` **根本到不了**外层（`reached_outer_view=0`，它们在内部被 accept 并移动光标）。也就是：**能进这个方法按键，定义上就是列表此刻没在用的按键**——不需要焦点账本，也不可能抢焦点控件的键。`Ctrl+Space`/`Ctrl+↑`/`Ctrl+↓` 三条实测仍恰好一次、且列表当前行不动（R10 的消费的半边照旧由窗口 action 提供）。
 7. **offscreen 测不到「Enter 激活按钮」，谁也不准照这条写断言**：对照实验（裸窗口、一个 `QPushButton`、**任何地方都没有绑定**）下 `QTest.keyClick`、`QTest.keyPress+keyRelease`、裸 `sendEvent` 三种投法对 `Key_Return` 与 `Key_Enter` 全都给出 `pressed=0 clicked=0`，而同一个按钮对 `Key_Space` 给出 `pressed=1 clicked=1`。所以「按键回到焦点控件」的可证观测只有两件：接收方 `KeyPress` 计数器（被吞 0 / 未被吞 1，配 `Space` 作阳性对照），以及 `QLineEdit` 的 `returnPressed`/文本变化（`abcXdef` → Delete → `abcdef`）。
 8. 两个附带要求：**小键盘 `Enter` 必须一起接**（spec §5 写的是 `Enter`，Qt 给主键盘 `Key_Return` 与小键盘 `Key_Enter` 两个码，只绑一个等于 keypad 死掉——实测 `Key_Enter` 在只绑 `'Return'` 时无人应答），且这一步同时改写 Step 1 里 `test_ctrl_a_selects_all` 的名字为 `test_ctrl_a_is_left_to_qt_native_select_all`（仓库**没有**实现 Ctrl+A，它是 Qt 原生 `selectAll`，旧名字读起来像我们自己做的）。
-9. **R11 是 spec §5「快捷键的 QAction 集中在 `MainWindow._setup_shortcuts()`」的第一个例外**，并且给批次 4 划了一条边界：进度条与音量滑块**不得**自带按键绑定，否则窗口/视图两层都会 answers 同一个键。
+9. **R11 是 spec §5「快捷键的 QAction 集中在 `MainWindow._setup_shortcuts()`」的第二个例外**——第一个是批次 2 刻意钉在 `ActionRail` 上的 `Ctrl+O`（`view/widgets/action_rail.py:223` 真的 `setShortcut`）；这条由 Task 6 修复轮复审更正，原文说「第一个」会把读者引向「rail 那处不合规」的误判。，并且给批次 4 划了一条边界：进度条与音量滑块**不得**自带按键绑定，否则窗口/视图两层都会 answers 同一个键。
 10. **「`QListWidget` 的 `Delete` 会删行，所以拿它作对照」是假的，别再照这个前提写探针或结论**（修复回合实测，PyQt 6.11 / offscreen，`tests/test_playlist_shortcuts.py::NativeDeleteModelProbeTest` 每次跑都打印）：3 行、选中第 1 行的 `QListWidget` 收到 `Key_Delete` → `accepted=False`、`count 3 -> 3`、`widget.actions()` 里**没有任何带 shortcut 的 action**（`[]`）、`model().removeRows(1, 0)` → **False** 且行数仍 3；`PlaylistModel` 同样 `removeRows(1,0)=False`、且没 override 该方法。同一个探针里，`PlaylistView` 的外层 `keyPressEvent` 对 `Delete`/`Return`/`Key_Enter` 三个都 `seen=[该键]`、当前行 `1 -> 1`，对裸 `Space`/裸 `↓` 是 `seen=[]`、`1 -> 2`（列表自己吃掉）。结论要说准：R11 靠的是「**view 不吃这三个键**」这一条 Qt 事实，不是「`PlaylistModel` 不会删行」——两者这次实测**都是**真的，但前者才是承重的那根，`QListWidget` 在这一点上并不构成差异，因此探针改测「同一按键在下层是否被消费」，并显式钉住 `Down` 的边界条件（光标在最后一行时下层不消费，按键会上浮，探针每次先把光标放回第 1 行）。
 
 本步其余部分不变：`_setup_shortcuts()` 建 `QAction` 并 `self.addAction(...)`（现在只剩三条播放/切歌 action，加批次 2 的 `Ctrl+Q`），三个信号从 `PlaylistView` 转发为 View API，presenter 在 `_setup_view_connections` 里接到 Task 5 的两个 handler。
 
-- [ ] **Step 3: 运行确认通过** → Expected: PASS（7 tests）。
+- [ ] **Step 3: 运行确认通过** → Expected: PASS。原稿写「7 tests」是派发前的用例数；实作为 22 条（R9/R10/R11 与探针各占一批），以全量 discover 不新增失败为准。
 
 - [ ] **Step 4: 全量确认不新增失败** → Expected: 仅既有 1 失败。
 

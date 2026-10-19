@@ -211,9 +211,10 @@ class MainWindow(QMainWindow):
         search. The alternatives were measured too and none is available:
         ``QAction.setShortcutWidget`` (the API that would give a real subtree scope) does
         not exist in PyQt6 6.11; narrowing the context to ``WidgetShortcut`` stops the
-        binding answering *inside* the list as well; and focusing back in via
-        enable/disable works but is hand-rolled bookkeeping for something Qt already
-        knows. Handling the two keys in the view needs neither, because the press only
+        binding answering *inside* the list as well; and re-enabling the focused
+        widget around the press (enable/disable bookkeeping) was **not probed** -- it
+        is named here as a shape, not as a measurement, and it would still be the
+        window hand-managing a key it has already taken. Handling the two keys in the view needs neither, because the press only
         reaches :class:`PlaylistView` when ``QListView`` was not using it -- measured:
         ``Delete``/``Enter``/numpad ``Key_Enter`` arrive, bare ``Space`` and the bare
         arrows do not. See the plan's 裁定 R11 for the numbers.

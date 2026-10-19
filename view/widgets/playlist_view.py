@@ -367,10 +367,11 @@ class PlaylistView(QWidget):
         """``Delete`` removes the batch, ``Enter`` plays it (spec §5).
 
         Both go through :meth:`request_remove_selection` /
-        :meth:`request_play_selection`, the same two entries the right-click menu
-        uses, so the keyboard and the menu cannot drift apart and the
-        "empty selection emits nothing" rule (spec §7) is enforced in exactly one
-        place.
+        :meth:`request_play_selection`, where the "empty selection emits nothing"
+        rule (spec §7) is enforced once. The right-click menu does **not** use
+        them: :meth:`_dispatch_menu_action` emits with the batch it resolved at
+        open time, so a menu press and a key press carry deliberately different
+        payloads -- see the note in :meth:`request_play_selection`.
 
         Modifiers are deliberately not consulted. Numpad ``Enter`` arrives with
         ``KeypadModifier`` set, so a ``NoModifier`` test would silently drop half of
@@ -392,9 +393,10 @@ class PlaylistView(QWidget):
     def request_play_selection(self) -> None:
         """Emit ``play_requested`` for the selection the way ``Enter`` means it.
 
-        Reached from :meth:`keyPressEvent` (this widget's own ``Enter``) and from the
-        context menu's Play entry, which is why it lives here and not in the window:
-        the selection's meaning is this widget's to decide (plan
+        Reached from :meth:`keyPressEvent` (this widget's own ``Enter``) only -- the
+        context menu emits ``play_requested`` itself, with the batch it resolved when
+        it opened. It lives here rather than in the window because the selection's
+        meaning is this widget's to decide (plan
         Architecture -- 选择与索引解析留在 `PlaylistView`), and routing the keyboard
         through the same signal the context menu emits gives the two entries one
         forward, one presenter handler and one empty-selection rule.
