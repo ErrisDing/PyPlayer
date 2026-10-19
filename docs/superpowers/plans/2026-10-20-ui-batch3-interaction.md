@@ -314,6 +314,8 @@ Run: `PY -m unittest tests.test_playlist_shortcuts -v` → Expected: FAIL。
 
 - [ ] **Step 2: 实现**
 
+**裁定 R9（2026-10-20，控制器核查 Task 5 交付时立）：`clear_playlist_requested` 必须有 presenter 落点，本任务不得让它变成「发射了但没人接」的路线。** 现状：`PlaylistView` 自 Task 3 起真会发射它，MainWindow 按计划把它转发成 View API，而 Task 5 的 Produces 只给了 `_on_remove_tracks` / `_on_play_tracks` 两个槽——也就是说接完线之后，点「清空播放列表」会一路发信号然后**什么也不发生**。批次 2 就抓过一次同形状缺陷（rail 只连 `clicked`、`Ctrl+O` 按下去毫无反应），那条的教训是：**信号被发射且被连接，但末端没有落点，仍然全绿**。要求：新增 presenter 槽（复用既有 `_queue.clear()` 路径，`presenter/main_presenter.py:341` 附近已有一次调用），清空队列并复位播放态与 `NowPlayingStrip`，并加一条**贯穿全链**的测试：从 View 发射 → presenter → 队列空 + now playing 复位。断言必须落在末端效果上，不能只断「槽被连上了」。
+
 `_setup_shortcuts()` 建 `QAction` 并 `self.addAction(...)`；`Delete`/`Enter` 的 context 用 `Qt.Context.WidgetWithChildrenShortcut`，避免在列表外误触发。三个信号从 `PlaylistView` 转发为 View API，presenter 在 `_setup_view_connections` 里接到 Task 5 的两个 handler。
 
 - [ ] **Step 3: 运行确认通过** → Expected: PASS（7 tests）。
