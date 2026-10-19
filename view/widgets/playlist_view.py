@@ -7,7 +7,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QListView, QAbstractItemView, QLabel
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QModelIndex, QPoint
+from PyQt6.QtCore import Qt, pyqtSignal, QModelIndex, QPoint, QItemSelectionModel
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
 
 import sys
@@ -17,6 +17,25 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from core import i18n
 from view.models.playlist_model import PlaylistModel
 from view.delegates.playlist_delegate import PlaylistItemDelegate
+from view.widgets.playlist_context_menu import (
+    MENU_CLEAR, MENU_PLAY, MENU_REMOVE, build_playlist_menu
+)
+
+
+def _global_menu_point(event):
+    """Where a context-menu event asked for the menu, in global coordinates.
+
+    ``QContextMenuEvent.globalPosition()`` is Qt 6.6+; ``requirements.txt`` floors
+    the dependency at ``PyQt6>=6.5.0``, where only the deprecated ``globalPos()``
+    exists, so the newer accessor is probed rather than assumed. This is the same
+    idiom as ``library_sidebar._global_press_point`` for the same version gap --
+    duplicated rather than imported because that helper is private to a widget
+    module this one has no reason to depend on.
+    """
+    getter = getattr(event, 'globalPosition', None)
+    if callable(getter):
+        return getter().toPoint()
+    return event.globalPos()
 
 
 class PlaylistView(QWidget):
@@ -28,7 +47,10 @@ class PlaylistView(QWidget):
     - Current track highlighting
     - Windows-Explorer multi-selection (Ctrl/Shift+click), readable through
       :meth:`selected_display_indices` and :meth:`display_index_at`
-    - Context menu for actions
+    - Windows-Explorer right-click: a row outside the selection is narrowed to,
+      a row inside it keeps the batch, blank space opens nothing -- and the
+      clicked entry leaves as one of ``play_requested`` / ``remove_requested`` /
+      ``clear_playlist_requested``.
 
     The header and the list are styled by the application sheet through
     ``#playlistHeader`` / ``#playlistView``; the row states are painted by
@@ -37,13 +59,20 @@ class PlaylistView(QWidget):
 
     # Signals
     track_double_clicked = pyqtSignal(int)       # display index
-    # 批次 3：右键菜单接口，尚未 emit
+    # 批次 3：右键菜单接口。Batch 1 declared this one and nothing emitted it until
+    # Task 3 wired the right-click; ``tests/test_dead_code_removed.py`` pins that it
+    # must survive cleanup.
     context_menu_requested = pyqtSignal(int, object)  # index, event
-    # ``play_requested`` / ``remove_requested`` / ``clear_playlist_requested``
-    # are declared in Task 3, where they first get an emitter -- a signal that
-    # nobody emits is dead code and ``tests/test_dead_code_removed.py`` is the
-    # standing guard for that (batch 1 Task 2). Task 1 ships the selection mode
-    # and the two display-index helpers only.
+    # Declared here, in the task that first emits them (ruling R1): a signal nobody
+    # emits is dead code, and the dead-signal census that enforces that is a batch 1
+    # asset. ``play_requested`` / ``remove_requested`` carry ascending *display*
+    # indices -- the same space as ``selected_display_indices()``, not
+    # ``DisplayEntry.node_idx`` -- and the receiver must not re-sort them: batch
+    # removal reverses them itself (spec §4.2). ``clear_playlist_requested`` carries
+    # nothing, because clearing the playlist is not scoped to the target.
+    play_requested = pyqtSignal(list)
+    remove_requested = pyqtSignal(list)
+    clear_playlist_requested = pyqtSignal()
 
     def __init__(self, manager, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -179,6 +208,105 @@ class PlaylistView(QWidget):
         if not index.isValid():
             return -1
         return index.row()
+
+    # -- right-click (batch 3, spec §4.3) ---------------------------------
+
+    def contextMenuEvent(self, event) -> None:
+        """Resolve the target, show the menu, and emit what was clicked.
+
+        The event reaches *this* widget because ``QAbstractItemView`` ignores it:
+        measured on this host, a right-click aimed at the list viewport arrives
+        here with ``pos()`` re-expressed in this widget's space (the viewport sits
+        at (1, 13) inside it, below the header). That is why the target lookup
+        passes ``self`` as the coordinate source -- the second argument of
+        :meth:`display_index_at` exists precisely so this line cannot guess.
+
+        Blank space (``-1``) returns without touching the selection and without
+        emitting anything, per spec §4.3 and §7.
+        """
+        row = self.display_index_at(event.pos(), self)
+        if row < 0:
+            return
+
+        if row not in self.selected_display_indices():
+            # Explorer's rule, and the reason the view is ExtendedSelection: only
+            # a row that is *not* part of the batch may collapse it. Qt does not
+            # do this itself -- right-clicking never changes a selection and never
+            # fires ``clicked`` -- so the mutation belongs here.
+            self._select_only(row)
+
+        targets = self.selected_display_indices()
+        menu = build_playlist_menu(targets, self._is_playing_index_in(targets), self)
+        if menu is None:
+            # Unreachable through this handler (``targets`` is never empty here);
+            # the builder owns the "no target, no menu" contract and Task 2 pinned
+            # it, so this is the caller honouring that contract, not a second
+            # expression of it.
+            return
+
+        # Emitted before the popup rather than after the dispatch: this names the
+        # *request*, and its payload is ``targets[0]`` plus the live event -- both
+        # are only guaranteed to still describe what the user pointed at while
+        # nothing has acted on them yet. Once an action signal has run, the row can
+        # be gone (Task 5's removal) and the event is what the dispatch consumed.
+        self.context_menu_requested.emit(targets[0], event)
+
+        try:
+            action = self._popup_menu(menu, _global_menu_point(event))
+        finally:
+            # Ruling R7: the builder parented this menu to the view, so without
+            # this the live tree grows one QMenu per right-click, forever -- and
+            # no other test in the suite can see it, because the structure
+            # contract that walks the window never right-clicks. ``deleteLater()``
+            # rather than an immediate delete: the menu is a widget that has just
+            # run a modal loop, and Qt's own rule for that is deferral. The
+            # deferred delete runs when control returns to the event loop (see the
+            # residue test for how that is proven here).
+            menu.deleteLater()
+
+        self._dispatch_menu_action(action, targets)
+        event.accept()
+
+    def _popup_menu(self, menu, global_pos):
+        """Show the menu modally and return the action it triggered, or ``None``.
+
+        A seam, not a convenience: ``QMenu.exec()`` spins a nested event loop, so
+        no automated test may reach it. The tests patch this method (and assert
+        through it, which is how the target list is read *while the menu is open*)
+        while production runs the real call.
+        """
+        return menu.exec(global_pos)
+
+    def _dispatch_menu_action(self, action, targets: list) -> None:
+        """Turn a clicked menu entry into the view's signal for it.
+
+        Dispatch is on ``action.data()`` -- the ``MENU_*`` id the builder stamped
+        -- and the indices come from the local ``targets``, because the menu
+        carries no target of its own (Task 2's contract). A cancelled menu hands
+        back ``None`` and acts on nothing.
+        """
+        if action is None:
+            return
+
+        menu_id = action.data()
+        if menu_id == MENU_PLAY:
+            self.play_requested.emit(list(targets))
+        elif menu_id == MENU_REMOVE:
+            self.remove_requested.emit(list(targets))
+        elif menu_id == MENU_CLEAR:
+            self.clear_playlist_requested.emit()
+
+    def _select_only(self, row: int) -> None:
+        """Make ``row`` the whole selection, through the selection model."""
+        self._list_view.selectionModel().select(
+            self._model.index(row),
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows)
+
+    def _is_playing_index_in(self, targets: list) -> bool:
+        """Whether the target batch includes the playing row: Play or Pause?"""
+        playing = self._model.get_playing_index()
+        return playing >= 0 and playing in targets
 
     def clear(self) -> None:
         """Clear the playlist."""

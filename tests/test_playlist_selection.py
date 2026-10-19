@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Playlist multi-selection tests (batch 3, Task 1).
+"""Playlist multi-selection and right-click tests (batch 3, Tasks 1 and 3).
 
 Task 1 gives ``PlaylistView`` Windows-Explorer selection semantics and the two
 index helpers the rest of the batch builds on. Two things are pinned here:
@@ -14,6 +14,13 @@ index helpers the rest of the batch builds on. Two things are pinned here:
   :meth:`PlaylistView.display_index_at` -- the only two ways Task 2..6 address
   rows, so the sorted-and-deduplicated contract and the ``-1`` blank-area
   contract are the interfaces the later tasks depend on.
+
+Task 3 adds :class:`ContextMenuTargetTest`, which wires those helpers to the
+menu: the target rules of spec §4.3, the menu entry -> signal mapping, and the
+per-click menu disposal ruling R7 asks for. Its own two harness decisions
+(``QTest`` sends no context-menu event on this platform, and the popup goes
+through a seam because ``QMenu.exec()`` is a nested event loop) are recorded in
+that class's docstring.
 
 The first test in this file is different in kind: it is a *probe*, not a guard.
 Spec §4.4 refuses to assume whether ``QListView`` already consumes ``Space``
@@ -446,6 +453,441 @@ class SelectionTest(unittest.TestCase):
             -1, self.view.display_index_at(QPoint(50, 50),
                                            self.view._list_view.viewport()),
             'an empty playlist has no row for any point to resolve to')
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class ContextMenuTargetTest(unittest.TestCase):
+    """Task 3: the right-click wiring -- resolve a target, adjust the selection,
+    show the menu, turn the clicked entry into a view signal (spec §4.3).
+
+    Two harness decisions come from probes run on this host rather than from
+    assumption:
+
+    * ``QTest.mouseClick(viewport, RightButton, ...)`` delivers mouse press and
+      release and **no** ``QContextMenuEvent`` at all (measured: only the two
+      mouse events reach any handler, on the offscreen platform). So the click
+      here is a real ``QContextMenuEvent`` sent through ``app.sendEvent`` -- the
+      same object the platform would deliver on Windows.
+    * The event is aimed at the **inner** list viewport, the widget a physical
+      right-click actually lands on. ``QAbstractItemView::contextMenuEvent``
+      ignores it, and Qt then propagates it up to ``PlaylistView``, re-expressing
+      ``pos()`` in each receiver's space (measured: viewport ``(198, 69)`` arrives
+      at the outer widget as ``(199, 82)`` -- the +13 viewport offset). That is
+      why the handler exists on ``PlaylistView`` and why it may hand
+      ``event.pos()`` to ``display_index_at`` together with ``self``. It also
+      means these tests break loudly if a Qt upgrade ever makes the inner view
+      accept the event: the wiring would then have to move to the inner view.
+
+    ``QMenu.exec()`` is a nested event loop and can never run in an automated
+    test, so the popup goes through the ``PlaylistView._popup_menu`` seam and the
+    tests patch that on the class (which also pins the call signature: two
+    positional arguments, no ``self``). The menu itself is still really built --
+    :meth:`test_repeated_right_clicks_leave_no_menu_behind` depends on it.
+    """
+
+    ROW_COUNT = 6
+
+    ACTION_SIGNALS = ('play_requested', 'remove_requested')
+
+    def setUp(self):
+        from view.widgets.playlist_view import PlaylistView
+
+        self.app = make_app()
+        self.manager = make_manager()
+        self.view = PlaylistView(self.manager)
+        # 6 rows x 28px = 168px of content in a 300px tall view: the blank strip
+        # under the last row exists and is reachable by a right-click.
+        self.view.resize(400, 300)
+        self.view.set_entries(make_entries(self.ROW_COUNT))
+        self.view.show()
+        self.app.processEvents()
+
+        # Every emission of every action signal, in order, as (name, payload).
+        self.emitted = []
+        for name in self.ACTION_SIGNALS:
+            getattr(self.view, name).connect(
+                lambda rows, name=name: self.emitted.append((name, list(rows))))
+        self.view.clear_playlist_requested.connect(
+            lambda: self.emitted.append(('clear_playlist_requested', None)))
+        self.view.context_menu_requested.connect(
+            lambda index, event: self.emitted.append(('context_menu_requested', index)))
+
+    def tearDown(self):
+        self.view.close()
+        self.view.deleteLater()
+        self.app.processEvents()
+
+    # -- fixtures ---------------------------------------------------------
+
+    def _ctrl_click(self, row: int) -> None:
+        """Add ``row`` to the selection the way a user does (see SelectionTest)."""
+        list_view = self.view._list_view
+        QTest.mouseClick(list_view.viewport(), Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.ControlModifier,
+                         list_view.visualRect(self.view._model.index(row)).center())
+        self.app.processEvents()
+
+    def _select(self, *rows: int) -> None:
+        for row in rows:
+            self._ctrl_click(row)
+
+    def _set_playing(self, row: int) -> None:
+        """Make ``row`` the playing row through the view's own API."""
+        self.view.set_current_playing(row)
+        self.app.processEvents()
+
+    def _right_click_row(self, row: int, choose: str = None) -> dict:
+        """Right-click one pixel above ``row``'s bottom edge; see :meth:`_right_click`.
+
+        One pixel above the bottom edge and not the centre: the mapping this
+        routes through is off by the 13px viewport offset when it is wrong, and a
+        centre point still lands on its own row, so only a near-boundary point
+        can tell the two apart (the same reason SelectionTest maps rows there).
+        """
+        rect = self.view._list_view.visualRect(self.view._model.index(row))
+        return self._right_click(self.view._list_view.viewport(),
+                                 QPoint(rect.center().x(), rect.bottom() - 1),
+                                 choose=choose)
+
+    def _right_click(self, widget, point: QPoint, choose: str = None) -> dict:
+        """Deliver a real context-menu event and report what the popup was shown with.
+
+        ``point`` is in ``widget``'s coordinate space -- the widget a spontaneous
+        right-click would have landed on. ``choose`` is a ``MENU_*`` id: the entry
+        the fake popup pretends the user clicked, or ``None`` for a cancelled menu.
+
+        The returned snapshot is what the assertions read, and it is filled in by
+        the patched seam, i.e. *while the menu is open*:
+
+        * ``shown`` -- how many times a menu was actually popped;
+        * ``targets`` -- ``self.view.selected_display_indices()`` at that moment,
+          so the menu's target is read off the live selection rather than off the
+          dispatch that happens afterwards (the window-level test below reads only
+          ``shown``, since ``targets`` always comes off this test's own view);
+        * ``ids`` -- each entry's ``action.data()``, separators dropped;
+        * ``labels`` -- the same entries' text, for the play/pause copy;
+        * ``parent`` -- the widget the menu was parented to (``None`` when nothing
+          was built), which is what makes the residue test non-vacuous;
+        * ``global_pos`` -- the point the menu was told to open at.
+        """
+        from unittest import mock
+
+        from PyQt6.QtGui import QContextMenuEvent
+
+        from view.widgets.playlist_view import PlaylistView
+
+        snapshot = {'shown': 0, 'targets': None, 'ids': (), 'labels': (),
+                    'parent': None, 'global_pos': None}
+
+        def fake_popup(*args):
+            # Exactly (menu, global_pos): the seam must not receive ``self``, or
+            # the signature the handler calls it with has drifted.
+            menu, global_pos = args
+            entries = [action for action in menu.actions() if not action.isSeparator()]
+            snapshot['shown'] += 1
+            snapshot['targets'] = self.view.selected_display_indices()
+            snapshot['ids'] = tuple(action.data() for action in entries)
+            snapshot['labels'] = tuple(action.text() for action in entries)
+            snapshot['parent'] = menu.parent()
+            snapshot['global_pos'] = global_pos
+            if choose is None:
+                return None
+            return next(action for action in entries if action.data() == choose)
+
+        event = QContextMenuEvent(QContextMenuEvent.Reason.Other, QPoint(point),
+                                  QPoint(widget.mapToGlobal(point)))
+        with mock.patch.object(PlaylistView, '_popup_menu', side_effect=fake_popup):
+            self.app.sendEvent(widget, event)
+            self.app.processEvents()
+        return snapshot
+
+    def _blank_point_in_viewport(self) -> QPoint:
+        """A point below the last row that is still inside the viewport."""
+        list_view = self.view._list_view
+        viewport = list_view.viewport()
+        last_bottom = list_view.visualRect(
+            self.view._model.index(self.ROW_COUNT - 1)).bottom()
+        point = QPoint(50, last_bottom + 40)
+        self.assertTrue(viewport.rect().contains(point),
+                        'the blank strip must be reachable inside the viewport, '
+                        'or this probes the out-of-bounds branch instead')
+        return point
+
+    def _names(self) -> list:
+        return [name for name, _payload in self.emitted]
+
+    # -- target rules (spec §4.3) ----------------------------------------
+
+    def test_right_click_on_unselected_row_narrows_selection_to_it(self):
+        """Cursor row outside the selection: the selection becomes exactly that row."""
+        from view.widgets.playlist_context_menu import MENU_CLEAR, MENU_PLAY, MENU_REMOVE
+
+        self._select(0, 1, 2)
+        snapshot = self._right_click_row(5)
+
+        self.assertEqual([5], snapshot['targets'],
+                         'a menu opened over an unselected row acts on that row alone')
+        self.assertEqual([5], self.view.selected_display_indices(),
+                         'and the selection really was replaced, not left as [0, 1, 2]')
+        self.assertEqual(1, snapshot['shown'])
+        self.assertEqual((MENU_PLAY, MENU_REMOVE, MENU_CLEAR), snapshot['ids'],
+                         'the three entries, in the builder\'s order')
+        self.assertIs(self.view, snapshot['parent'],
+                      'the menu is parented to this view, so its disposal is this '
+                      "view's business (ruling R7)")
+
+    def test_right_click_inside_selection_keeps_the_batch(self):
+        """Cursor row already selected: selection untouched, menu acts on all of it."""
+        self._select(0, 1, 2)
+        snapshot = self._right_click_row(1)
+
+        self.assertEqual([0, 1, 2], snapshot['targets'],
+                         'right-clicking inside the selection must not shrink it')
+        self.assertEqual([0, 1, 2], self.view.selected_display_indices())
+
+    def test_right_click_on_empty_area_does_not_open_menu(self):
+        """Review Focus 5 / spec §7: blank space means no menu, no signal, no change.
+
+        Three blank areas, all of them ``-1`` for ``display_index_at``: the strip
+        under the last row, the header strip (only reachable in this widget's own
+        space, which is why it is aimed at the outer widget), and -- in
+        :meth:`test_right_click_on_an_empty_playlist_does_not_open_menu` -- the
+        empty model.
+        """
+        self._select(0, 2)
+        snapshot = self._right_click(self.view._list_view.viewport(),
+                                     self._blank_point_in_viewport())
+
+        self.assertEqual(0, snapshot['shown'], 'no menu over the blank strip')
+        self.assertIsNone(snapshot['parent'])
+        self.assertEqual([], self.emitted,
+                         'and no signal at all -- not even context_menu_requested')
+        self.assertEqual([0, 2], self.view.selected_display_indices(),
+                         'the selection must survive a stray right-click untouched')
+
+    def test_right_click_on_the_header_strip_does_not_open_menu(self):
+        """The header is blank space too (spec §4.3), in the outer widget's space."""
+        from PyQt6.QtWidgets import QLabel
+
+        header = self.view.findChild(QLabel, 'playlistHeader')
+        point = header.geometry().center()
+        self.assertTrue(header.geometry().contains(point),
+                        'the probe point must sit in the header strip')
+        self._select(0, 2)
+
+        snapshot = self._right_click(header, point)
+
+        self.assertEqual(0, snapshot['shown'],
+                         'a point over the header resolves to no row, so the menu '
+                         'stays closed -- that is what display_index_at(pos, self) '
+                         'mapping is for')
+        self.assertEqual([], self.emitted)
+        self.assertEqual([0, 2], self.view.selected_display_indices(),
+                         'and the batch that was there must still be there')
+
+    def test_right_click_on_an_empty_playlist_does_not_open_menu(self):
+        """Empty model: every point is blank, so nothing pops and nothing emits."""
+        self.view.set_entries([])
+        self.app.processEvents()
+
+        rect = self.view._list_view.rect()
+        snapshot = self._right_click(self.view._list_view.viewport(),
+                                     QPoint(rect.center().x(), rect.center().y()))
+
+        self.assertEqual(0, snapshot['shown'],
+                         'an empty playlist has no menu for any point')
+        self.assertEqual([], self.emitted)
+        self.assertEqual([], self.view.selected_display_indices())
+
+    def test_right_click_targets_the_row_under_the_cursor_not_one_above_it(self):
+        """Every row resolves through the mapping, for every row at once.
+
+        The handler receives ``event.pos()`` in *this* widget's space (Qt re-maps
+        it while propagating from the viewport) and must pass ``self`` as the
+        coordinate source. Pass the wrong widget and each target shifts: the
+        near-boundary points :meth:`_right_click_row` uses are what expose that.
+        """
+        for row in range(self.ROW_COUNT):
+            with self.subTest(row=row):
+                snapshot = self._right_click_row(row)
+                self.assertEqual([row], snapshot['targets'])
+
+    # -- menu action -> signal -------------------------------------------
+
+    def test_menu_play_emits_play_requested(self):
+        self._select(0, 1, 2)
+        self._right_click_row(1, choose='play')
+
+        self.assertEqual(['context_menu_requested', 'play_requested'], self._names())
+        self.assertEqual([0, 1, 2], dict(self.emitted)['play_requested'],
+                         'the whole batch, in ascending display-row order')
+
+    def test_menu_remove_emits_remove_requested(self):
+        self._select(0, 1, 2)
+        self._right_click_row(1, choose='remove')
+
+        self.assertEqual([0, 1, 2], dict(self.emitted)['remove_requested'])
+
+    def test_menu_clear_emits_clear_playlist_requested(self):
+        """Clear is not target-scoped: no payload, just the request.
+
+        ``targets`` must not ride along on this one -- a batch right-click that
+        happens to land on row 4 still means "empty the playlist", and forwarding
+        ``[4]`` would read as "remove row 4" to the presenter (Task 5).
+        """
+        self._select(0, 1, 2)
+        self._right_click_row(1, choose='clear')
+
+        self.assertEqual(['context_menu_requested', 'clear_playlist_requested'],
+                         self._names())
+        self.assertEqual([('clear_playlist_requested', None)], self.emitted[-1:])
+
+    def test_menu_play_after_narrowing_emits_only_the_cursor_row(self):
+        """The two halves compose: a narrowed target is what gets emitted."""
+        self._select(0, 1, 2)
+        self._right_click_row(4, choose='play')
+
+        self.assertEqual([4], dict(self.emitted)['play_requested'])
+
+    def test_cancelled_menu_emits_no_action_signal(self):
+        """``exec()`` returning ``None`` (Escape, or a click outside) acts on nothing.
+
+        Only the request is reported. Dispatching the first entry here would make
+        a dismissed menu perform an action, and an unguarded ``action.data()``
+        would raise.
+        """
+        self._select(0, 1)
+        self._right_click_row(0, choose=None)
+
+        self.assertEqual(['context_menu_requested'], self._names())
+
+    def test_context_menu_requested_emitted(self):
+        """The signal batch 1 declared and nobody ever emitted now has a producer.
+
+        Payload is ``targets[0]`` plus the live event, so a listener can place a
+        panel at the cursor without re-deriving the row.
+        """
+        self._select(2)
+        snapshot = self._right_click_row(2)
+
+        self.assertEqual(['context_menu_requested'], self._names())
+        self.assertEqual(2, dict(self.emitted)['context_menu_requested'])
+        self.assertEqual(1, snapshot['shown'], 'one popup, one request')
+
+    def test_play_and_pause_share_the_play_id(self):
+        """The toggle reads Pause over the playing row but stays ``MENU_PLAY``.
+
+        Labels and ids are read off the menu *while it is open*, from the seam, so
+        ``PlaylistView._is_playing_index_in`` cannot quietly always answer False
+        (the menu would keep saying Play over the playing track) and a Pause item
+        cannot invent a fourth signal Task 5 would have to guess at.
+        """
+        from core import i18n
+
+        self._select(2)
+        stopped = self._right_click_row(2)
+        self._set_playing(2)
+        playing = self._right_click_row(2)
+
+        self.assertEqual('play', stopped['ids'][0])
+        self.assertEqual('play', playing['ids'][0],
+                         'pause is the same action in another state, not a new id')
+        self.assertEqual(i18n.get('ctx.play'), stopped['labels'][0])
+        self.assertEqual(i18n.get('ctx.pause'), playing['labels'][0],
+                         'the playing row must be offered Pause')
+
+    # -- lifecycle (ruling R7) -------------------------------------------
+
+    def _live_menus(self) -> list:
+        from PyQt6.QtWidgets import QMenu
+
+        return self.view.findChildren(QMenu)
+
+    def test_repeated_right_clicks_leave_no_menu_behind(self):
+        """Ruling R7: a menu is built per right-click, so it must also die per
+        right-click. Nothing else in the suite can see this leak --
+        ``tests/test_view_structure.py:414`` builds a fresh ``MainWindow`` and never
+        right-clicks, so a view that grew one ``QMenu`` per click stayed green.
+
+        Asserts zero rather than "count does not grow" because the *live tree* is
+        what batch 2's structure contract walks: a menu built once and reused
+        forever also stops the counter growing, but it keeps a ``QMenu`` in the
+        window tree between clicks and would turn ``:414`` red the moment a test
+        right-clicks inside a ``MainWindow``.
+        """
+        self.assertEqual([], self._live_menus(), 'no menu before any click')
+
+        first = self._right_click_row(1)
+        after_first = len(self._live_menus())
+        second = self._right_click_row(2)
+        after_second = len(self._live_menus())
+
+        # ``deleteLater()`` defers to the event loop, and -- measured on this host
+        # -- ``QApplication.processEvents()`` does NOT run deferred deletes: only
+        # the targeted flush ``QEventLoop::exec()`` performs when it unwinds does.
+        # This line stands in for "control returned to the event loop".
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.app.processEvents()
+
+        live = self._live_menus()
+        self.assertEqual(0, len(live),
+                         f'{len(live)} QMenu(s) still parented to the view after two '
+                         'open/close cycles: every right-click leaks one menu '
+                         '(ruling R7). Pending counts were '
+                         f'{after_first} then {after_second}.')
+
+    def test_a_right_click_inside_the_main_window_leaves_no_menu_in_its_tree(self):
+        """The other half of ruling R7: batch 2's structure guard must stay true.
+
+        ``tests/test_view_structure.py:414`` asserts the live ``MainWindow`` tree
+        holds no ``QMenu``, but it builds a fresh window and never right-clicks, so
+        it cannot see a per-click leak. Here the same assertion runs *after* a right
+        click: a menu that survived the popup would trip the contract the next
+        batch's structure census depends on.
+        """
+        from PyQt6.QtWidgets import QMenu
+
+        from view.main_window import MainWindow
+        from view.widgets.playlist_view import PlaylistView
+
+        window = MainWindow(self.manager)
+        try:
+            window.resize(900, 600)
+            window.show()
+            self.app.processEvents()
+
+            hosted = window.findChild(PlaylistView)
+            hosted.set_entries(make_entries(3))
+            self.app.processEvents()
+
+            rect = hosted._list_view.visualRect(hosted._model.index(1))
+            snapshot = self._right_click(
+                hosted._list_view.viewport(),
+                QPoint(rect.center().x(), rect.bottom() - 1))
+            self.assertEqual(1, snapshot['shown'],
+                             'the wiring must work inside a real window too')
+            self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            self.app.processEvents()
+
+            self.assertEqual([], window.findChildren(QMenu),
+                              'the window tree must be menu-free again')
+        finally:
+            window.close()
+            window.deleteLater()
+            self.app.processEvents()
+
+    def test_the_menu_is_rebuilt_for_the_new_target(self):
+        """The disposal must not cost correctness: each click shows its own menu."""
+        from view.widgets.playlist_context_menu import MENU_REMOVE
+
+        self._select(0, 1, 2)
+        batch = self._right_click_row(1)
+        single = self._right_click_row(4)
+
+        self.assertEqual(2, batch['shown'] + single['shown'])
+        self.assertEqual([0, 1, 2], batch['targets'])
+        self.assertEqual([4], single['targets'])
+        self.assertIn(MENU_REMOVE, single['ids'])
 
 
 if __name__ == '__main__':
