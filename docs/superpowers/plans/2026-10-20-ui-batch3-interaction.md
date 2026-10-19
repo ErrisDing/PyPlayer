@@ -308,8 +308,9 @@ git commit -m "feat(presenter): 批量移除按索引降序执行，播放取选
 - `test_ctrl_a_selects_all`。
 - `test_ctrl_up_down_trigger_prev_next`：`Ctrl+↑` → `prev_track_requested`，`Ctrl+↓` → `next_track_requested`。
 - `test_plain_up_down_still_navigates_the_list`（判据 5）：裸 `↑`/`↓` 改变 `currentRow`，且**不**触发 prev/next。
-- `test_shortcuts_are_owned_by_the_main_window`：`MainWindow` 上 addAction 的快捷键集合含上述全部，且 `PlaylistView`/`BottomPanel` 内部没有各自绑键（防归属分散）。
+- `test_shortcuts_are_owned_by_the_main_window`：**裁定 R10（2026-10-20，源自 Task 1 审查的遗留洞）：必须有一条测试证明快捷键**抢在焦点控件之前**消费了按键。** Task 1 实测裸 `Space` 会推进当前行、把选区替换成那一行，而 `Ctrl+Space` 命中同一个内置 handler；它的探针测的是 `QListView.keyPressEvent` 本身（`app.sendEvent` 直投，绕开窗口级 shortcut 派发），**对 Task 6 绑什么键、是否消费按键毫无约束力**——也就是说 Task 1 的红线目前只活在 spec 的文字里。要求：向 `PlaylistView` 的**焦点控件**投按键（不是投给 MainWindow，也不是直接调 QAction），断言 ① 播放/暂停信号 emit 恰好一次，② `selected_display_indices()` 与当前行**一字未动**。少了 ②，「快捷键与列表导航双触发」这个形状在本仓测不出来，而它正是 R4 当初要避免的事。
 
+`test_shortcuts_are_owned_by_the_main_window`：
 Run: `PY -m unittest tests.test_playlist_shortcuts -v` → Expected: FAIL。
 
 - [ ] **Step 2: 实现**
