@@ -7,7 +7,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QListView, QAbstractItemView, QLabel
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QModelIndex
+from PyQt6.QtCore import Qt, pyqtSignal, QModelIndex, QPoint
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
 
 import sys
@@ -26,6 +26,8 @@ class PlaylistView(QWidget):
     Features:
     - Double-click to play
     - Current track highlighting
+    - Windows-Explorer multi-selection (Ctrl/Shift+click), readable through
+      :meth:`selected_display_indices` and :meth:`display_index_at`
     - Context menu for actions
 
     The header and the list are styled by the application sheet through
@@ -37,6 +39,11 @@ class PlaylistView(QWidget):
     track_double_clicked = pyqtSignal(int)       # display index
     # 批次 3：右键菜单接口，尚未 emit
     context_menu_requested = pyqtSignal(int, object)  # index, event
+    # ``play_requested`` / ``remove_requested`` / ``clear_playlist_requested``
+    # are declared in Task 3, where they first get an emitter -- a signal that
+    # nobody emits is dead code and ``tests/test_dead_code_removed.py`` is the
+    # standing guard for that (batch 1 Task 2). Task 1 ships the selection mode
+    # and the two display-index helpers only.
 
     def __init__(self, manager, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -67,7 +74,11 @@ class PlaylistView(QWidget):
         self._list_view.setItemDelegate(PlaylistItemDelegate(self._theme, self._list_view))
 
         # Configure list view
-        self._list_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Windows-Explorer semantics (batch 3, spec §4.3): Ctrl+click toggles a
+        # row, Shift+click extends a range, and a right-click target only
+        # replaces the selection when that row is not already in it -- both
+        # need a multi-row selection, which SingleSelection can never hold.
+        self._list_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._list_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._list_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._list_view.setAlternatingRowColors(True)
@@ -129,6 +140,31 @@ class PlaylistView(QWidget):
         if row >= 0 and row < self._model.rowCount():
             index = self._model.index(row)
             self._list_view.setCurrentIndex(index)
+
+    def selected_display_indices(self) -> list:
+        """Every selected row, ascending and without duplicates.
+
+        Batch 3's removal path is the consumer. The indices have to come back
+        ascending here because they describe the *selection*: the batch-removal
+        loop reverses them itself (spec §4.2 -- deleting row 3 shifts row 5 up
+        to 4), while ``Enter`` plays ``indices[0]``, the smallest display index
+        (spec §5). Returns ``[]`` for an empty selection, which spec §7 says a
+        caller must act on rather than forward to the presenter.
+        """
+        rows = (index.row() for index in
+                self._list_view.selectionModel().selectedRows())
+        return sorted(set(rows))
+
+    def display_index_at(self, pos: QPoint) -> int:
+        """The row under ``pos`` (viewport coordinates), or ``-1`` for blank space.
+
+        Blank means the strip below the last row: an invalid index, and spec
+        §4.3 requires the right-click menu to stay closed there.
+        """
+        index = self._list_view.indexAt(pos)
+        if not index.isValid():
+            return -1
+        return index.row()
 
     def clear(self) -> None:
         """Clear the playlist."""

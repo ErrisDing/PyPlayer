@@ -76,6 +76,10 @@
 
 不假设结论。
 
+**实测结论**（Task 1，Qt 6.11 / `QT_QPA_PLATFORM=offscreen`，探针 `tests/test_playlist_selection.py::SpaceProbeTest::test_space_default_behaviour_probe`，打印全部观测值）：`Space` 在列表里**有**既有行为，而且不是设想起的「toggle 当前项」——它把当前行**下移一行并选中那一行**，到底部回绕；两种选择模式表现一致（3 行、焦点在第 0 行：`selected_display_indices [0] -> [1]`，`currentRow 0 -> 1`）。对已经用 Ctrl/Shift 建好的 3 行选区，一次裸 `Space` 把它**塌缩成 `[1]`**。所以按上面的规则：**播放/暂停绑 `Ctrl+Space`**，裸 `Space` 留给列表原生导航（与 §5「`↑`/`↓` 不劫持」同源）。
+
+探针另外记录了一条对 Task 6 的硬约束：`Ctrl+Space` 观测结果与裸 `Space` **完全相同**（同一个内置 handler，修饰键不改变它），所以「绑 `Ctrl+Space`」不能只靠条件判断——必须用会**消费该按键**的窗口级 `QAction`/`QShortcut`（Qt 的 shortcut 先于焦点 widget 的 `keyPressEvent` 拦截），否则一次按下会同时「播放/暂停」并「下移一行 + 塌缩选区」。探针把这两条实测事实写成断言：若将来的 Qt 版本释放了 `Space`，断言会失败并要求重读本节，而不是让 Task 6 的绑定悄悄变成双触发。
+
 ## 5. 快捷键
 
 | 键 | 动作 | 备注 |
