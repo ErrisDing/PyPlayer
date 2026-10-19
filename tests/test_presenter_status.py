@@ -1120,7 +1120,7 @@ class PresenterStatusTest(PresenterHarness, unittest.TestCase):
 
         # And the loud-empty branch, by taking the whitelist away.
         with mock.patch(
-                'tests.test_presenter_status._progressable_action_ids',
+                f'{__name__}._progressable_action_ids',
                 lambda: ()):
             violations = self._scan(
                 "self._view.set_action_progress('refresh', True)")
@@ -1351,6 +1351,49 @@ class LibraryAdministrationReachabilityTest(PresenterHarness, unittest.TestCase)
         self.config.add_library.assert_called_once_with(NEW_LIBRARY_PATH)
         self.assertEqual(3, len(_library_rows(self.view)),
                          'the dialog-side add never reached the window')
+
+
+class SelfReferentialPatchTest(unittest.TestCase):
+    """No test may patch its own module by dotted name.
+
+    ``unittest discover -s tests`` imports these files as top-level modules
+    (``test_presenter_status``), while ``python -m unittest tests.test_x``
+    imports them as package members (``tests.test_presenter_status``). They are
+    two distinct module objects in ``sys.modules``. A patch written as
+    ``mock.patch('tests.test_me._thing', ...)`` therefore rebinds an attribute
+    on a module the running test's globals do not come from: the patch silently
+    does nothing, and the assertion below it passes or fails depending on which
+    invocation the author happened to use. That is exactly how
+    :meth:`PresenterStatusTest.test_the_progress_whitelist_is_read_not_assumed`
+    came to pass alone and fail in the full suite.
+
+    Use ``f'{__name__}._thing'`` or ``mock.patch.object`` instead.
+    """
+
+    def test_no_test_patches_its_own_module_by_dotted_name(self):
+        offenders = []
+        for path in sorted((ROOT / 'tests').glob('test_*.py')):
+            tree = ast.parse(path.read_text(encoding='utf-8'), str(path))
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call)
+                        and getattr(node.func, 'attr', '') == 'patch'):
+                    continue
+                if not node.args:
+                    continue
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    target = first.value
+                elif isinstance(first, ast.JoinedStr):
+                    continue
+                else:
+                    continue
+                if target.split('.')[0] == 'tests':
+                    offenders.append(f'{path.name}:{node.lineno}: {target}')
+        self.assertEqual(
+            [], offenders,
+            'a mock.patch target rooted at the `tests` package binds a module '
+            'object the running test may not share; use f\'{__name__}.attr\' or '
+            'mock.patch.object (see this test\'s docstring)')
 
 
 if __name__ == '__main__':
