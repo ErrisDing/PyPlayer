@@ -204,7 +204,10 @@ git commit -m "feat(view): 右键菜单接线，目标行遵循资源管理器�
 
 **Files:**
 - Modify: `view/delegates/playlist_delegate.py`（`paint` 的底色分支）
+- Modify: `view/widgets/playlist_view.py`（`viewport()` 上的 `WA_Hover`）
 - Create: `tests/test_playlist_hover.py`
+
+第三个文件是 Task 4 实施时经实测取得的**必要偏差**（审查已认可）：没有这个属性，`option.state` 永远不带 `State_MouseOver`，Step 2 那条 `elif` 就是够不着的死代码。属性归 View 而非 delegate——delegate 伸手去改自己所属视图是层次倒置。
 
 **Interfaces:**
 - Consumes: `ThemeManager.tokens.hover_bg`、既有 `playing_bg`/`selection_bg`/`playing_bar`
