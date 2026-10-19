@@ -9,19 +9,32 @@ them:
      ._on_background_image_changed (its only emitters were deleted here);
   3. ``view.models.DisplayEntry`` is the service DTO, not a copy of it;
   4. the background route that IS alive still works end to end:
-     MainWindow.manage_appearance_requested (emitted by the File menu) ->
+     MainWindow.manage_appearance_requested (emitted in production by the
+     **ActionRail**: ``MainWindow._on_rail_action`` maps ``ACTION_APPEARANCE`` to it;
+     the File menu that used to be the emitter is gone, deleted by batch 2) ->
      MainPresenter._on_manage_appearance -> AppearanceDialog.background_image_changed
      (a different signal with the same *name* as the dead MainWindow one) ->
      MainPresenter._handle_background_change -> MainWindow.
      Whole-branch review finding 5 moved the first half of that chain into the
-     test: the menu signal is the only way a user can reach the appearance/theme
-     dialog, and calling the presenter's slot straight from the helper skipped the
-     action connection and the presenter's ``connect``, so the live route could be
-     deleted with this file still green.
+     test: the signal is the only way a user can reach the appearance/theme dialog,
+     and calling the presenter's slot straight from the helper skipped the action
+     connection and the presenter's ``connect``, so the live route could be deleted
+     with this file still green.
   5. batch 2 Task 9: the left panel and the library chip row are deleted, *and* no
      ``*.py`` in the repo still names either class -- comments and docstrings
      included, because a prose pointer at a file that no longer exists is the same
      stale claim one layer further down.
+  6. batch 3's final wave: ``PlaylistView.get_current_selection``, ``set_selection``
+     and ``scroll_to_playing``, ``MainWindow``'s three stored transport ``QAction``
+     attributes with their unused object names, and the five
+     ``playlist_context_menu`` names the package re-exported without a consumer, are
+     gone. Each had zero callers in production *and* in tests. The reason
+     ``get_current_selection`` went is not "a getter nobody used": it read
+     ``selectedIndexes()[0]``, whose order Qt leaves unspecified and which Task 1
+     measured as **click order** on this host, so it did not even equal
+     ``selected_display_indices()[0]`` for a Ctrl-clicked batch -- order-dependent
+     semantics wearing a name that promises a row. Re-introducing either that method
+     or an untested ``selectedIndexes()`` read re-opens the defect.
 
 ``context_menu_requested`` is batch 3's right-click observation hook. The reason it
 gives is no longer batch 1's: it is **emitted** (``PlaylistView.contextMenuEvent``
@@ -192,6 +205,72 @@ class DeadCodeRemovedTest(unittest.TestCase):
                     hasattr(owner, name), False,
                     f'{owner.__name__}.{name} is still declared',
                 )
+
+    def test_batch3_dead_view_surface_stays_gone(self):
+        """The final wave's deletions, pinned the way this file pins everything else.
+
+        Batch 3 shipped four pieces of surface with zero callers in production *and*
+        in tests: two selection methods on ``PlaylistView``, one scroll method, three
+        stored ``QAction`` attributes plus three object names on ``MainWindow``, and
+        five ``playlist_context_menu`` names the package re-exported while every
+        consumer imported the module directly. ``get_current_selection`` in particular
+        is not a harmless getter -- see the module docstring, item 6.
+
+        Assembled from parts, for the same reason ``SUPERSEDED_PANEL_CLASSES`` is: a
+        scan for a name must not contain it, or this file becomes the only place the
+        deleted names survive. The second half of the test is what stops the scan
+        being satisfied by a widget that lost more than it was supposed to.
+        """
+        import view.widgets as widgets
+        from view.widgets.playlist_view import PlaylistView
+        from view.main_window import MainWindow
+
+        removed = {
+            'selection getter': 'get_current_' + 'selection',
+            'selection setter': 'set_' + 'selection',
+            'scroll helper': 'scroll_to_' + 'playing',
+            'stored transport action': 'self._play_pause_' + 'shortcut',
+            'object name 1': 'shortcut' + 'PlayPause',
+            'object name 2': 'shortcut' + 'Prev',
+            'object name 3': 'shortcut' + 'Next',
+        }
+        this_file = Path(__file__).resolve()
+        hits = []
+        for source in ROOT.rglob('*.py'):
+            # This file is the one place the deleted names are spelled out -- the
+            # docstring above and the labels here have to say them to forbid them. The
+            # scan therefore covers the rest of the repo, and the hasattr checks below
+            # cover this file's own subject matter directly.
+            if source.resolve() == this_file:
+                continue
+            if SKIP_SCAN_PARTS & set(source.parts):
+                continue
+            text = source.read_text(encoding='utf-8', errors='replace')
+            for label, needle in removed.items():
+                if needle in text:
+                    hits.append(f'{label} in {source.relative_to(ROOT)}')
+        self.assertEqual([], hits, 'a dead batch-3 name is back in the source')
+
+        for name in ('get_current_' + 'selection', 'set_' + 'selection',
+                     'scroll_to_' + 'playing'):
+            with self.subTest(method=name):
+                self.assertFalse(hasattr(PlaylistView, name),
+                                 f'PlaylistView.{name} is reachable again')
+
+        self.assertEqual(
+            [], [n for n in getattr(widgets, '__all__', ())
+                 if n.startswith('MENU_') or n == 'build_' + 'playlist_menu'],
+            'view.widgets re-exports the menu builder again: the consumers import '
+            'view.widgets.playlist_context_menu directly, so the package surface is '
+            'a second spelling that nothing maintains')
+
+        # ... and the live surface this wave must NOT have taken with it.
+        for name in ('selected_display_indices', 'display_index_at',
+                     'context_menu_requested', 'set_current_playing'):
+            self.assertTrue(hasattr(PlaylistView, name),
+                            f'PlaylistView.{name} is batch 3\'s live API')
+        self.assertTrue(hasattr(MainWindow, '_add_shortcut'),
+                        'the transport bindings still have to be built somewhere')
 
     def test_dialog_background_signal_survives(self):
         """The live half of the name collision must not be deleted with the dead half."""

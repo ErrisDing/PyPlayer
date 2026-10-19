@@ -186,19 +186,6 @@ class PlaylistView(QWidget):
             index = self._model.index(display_idx)
             self._list_view.scrollTo(index, QListView.ScrollHint.EnsureVisible)
 
-    def get_current_selection(self) -> int:
-        """Get currently selected row index, or -1 if none."""
-        indexes = self._list_view.selectedIndexes()
-        if indexes:
-            return indexes[0].row()
-        return -1
-
-    def set_selection(self, row: int) -> None:
-        """Select the specified row."""
-        if row >= 0 and row < self._model.rowCount():
-            index = self._model.index(row)
-            self._list_view.setCurrentIndex(index)
-
     def selected_display_indices(self) -> list:
         """Every selected row, ascending and without duplicates.
 
@@ -449,16 +436,19 @@ class PlaylistView(QWidget):
         self.remove_requested.emit(indices)
 
     def clear(self) -> None:
-        """Clear the playlist."""
+        """Clear the visible list. No production caller -- and it still stays.
+
+        Kept on evidence rather than habit: the only route in the repo that reaches
+        this line is :meth:`MainWindow.clear_playlist`, whose only caller is
+        ``tests/tools/render_matrix.py`` -- an automated path this batch ships, so
+        deleting the pair here would break a file this wave does not own. The
+        presenter never uses it: clearing goes through ``QueueService.clear`` and
+        comes back down as ``display_changed([])``, which is why the context menu's
+        clear entry needs no view-side call. Retire this pair together with the
+        matrix's call, not before.
+        """
         self._model.clear()
 
     def get_entry_at(self, row: int) -> Optional[object]:
         """Get entry at the given row."""
         return self._model.get_entry(row)
-
-    def scroll_to_playing(self) -> None:
-        """Scroll to show the currently playing track."""
-        playing_idx = self._model.get_playing_index()
-        if playing_idx >= 0:
-            index = self._model.index(playing_idx)
-            self._list_view.scrollTo(index, QListView.ScrollHint.EnsureVisible)

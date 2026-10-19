@@ -240,18 +240,21 @@ class MainWindow(QMainWindow):
         # Transport only. Adding a Delete/Enter action back here would re-open
         # Important 1, and ``test_no_window_binding_steals_delete_or_enter`` is the
         # guard that says so in that case.
-        self._play_pause_shortcut = self._add_shortcut(
-            'shortcutPlayPause', self.SHORTCUT_PLAY_PAUSE,
-            self._on_play_pause_shortcut)
-        self._prev_shortcut = self._add_shortcut(
-            'shortcutPrev', self.SHORTCUT_PREV, self._on_prev_shortcut)
-        self._next_shortcut = self._add_shortcut(
-            'shortcutNext', self.SHORTCUT_NEXT, self._on_next_shortcut)
+        # Nothing is stored on the window for these three: no attribute is read, and
+        # the ownership tests enumerate the bindings by *sequence*
+        # (``test_shortcuts_are_owned_by_the_main_window``), never by name. The object
+        # names these actions used to carry are gone with them -- no QSS rule styles
+        # them (this sheet is the only one, ``theme_manager.py``) and no ``findChild``
+        # ever looked them up. ``tests/test_dead_code_removed.py`` forbids naming them
+        # again, including here.
+        self._add_shortcut(self.SHORTCUT_PLAY_PAUSE, self._on_play_pause_shortcut)
+        self._add_shortcut(self.SHORTCUT_PREV, self._on_prev_shortcut)
+        self._add_shortcut(self.SHORTCUT_NEXT, self._on_next_shortcut)
 
-    def _add_shortcut(self, object_name: str, sequence: str, handler) -> QAction:
+    def _add_shortcut(self, sequence: str, handler) -> QAction:
         """Build one enabled ``QAction``, attach it to this window, return it.
 
-        Kept as a helper because the three transport bindings differ only in name, key
+        Kept as a helper because the three transport bindings differ only in key
         and slot, and the ``addAction`` line is the one every one of them must not lose.
         No text: these actions are reachable only by the keyboard (there is no menu bar
         left to show a label), so giving them copy would mean inventing UI strings nobody
@@ -266,7 +269,6 @@ class MainWindow(QMainWindow):
         the key either way.
         """
         action = QAction(self)
-        action.setObjectName(object_name)
         action.setShortcut(QKeySequence(sequence))
         action.triggered.connect(handler)
         self.addAction(action)
@@ -687,7 +689,14 @@ class MainWindow(QMainWindow):
         self._playlist_view.set_entries(entries)
 
     def clear_playlist(self) -> None:
-        """Clear the playlist."""
+        """Clear the visible list. Zero production callers; kept for the matrix.
+
+        The presenter does not use this -- clearing goes through ``QueueService.clear``
+        and comes back down as ``display_changed([])`` -- and no test drives it either.
+        Its one caller in the repo is ``tests/tools/render_matrix.py``, an automated
+        path this batch ships, so the pair (with ``PlaylistView.clear``) stays until
+        that call goes; delete the two together, not one at a time.
+        """
         self._playlist_view.clear()
 
     def clear_now_playing(self) -> None:

@@ -1226,11 +1226,19 @@ class LibrarySidebarMainWindowTest(unittest.TestCase):
                          'a stripe of the playlist shows between the rail and the '
                          'panel -- the gap spec §1 criterion 7 names')
 
-        # The width follows the same rule: clamped by the parent alone. Of the three
-        # claims below only the first is a live guard here -- the window's own
-        # 800x500 minimum keeps this parent above 744px while SIDEBAR_WIDTH is 240,
-        # so the two overhang bounds are boundary declarations: they fire only if the
-        # minimum ever drops below SIDEBAR_WIDTH + RAIL_WIDTH.
+        # The width follows the same rule: clamped by the parent alone. Only the first
+        # claim below can fail on its own; the two overhang bounds are **consequences of
+        # it and of the two coordinate assertions above**, not guards that wait for a
+        # small window: with ``x == 0`` and ``width == min(SIDEBAR_WIDTH,
+        # parent.width())``, ``x + width <= parent.width()`` is arithmetic for any parent
+        # size, and adding ``origin.x() == RAIL_WIDTH`` gives the window bound as well,
+        # because the shell lays the parent out to the right of the rail. So the earlier
+        # reading of them -- "boundary declarations that fire if the window minimum ever
+        # drops below SIDEBAR_WIDTH + RAIL_WIDTH" -- was wrong twice over: the minimum is
+        # irrelevant, and nothing can make them fail while the clamp holds. They are kept
+        # anyway, as cheap consistency checks: what they can still catch is the clamp
+        # being rewritten to something the arithmetic no longer implies, or the parent
+        # ceasing to start at the rail's right edge -- a layout change, not a window size.
         self.assertEqual(min(SIDEBAR_WIDTH, parent.width()), sidebar.width(),
                          'the panel width is not clamped by its parent')
         self.assertLessEqual(sidebar.x() + sidebar.width(), parent.width(),
