@@ -32,7 +32,9 @@ NowPlayingStrip 复位了」上，没有一条是「存在一次 connect 调用�
   `QListView`+`PlaylistModel` 的 `Delete`（见
   :class:`NativeDeleteModelProbeTest`）：R11 的依据是「**列表本身不吃这三个键**」这条
   Qt 事实（按下后事件未被消费、行也不变），**不是**「`PlaylistModel` 不实现
-  `removeRows`」——后者只是同一条探针顺带记录的旁证，见 plan R11 第 10 条。
+  `removeRows`」——这条探针根本观察不到后者：PyQt 只在**类型**上查找 Python 覆写，
+  往实例上挂记录器只会恒常记到空（原先就是这么一条“旁证”，已删除；
+  `NativeDeleteModelProbeTest` 用子类才是可行写法），见 plan R11 第 10 条。
 * **裁定 R11（修复回合 1）**：`Delete`/`Enter` 由 `PlaylistView.keyPressEvent` 承接，
   窗口只剩 `Ctrl+Space`/`Ctrl+↑`/`Ctrl+↓`/`Ctrl+Q`。原先那两个窗口 `QAction` 用「槽里
   判断焦点再早退」冒充范围控制——快捷键一旦匹配，按键已经被消费，早退不会把它还给焦点
@@ -138,9 +140,14 @@ def _entries(count: int) -> list:
 
     Same shape as ``tests.test_playlist_selection.make_entries``: ``node_idx`` is
     offset from the display row so a helper that handed back the wrong index space
-    could not pass by luck. The queue-built fixtures below keep the two spaces
-    together on purpose (the removal route must be addressed in *display* rows),
-    so this is only used by the standalone-view probe, where no queue is involved.
+    could not pass by luck. The queue-built fixtures below **cannot** be read that
+    way: they build with ``build_from_tracks``, where display row and ``node_idx``
+    coincide, so on those fixtures a call that handed back the wrong space passes as
+    well -- a coinciding pair discriminates nothing, no matter what it asserts. The
+    presenter route is discriminated where the spaces diverge, in
+    ``FolderQueueRemovalTest`` (``tests/test_playlist_actions.py``), which builds with
+    ``QueueService.build_from_folders``. This helper is only used by the
+    standalone-view probe, where no queue is involved.
     """
     return [
         DisplayEntry(
@@ -853,6 +860,46 @@ class ShortcutOwnershipTest(ShortcutHarness, unittest.TestCase):
                          'Delete stopped reaching the batch route: the absence asserted '
                          'above has to be R11 moving the key, not losing it')
 
+    def test_the_view_answers_exactly_the_keys_this_file_presses(self):
+        """``PLAY_KEYS`` / ``REMOVE_KEYS`` pinned **by content**, not by being named.
+
+        Every key test in this class presses something out of ``LIST_KEYS`` and none
+        of them compares that table to the production tuples, so a tuple that *gains*
+        a key is invisible: nothing presses it, nothing asserts its absence, and the
+        new key quietly acquires a batch action. ``Key_Insert`` is the shape to watch
+        -- ``QListView`` does not consume it, so by ruling R11's own argument it
+        walks upstairs and lands in :meth:`PlaylistView.keyPressEvent`, where one
+        extra element in a tuple turns it into a removal.
+
+        So the comparison is the pin: the two tuples together must be exactly the set
+        of keys this file presses, and each tuple must hold its own keys (a key moved
+        from ``PLAY_KEYS`` to ``REMOVE_KEYS`` would otherwise survive as a rename that
+        keeps every behaviour test green). The names stay on the table below because a
+        failing subTest has to say which key drifted.
+        """
+        from view.widgets.playlist_view import PlaylistView
+
+        expected = {
+            'REMOVE_KEYS': (Qt.Key.Key_Delete,),
+            'PLAY_KEYS': (Qt.Key.Key_Return, Qt.Key.Key_Enter),
+        }
+        for name, keys in expected.items():
+            with self.subTest(tuple=name):
+                self.assertEqual(keys, tuple(getattr(PlaylistView, name)),
+                                 f'PlaylistView.{name} drifted from the keys this '
+                                 'file presses via LIST_KEYS')
+
+        pressed = {key for _literal, (key, _mods) in LIST_KEYS.items()}
+        answered = set(PlaylistView.REMOVE_KEYS) | set(PlaylistView.PLAY_KEYS)
+        self.assertEqual(pressed, answered,
+                         'the view answers keys that no test presses here: those keys '
+                         'have gained a batch action with no coverage at all -- add '
+                         'them to LIST_KEYS and a behaviour test, or drop them')
+        self.assertEqual(len(PlaylistView.REMOVE_KEYS) + len(PlaylistView.PLAY_KEYS),
+                         len(answered),
+                         'one key is in both tuples, so which action it performs '
+                         'depends on the order of the two checks in keyPressEvent')
+
     def test_the_widgets_bind_no_shortcuts_of_their_own(self):
         """``PlaylistView`` and ``BottomPanel`` must not carry key *bindings*.
 
@@ -1409,14 +1456,18 @@ class NativeKeyBehaviourProbeTest(unittest.TestCase):
         return view
 
     def _one_press(self, view, key, mods):
-        removed = []
-        original = view._model.removeRows
+        """Press one key into the focused list and report what Qt did with it.
 
-        def counting(count, row, parent=None):
-            removed.append((count, row))
-            return original(count, row, parent)
-
-        view._model.removeRows = counting
+        No ``removeRows`` recorder lives here any more, and this probe is the
+        reason: ``PlaylistModel`` defines no ``removeRows``, and PyQt consults the
+        **type** for a Python override, not the instance, so assigning a counting
+        wrapper onto ``view._model`` leaves every Qt-side call on the C++ default --
+        the recorder could only ever report ``[]``, whatever happened. (The same trap
+        is documented and correctly avoided in
+        :meth:`test_probe_native_delete_is_not_the_view_or_the_model_to_answer`,
+        which subclasses instead.) Whether a press deletes rows is read where it is
+        observable: the row-count delta around :meth:`test_probe_native_key_behaviour`.
+        """
         activated = []
         view._list_view.doubleClicked.connect(
             lambda index: activated.append(index.row()))
@@ -1424,7 +1475,7 @@ class NativeKeyBehaviourProbeTest(unittest.TestCase):
         event.setAccepted(False)
         self.app.sendEvent(view._list_view, event)
         self.app.processEvents()
-        return event.isAccepted(), removed, activated
+        return event.isAccepted(), activated
 
     def test_probe_native_key_behaviour(self):
         """Print, then pin: Space (both forms), Delete, Enter, Ctrl+A, Ctrl+arrows.
@@ -1457,12 +1508,12 @@ class NativeKeyBehaviourProbeTest(unittest.TestCase):
                       view._list_view.currentIndex().row(), view._model.rowCount())
             self.assertEqual([*pre_select], before[0], f'{name}: fixture drifted')
             self.assertEqual(current_row, before[1], f'{name}: fixture drifted')
-            accepted, removed, activated = self._one_press(view, key, mods)
+            accepted, activated = self._one_press(view, key, mods)
             after = (view.selected_display_indices(),
                      view._list_view.currentIndex().row(), view._model.rowCount())
             observations.append({
                 'case': name, 'accepted': accepted, 'before': before,
-                'after': after, 'removeRows': removed, 'doubleClicked': activated,
+                'after': after, 'doubleClicked': activated,
             })
             view.close()
 
@@ -1474,7 +1525,6 @@ class NativeKeyBehaviourProbeTest(unittest.TestCase):
                   f"sel {obs['before'][0]} -> {obs['after'][0]} "
                   f"row {obs['before'][1]} -> {obs['after'][1]} "
                   f"rows {obs['before'][2]} -> {obs['after'][2]} "
-                  f"removeRows={obs['removeRows']} "
                   f"doubleClicked={obs['doubleClicked']}")
         sys.stdout.flush()
 
@@ -1505,10 +1555,10 @@ class NativeKeyBehaviourProbeTest(unittest.TestCase):
         self.assertEqual(3, delete['after'][2],
                          'the native Delete does not remove rows (the model does not '
                          'implement removeRows), so PlaylistView has to answer the '
-                         'key itself -- ruling R11')
-        self.assertEqual([], delete['removeRows'],
-                         'PlaylistModel suddenly answers removeRows: re-read this '
-                         'probe before trusting the batch route')
+                         'key itself -- ruling R11. This row-count delta **is** the '
+                         'measurement: an instance-patched removeRows recorder cannot '
+                         'see a Qt-side call, and used to sit here reporting [] '
+                         'whatever happened')
 
         enter = by_case['Enter']
         self.assertEqual([], enter['doubleClicked'],

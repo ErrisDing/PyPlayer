@@ -455,6 +455,186 @@ class PlaySelectionTest(PlaylistActionHarness, unittest.TestCase):
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class FolderQueueRemovalTest(PlaylistActionHarness, unittest.TestCase):
+    """The removal route addressed in **display rows**, on a queue where the two
+    index spaces do not coincide.
+
+    Every other presenter-route fixture in this file builds its queue with
+    ``build_from_tracks``, which makes one ``FileNode`` per track -- so the visible
+    row and ``DisplayEntry.node_idx`` are the same number and a call that passed the
+    wrong space would still remove the right songs. That coincidence is why this
+    class exists: ``QueueService.build_from_folders``
+    (``service/queue_service.py:141``) produces the shape where they diverge, one
+    folder row plus one row per track, all carrying the *same* ``node_idx``:
+
+    ====  ================  ==========  ==================
+    row   shows             ``node_idx``  ``sub_index``
+    ====  ================  ==========  ==================
+    0     folder Alpha      0           -1  (``is_folder``)
+    1     track0            0           0
+    2     track1            0           1
+    3     folder Beta       1           -1  (``is_folder``)
+    4     track2            1           0
+    5     track3            1           1
+    ====  ================  ==========  ==================
+
+    Removing [1, 2] by node index would delete node 1 and node 2 -- i.e. all of
+    folder Beta and nothing else -- while the display-row reading deletes exactly the
+    two Alpha tracks. Both readings are green on a flat queue; only one of them is
+    what the user selected here. The rows are asserted by **path**, never by index,
+    because an index assertion is exactly what the two spaces make unreadable.
+    """
+
+    FOLDER_ROWS = 6  # 2 folders + 4 tracks
+
+    def _folder_data(self) -> dict:
+        """Two folders, two tracks each, paths from the flat fixture's own table."""
+        return {
+            f'{LIB}/Alpha': _tracks(2),
+            f'{LIB}/Beta': [Track(path=_index_path(i), title=f'Track {i}')
+                            for i in (2, 3)],
+        }
+
+    def _load_folders(self) -> None:
+        """Build through ``build_from_folders`` and prove the index spaces diverged.
+
+        The precondition is asserted, not assumed: without it every assertion below
+        would also pass on a flat queue, which is the whole failure mode this class
+        exists to close.
+        """
+        self.queue.build_from_folders(self._folder_data())
+        entries = self.queue.get_display_entries()
+        self.assertEqual(self.FOLDER_ROWS, len(entries),
+                         'the folder fixture did not produce folder rows on top of '
+                         'its tracks, so the two index spaces still coincide')
+        node_column = [entry.node_idx for entry in entries]
+        self.assertEqual([0, 0, 0, 1, 1, 1], node_column,
+                         'display row == node_idx again: this queue is not a shape '
+                         'that can tell the two spaces apart')
+        self.assertEqual([True, False, False, True, False, False],
+                         [entry.is_folder for entry in entries])
+        self.assertEqual(self.FOLDER_ROWS, self.model.rowCount(),
+                         'the queue shrank or grew before the view ever saw it')
+
+    def _file_paths(self) -> list:
+        """Surviving **track** paths, in display order, folder rows dropped.
+
+        Deliberately not :meth:`_queue_paths`: a folder entry carries ``full_path ==
+        ''``, so the flat-queue reader would mix empty strings into the comparison
+        and an assertion about "which songs are left" would be reading folder rows as
+        songs.
+        """
+        return [entry.full_path for entry in self.queue.get_display_entries()
+                if not entry.is_folder]
+
+    def _row_kinds(self) -> list:
+        return [('folder' if entry.is_folder else 'track')
+                for entry in self.queue.get_display_entries()]
+
+    def test_batch_removal_deletes_the_selected_songs_not_their_nodes(self):
+        """[1, 2] -- the two Alpha tracks -- leaves both Beta tracks intact.
+
+        Covers spec §4.2's descending rule on the shape that makes it bite (rows 1
+        and 2 are siblings of one folder: removing row 1 first renumbers row 2 under
+        the ascending reading) and the emptied-folder branch of
+        ``service/queue_service.py:506-509`` in the same step: once both Alpha tracks
+        are gone the folder itself must stop being a row, or the list shows a folder
+        that contains nothing.
+        """
+        self._load_folders()
+        self._forget_calls()
+
+        self.presenter._on_remove_tracks([1, 2])
+
+        self.assertEqual([2, 1], self.queue.removals(),
+                         'spec §4.2: descending, and in the display space the '
+                         'selection was written in')
+        self.assertEqual([self._path_of(2), self._path_of(3)], self._file_paths(),
+                         'the wrong songs went: a node-index reading deletes Beta '
+                         'whole and leaves Alpha alone')
+        self.assertEqual(['folder', 'track', 'track'], self._row_kinds(),
+                         'an emptied folder stayed as a row')
+        self.assertEqual(3, self.model.rowCount(),
+                         'the visible list did not follow the queue')
+        self.assertEqual(self._file_paths(),
+                         [path for path in (
+                             self.playlist.get_entry_at(row).full_path
+                             for row in range(self.model.rowCount()))
+                          if path],
+                         'the view shows different songs than the queue holds')
+
+    def test_folder_row_removal_takes_the_whole_node(self):
+        """The ``entry.is_folder`` branch: row 3 is folder Beta, so it is Beta's turn.
+
+        One row in, two songs out, and the rows above it untouched -- the branch at
+        ``queue_service.py:506-509`` deletes ``self._queue_nodes[entry.node_idx]``,
+        which is only correct because the folder entry's ``node_idx`` is the node's
+        position and its display row is not (row 3 vs node 1).
+        """
+        self._load_folders()
+        self._forget_calls()
+
+        self.presenter._on_remove_tracks([3])
+
+        self.assertEqual([self._path_of(i) for i in (0, 1)], self._file_paths(),
+                         'a folder row that removes a single track, or nothing, is '
+                         'the same index-space confusion in the other direction')
+        self.assertEqual(['folder', 'track', 'track'], self._row_kinds())
+        self.assertEqual([3], self.queue.removals())
+
+    def test_selection_spanning_two_folders_keeps_the_interleaved_songs(self):
+        """[2, 4]: one track from each folder, adjacent in neither index space.
+
+        Row 2 is sub-index 1 of node 0 (track1) and row 4 is sub-index 0 of node 1
+        (track2), so the batch deletes the middle two songs and leaves the outer two.
+        The shape that punishes an implementation that resolved the rows through the
+        wrong field: as node indices, [2, 4] names two nodes that do not exist and
+        nothing is deleted at all; as sub-indices, it deletes track0 and track1.
+        """
+        self._load_folders()
+
+        self.presenter._on_remove_tracks([2, 4])
+
+        self.assertEqual([self._path_of(0), self._path_of(3)], self._file_paths())
+        self.assertEqual(self.FOLDER_ROWS - 2, len(self.queue.get_display_entries()),
+                         'two rows in, two rows out -- no folder was collateral')
+
+    def test_playing_track_is_re_pinned_to_a_track_row_after_removal(self):
+        """R8's re-pin on a folder queue: the filter at ``main_presenter.py:346``.
+
+        Track2 plays on row 4; deleting row 1 moves it to row 3, which is **not** its
+        node index either. The presenter must re-find it by path *and* must not accept
+        a folder row as the answer -- folder entries carry ``full_path == ''``, so a
+        scan without the ``not entry.is_folder`` filter could only match one by an
+        empty playing path, which the guard above already rejects. The filter is
+        therefore a **defensive** clause here rather than a reachable branch, and the
+        assertion below pins the observable it protects: the position lands on the
+        row that actually holds the song.
+        """
+        self._load_folders()
+        playing = self._play(4)
+        self.assertEqual(self._path_of(2), playing.path)
+        self.assertEqual(4, self.model.get_playing_index())
+        self._forget_calls()
+
+        self.presenter._on_remove_tracks([1])
+
+        self.assertEqual([self._path_of(i) for i in (1, 2, 3)], self._file_paths())
+        position = self.queue.get_current_position()
+        self.assertEqual(3, position.display_index,
+                         'the highlight did not follow the song to its new row')
+        surviving = self.queue.get_display_entries()[position.display_index]
+        self.assertFalse(surviving.is_folder,
+                         'the re-pin landed on a folder row: the playing track is '
+                         'not a folder, and main_presenter.py:346 exists for this')
+        self.assertEqual(self._path_of(2), surviving.full_path)
+        self.assertEqual(3, self.model.get_playing_index(),
+                         'the view highlight and the queue position disagree')
+        self.assertEqual(self._path_of(2), self.queue.get_current_track().path,
+                         'R8: a stale node index reads another song after a deletion')
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
 class QueuePositionAfterRemovalCharacterizationTest(unittest.TestCase):
     """R8 as a **fact about the queue**, not as endorsed behaviour.
 

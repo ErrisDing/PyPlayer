@@ -686,8 +686,21 @@ class ContextMenuTargetTest(unittest.TestCase):
                          'the selection must survive a stray right-click untouched')
 
     def test_right_click_on_the_header_strip_does_not_open_menu(self):
-        """The header is blank space too (spec §4.3), in the outer widget's space."""
+        """The header is blank space too (spec §4.3), in the outer widget's space.
+
+        Three claims, and the first is what makes the other two mean anything. The
+        event is aimed at the header ``QLabel``, so it only reaches
+        :meth:`PlaylistView.contextMenuEvent` if Qt propagates it upstairs -- and
+        ``shown == 0`` / ``emitted == []`` hold **identically** when the event never
+        arrives at all. The wrapper below therefore counts the handler entries and
+        records what the handler's own lookup resolves that point to, so the negatives
+        below say "the handler ran and found no row", not "no handler ran".
+        """
+        from unittest import mock
+
         from PyQt6.QtWidgets import QLabel
+
+        from view.widgets.playlist_view import PlaylistView
 
         header = self.view.findChild(QLabel, 'playlistHeader')
         point = header.geometry().center()
@@ -695,8 +708,24 @@ class ContextMenuTargetTest(unittest.TestCase):
                         'the probe point must sit in the header strip')
         self._select(0, 2)
 
-        snapshot = self._right_click(header, point)
+        resolutions = []
+        original = PlaylistView.contextMenuEvent
 
+        def counting(self, event):
+            # The handler's own expression, on the handler's own coordinate source:
+            # recording it here is a read of what the shipped line decides, not of a
+            # second lookup this test invented.
+            resolutions.append(self.display_index_at(event.pos(), self))
+            return original(self, event)
+
+        with mock.patch.object(PlaylistView, 'contextMenuEvent', counting):
+            snapshot = self._right_click(header, point)
+
+        self.assertEqual([-1], resolutions,
+                         'the header-aimed event never reached contextMenuEvent, so '
+                         'the assertions below would also be satisfied by a handler '
+                         'that does not exist -- and -1 is the resolution that has to '
+                         'be the reason nothing happened')
         self.assertEqual(0, snapshot['shown'],
                          'a point over the header resolves to no row, so the menu '
                          'stays closed -- that is what display_index_at(pos, self) '
