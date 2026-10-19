@@ -72,8 +72,8 @@ mechanics rather than about colour:
 ``REQUIRED_OBJECT_NAMES`` is *not* touched by this task, so the objectName/QSS
 pair is asserted here: ``tests/test_view_structure.py::
 test_every_required_object_name_exists`` walks the live ``MainWindow`` tree, and
-the sidebar only enters it in Task 7 (same ruling Task 3 recorded for
-``#actionRail``).
+the sidebar only enters it in batch 2's Task 7 (same ruling batch 2's Task 3
+recorded for ``#actionRail``).
 
 Run with an offscreen Qt platform:
     QT_QPA_PLATFORM=offscreen python -m unittest tests.test_library_sidebar -v
@@ -1226,8 +1226,11 @@ class LibrarySidebarMainWindowTest(unittest.TestCase):
                          'a stripe of the playlist shows between the rail and the '
                          'panel -- the gap spec §1 criterion 7 names')
 
-        # The width follows the same rule: clamped by the parent alone, and it
-        # still cannot overhang the window it floats in.
+        # The width follows the same rule: clamped by the parent alone. Of the three
+        # claims below only the first is a live guard here -- the window's own
+        # 800x500 minimum keeps this parent above 744px while SIDEBAR_WIDTH is 240,
+        # so the two overhang bounds are boundary declarations: they fire only if the
+        # minimum ever drops below SIDEBAR_WIDTH + RAIL_WIDTH.
         self.assertEqual(min(SIDEBAR_WIDTH, parent.width()), sidebar.width(),
                          'the panel width is not clamped by its parent')
         self.assertLessEqual(sidebar.x() + sidebar.width(), parent.width(),

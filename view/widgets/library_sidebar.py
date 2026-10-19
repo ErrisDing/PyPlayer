@@ -446,10 +446,12 @@ class LibrarySidebar(QFrame):
         to enshrine. The contract is therefore:
 
         * ``x = 0``, width ``min(SIDEBAR_WIDTH, parent.width())``;
-        * the ``max(0, ...)`` floor stays, because a pathological parent must not
-          produce a negative width (Qt would take that as "use the size hint", i.e.
-          a panel wider than the window -- the exact overflow audit item B3 exists
-          to remove);
+        * the ``max(0, ...)`` floor is **carried over from batch 2 and is now dead
+          arithmetic**: it was load-bearing only while the term read
+          ``parent.width() - RAIL_WIDTH``, and ``QWidget.width()`` is never negative
+          on its own. It stays because the plan mandates preserving it, not because
+          anything can reach it; delete it together with this bullet if the clamp is
+          ever rewritten.
         * ``y`` and the height keep the batch-2 arithmetic. Neither ever involved
           the rail: the height is capped by the parent so the list always scrolls
           internally instead of running past the window.
@@ -465,9 +467,12 @@ class LibrarySidebar(QFrame):
         width = min(SIDEBAR_WIDTH, max(0, parent.width()))
         available = max(_MIN_PANEL_HEIGHT, parent.height() - 2 * SPACE_2)
         height = min(self._preferred_height(), available, parent.height())
-        # The parent's origin, not an inset from it: the clamp above keeps the
-        # right edge inside the parent, and a parent narrower than the rail is no
-        # worse here than anywhere else -- insetting would only re-add the offset.
+        # The parent's origin, not an inset from it: insetting would re-add the very
+        # offset this method exists to remove. The clamp above keeps the right edge
+        # inside the parent; below ``RAIL_WIDTH`` of parent width the panel simply
+        # goes full-bleed, which batch 2 did not do (it collapsed to width 0 at
+        # x == parent width) -- a difference no shipped window can reach, since the
+        # window's own 800px minimum keeps this parent above 744.
         self.setGeometry(0, SPACE_2, width, height)
 
     def _preferred_height(self) -> int:
