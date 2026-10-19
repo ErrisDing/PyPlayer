@@ -130,7 +130,7 @@ Run: `PY -m unittest tests.test_playlist_context_menu -v` → Expected: FAIL（�
 
 两份 locale 各加 `ctx.play`、`ctx.pause`、`ctx.remove`、`ctx.remove_count`（`移除 {count} 项` / `Remove {count} items`）、`ctx.clear_playlist`。
 
-裁定 R5（2026-10-20，控制器核查后定，本步即计划 Step 2 预留的「改用 `ctx.` 前缀」分支）：不用 `menu.*`。`menu.` 是批次 2 拆掉 `QMenuBar` 后遗留的菜单栏文案块（`main.zh_CN.properties:63-75` 共 13 键），全仓只剩 `menu.exit` 一个消费者（`view/main_window.py:147`），其余 12 键是待清理的死文案。把新的右键文案塞进同一前缀，会让批次 2 遗留的退役键清理从「整块删除」退化成「逐键甄别」；`ctx.` 也与既有的按控件命名前缀（`rail.*`、`sidebar.*`）一致。测试里的 key 同步用 `ctx.`。
+裁定 R5（2026-10-20，控制器核查后定，本步即计划 Step 2 预留的「改用 `ctx.` 前缀」分支）：不用 `menu.*`。`menu.` 是批次 2 拆掉 `QMenuBar` 后遗留的菜单栏文案块（`main.zh_CN.properties:63-75` 共 13 键），全仓只剩 `menu.exit` 一个消费者（`view/main_window.py:232`，批次 3 的行号，撰写本裁定时是 :147），其余 12 键是待清理的死文案。把新的右键文案塞进同一前缀，会让批次 2 遗留的退役键清理从「整块删除」退化成「逐键甄别」；`ctx.` 也与既有的按控件命名前缀（`rail.*`、`sidebar.*`）一致。测试里的 key 同步用 `ctx.`。
 
 - [ ] **Step 3: 实现 `build_playlist_menu`**
 
@@ -308,7 +308,7 @@ git commit -m "feat(presenter): 批量移除按索引降序执行，播放取选
 - ~~`test_ctrl_a_selects_all`~~ → 实作为 `test_ctrl_a_is_left_to_qt_native_select_all`（R11 附带要求 8：仓库没实现 Ctrl+A，是 Qt 原生 `selectAll`）。
 - `test_ctrl_up_down_trigger_prev_next`：`Ctrl+↑` → `prev_track_requested`，`Ctrl+↓` → `next_track_requested`。
 - `test_plain_up_down_still_navigates_the_list`（判据 5）：裸 `↑`/`↓` 改变 `currentRow`，且**不**触发 prev/next。
-- `test_shortcuts_are_owned_by_the_main_window`：**裁定 R10（2026-10-20，源自 Task 1 审查的遗留洞）：必须有一条测试证明快捷键**抢在焦点控件之前**消费了按键。** Task 1 实测裸 `Space` 会推进当前行、把选区替换成那一行，而 `Ctrl+Space` 命中同一个内置 handler；它的探针测的是 `QListView.keyPressEvent` 本身（`app.sendEvent` 直投，绕开窗口级 shortcut 派发），**对 Task 6 绑什么键、是否消费按键毫无约束力**——也就是说 Task 1 的红线目前只活在 spec 的文字里。要求：向 `PlaylistView` 的**焦点控件**投按键（不是投给 MainWindow，也不是直接调 QAction），断言 ① 播放/暂停信号 emit 恰好一次，② `selected_display_indices()` 与当前行**一字未动**。少了 ②，「快捷键与列表导航双触发」这个形状在本仓测不出来，而它正是 R4 当初要避免的事。
+- `test_shortcuts_are_owned_by_the_main_window`：**裁定 R10（2026-10-20，源自 Task 1 审查的遗留洞）：必须有一条测试证明快捷键**抢在焦点控件之前**消费了按键。** Task 1 实测裸 `Space` 会推进当前行、把选区替换成那一行，而 `Ctrl+Space` 命中同一个内置 handler；它**对 Task 6 绑什么键、是否消费按键毫无约束力**，原因不是投递方式——Task 6 修复轮推翻并纠正了控制器原先写的那句「`app.sendEvent` 直投会绕开窗口级 shortcut 派发」：实测投给焦点控件的 `QKeyEvent` **照样**命中窗口级 QAction（本批的 R10 用例与 `tests/test_view_structure.py::_press_shortcut` 走的都是这条路）。真正的原因是**当时仓库里根本没有任何绑定**，所以那次探针只能证明列表自己吃不吃这个键。红线因此目前只活在 spec 的文字里。要求：向 `PlaylistView` 的**焦点控件**投按键（不是投给 MainWindow，也不是直接调 QAction），断言 ① 播放/暂停信号 emit 恰好一次，② `selected_display_indices()` 与当前行**一字未动**。少了 ②，「快捷键与列表导航双触发」这个形状在本仓测不出来，而它正是 R4 当初要避免的事。
 
 `test_shortcuts_are_owned_by_the_main_window`：
 Run: `PY -m unittest tests.test_playlist_shortcuts -v` → Expected: FAIL。
