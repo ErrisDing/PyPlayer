@@ -23,8 +23,12 @@ them:
      included, because a prose pointer at a file that no longer exists is the same
      stale claim one layer further down.
 
-``context_menu_requested`` is the batch-3 right-click interface: it is declared
-but never emitted on purpose, so it must survive this cleanup.
+``context_menu_requested`` is batch 3's right-click observation hook. The reason it
+gives is no longer batch 1's: it is **emitted** (``PlaylistView.contextMenuEvent``
+since Task 3) and has **no production slot**, deliberately -- it is the automated
+witness that a right-click routed through the handler at all, and its two listeners
+are ``tests/test_playlist_selection.py`` and ``tests/tools/render_matrix.py``. It
+must survive this cleanup for that reason, not because it is un-emitted.
 
 The dead-code asserts are pure Python; the path test needs a QApplication,
 hence the skipUnless guard on both classes.
@@ -204,7 +208,16 @@ class DeadCodeRemovedTest(unittest.TestCase):
         )
 
     def test_context_menu_signal_survives(self):
-        """Batch 3 owns context_menu_requested; it must not be deleted here."""
+        """Batch 3 owns context_menu_requested; it must not be deleted here.
+
+        Batch 1's reason ("declared, never emitted, batch 3 will own it") is stale:
+        Task 3 wired the emit, and the whole-branch review confirmed by grep that no
+        production code connects to it. It survives for the *current* reason -- it is
+        the observation hook that proves a right-click reached
+        ``PlaylistView.contextMenuEvent``, read by ``tests/test_playlist_selection.py``
+        and ``tests/tools/render_matrix.py`` -- and ``PlaylistView``'s own signal
+        comment states the no-production-slot fact rather than leaving it implied.
+        """
         from view.widgets.playlist_view import PlaylistView
 
         self.assertTrue(

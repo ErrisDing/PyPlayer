@@ -784,8 +784,11 @@ class ContextMenuTargetTest(unittest.TestCase):
     def test_context_menu_requested_emitted(self):
         """The signal batch 1 declared and nobody ever emitted now has a producer.
 
-        Payload is ``targets[0]`` plus the live event, so a listener can place a
-        panel at the cursor without re-deriving the row.
+        Payload is ``targets[0]`` plus the live event. With a one-row selection the
+        two coincide, so this test only pins that one popup reports one request; what
+        ``targets[0]`` means for a batch is
+        :meth:`test_context_menu_requested_payload_is_the_batch_minimum`, and who may
+        listen at all is :meth:`test_context_menu_requested_has_no_production_consumer`.
         """
         self._select(2)
         snapshot = self._right_click_row(2)
@@ -793,6 +796,83 @@ class ContextMenuTargetTest(unittest.TestCase):
         self.assertEqual(['context_menu_requested'], self._names())
         self.assertEqual(2, dict(self.emitted)['context_menu_requested'])
         self.assertEqual(1, snapshot['shown'], 'one popup, one request')
+
+    def test_context_menu_requested_payload_is_the_batch_minimum(self):
+        """The payload names the batch, not the cursor (spec §4.3's inside rule).
+
+        A cursor that is already inside the selection keeps the selection, so
+        ``targets`` is the whole batch and ``targets[0]`` is its **smallest display
+        index**. Here the press is on row 4 of the batch [1, 3, 4]: an implementation
+        that emitted the row the user pointed at would report ``4`` here and the
+        comment at ``PlaylistView.contextMenuEvent`` would be the only thing saying
+        otherwise. ``tests/tools/render_matrix.py`` pins the same shape independently.
+        """
+        self._select(1, 3, 4)
+
+        self._right_click_row(4)
+
+        self.assertEqual(['context_menu_requested'], self._names())
+        self.assertEqual(1, dict(self.emitted)['context_menu_requested'],
+                         'a right-click inside a batch reports the batch minimum, '
+                         'not the cursor row')
+        self.assertEqual([1, 3, 4], self.view.selected_display_indices(),
+                         'and the batch itself must be the one the menu was built for')
+
+    def test_context_menu_requested_has_no_production_consumer(self):
+        """The hook is observation-only, and that is now a checked claim (ruling R9).
+
+        R9's defect shape is a signal that is "emitted and connected, landing
+        nowhere, all green". ``PlaylistView`` now says in its own comment that this
+        one is a deliberate observation hook with no production slot -- so the two
+        ways it could rot are both machine-checked here:
+
+        * a production slot appears and the comment goes stale (or a second,
+          undocumented consumer starts acting on a payload whose shape this class
+          pins for observers only);
+        * the automated listeners stop connecting, and the signal becomes emitted
+          for nobody -- the shape ``tests/test_dead_code_removed.py`` pins its
+          survival against.
+
+        Scanned as text because the consumers are in another package: an import-time
+        graph walk would need every module imported, and a ``getattr``-style indirect
+        connect is already covered -- the scan looks for the signal *name* anywhere
+        in a production file and reports what it finds.
+        """
+        root = Path(__file__).resolve().parent.parent
+        production_dirs = ('core', 'presenter', 'service', 'view', 'tui')
+        production_files = [root / 'main.py']
+        for name in production_dirs:
+            production_files.extend(sorted((root / name).rglob('*.py')))
+
+        # The two lines that may *execute* on the signal in production are its
+        # declaration and its emit; a comment may name it (that is the record), but
+        # anything else -- above all a ``connect`` -- is a new consumer.
+        allowed = ('context_menu_requested = pyqtSignal',
+                   'self.context_menu_requested.emit(')
+        unexpected = []
+        for path in production_files:
+            text = path.read_text(encoding='utf-8', errors='replace')
+            for number, line in enumerate(text.splitlines(), 1):
+                if 'context_menu_requested' not in line:
+                    continue
+                if line.lstrip().startswith('#'):
+                    continue
+                if not any(marker in line for marker in allowed):
+                    unexpected.append(
+                        f'{path.relative_to(root)}:{number}: {line.strip()}')
+
+        self.assertEqual([], unexpected,
+                         'a production file consumes context_menu_requested: the '
+                         '"observation hook, no slot" record in PlaylistView and in '
+                         'tests/test_dead_code_removed.py must be rewritten first')
+
+        # And the recorded listeners really are listening, or the hook observes nothing.
+        for listener in (Path(__file__).resolve(),
+                         root / 'tests' / 'tools' / 'render_matrix.py'):
+            self.assertIn('context_menu_requested.connect',
+                          listener.read_text(encoding='utf-8', errors='replace'),
+                          f'{listener.name} no longer connects to the hook, so the '
+                          'right-click routing it exists to witness is unmeasured')
 
     def test_play_and_pause_share_the_play_id(self):
         """The toggle reads Pause over the playing row but stays ``MENU_PLAY``.

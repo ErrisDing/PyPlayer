@@ -445,13 +445,15 @@ class LibrarySidebar(QFrame):
         narrower than the parent -- which is the defect this method's geometry used
         to enshrine. The contract is therefore:
 
-        * ``x = 0``, width ``min(SIDEBAR_WIDTH, parent.width())``;
-        * the ``max(0, ...)`` floor is **carried over from batch 2 and is now dead
-          arithmetic**: it was load-bearing only while the term read
-          ``parent.width() - RAIL_WIDTH``, and ``QWidget.width()`` is never negative
-          on its own. It stays because the plan mandates preserving it, not because
-          anything can reach it; delete it together with this bullet if the clamp is
-          ever rewritten.
+        * ``x = 0``, width ``min(SIDEBAR_WIDTH, parent.width())`` -- the clamp exactly
+          as the plan and the task-7 brief specify it, **with no floor**. The
+          ``max(0, ...)`` this method carried from batch 2 was load-bearing only while
+          the term read ``parent.width() - RAIL_WIDTH``; a bare ``QWidget.width()`` is
+          never negative, so it guarded a branch nothing can reach. It used to be
+          justified here as plan-mandated, which the whole-branch review checked and
+          disproved (``docs/superpowers/plans/2026-10-20-ui-batch3-interaction.md:369``
+          and ``task-7-brief.md:22`` both spell the width without a floor), and the
+          dead term has been deleted with this bullet rewritten to say the same.
         * ``y`` and the height keep the batch-2 arithmetic. Neither ever involved
           the rail: the height is capped by the parent so the list always scrolls
           internally instead of running past the window.
@@ -464,7 +466,7 @@ class LibrarySidebar(QFrame):
         parent = self.parentWidget()
         if parent is None:
             return
-        width = min(SIDEBAR_WIDTH, max(0, parent.width()))
+        width = min(SIDEBAR_WIDTH, parent.width())
         available = max(_MIN_PANEL_HEIGHT, parent.height() - 2 * SPACE_2)
         height = min(self._preferred_height(), available, parent.height())
         # The parent's origin, not an inset from it: insetting would re-add the very

@@ -64,10 +64,21 @@ class PlaylistView(QWidget):
 
     # Signals
     track_double_clicked = pyqtSignal(int)       # display index
-    # 批次 3：右键菜单接口。Batch 1 declared this one and nothing emitted it until
-    # Task 3 wired the right-click; ``tests/test_dead_code_removed.py`` pins that it
-    # must survive cleanup.
-    context_menu_requested = pyqtSignal(int, object)  # index, event
+    # 批次 3：右键菜单接口。**A deliberate observation hook, with no production slot.**
+    # Batch 1 declared it, Task 3 wired the emit, and nothing in ``view/``,
+    # ``presenter/`` or ``service/`` connects to it -- verified by grep, not assumed.
+    # Ruling R9 calls "emitted and connected, landing nowhere, all green" a defect, so
+    # the absence is stated here instead of left to be rediscovered, and it is *not*
+    # an oversight to close: the signal is this batch's witness that a right-click
+    # routed through ``contextMenuEvent`` at all, and its payload is the only read of
+    # ``targets[0]`` available to the two automated listeners --
+    # ``tests/test_playlist_selection.py`` (``ContextMenuTargetTest``, which records
+    # every emission in order) and ``tests/tools/render_matrix.py`` (the menu frame).
+    # What production *acts* on is the dispatch that follows the popup:
+    # ``play_requested`` / ``remove_requested`` / ``clear_playlist_requested``.
+    # Payload is the smallest selected display index, not the row under the cursor;
+    # see the emit comment in :meth:`contextMenuEvent`.
+    context_menu_requested = pyqtSignal(int, object)  # display index, event
     # Declared here, in the task that first emits them (ruling R1): a signal nobody
     # emits is dead code, and the dead-signal census that enforces that is a batch 1
     # asset. ``play_requested`` / ``remove_requested`` carry ascending *display*
@@ -267,10 +278,17 @@ class PlaylistView(QWidget):
             return
 
         # Emitted before the popup rather than after the dispatch: this names the
-        # *request*, and its payload is ``targets[0]`` plus the live event -- both
-        # are only guaranteed to still describe what the user pointed at while
-        # nothing has acted on them yet. Once an action signal has run, the row can
-        # be gone (Task 5's removal) and the event is what the dispatch consumed.
+        # *request*, and both halves of its payload still describe the state the menu
+        # was built from -- nothing has acted on the selection or the rows yet. Once an
+        # action signal has run, the row can be gone (Task 5's removal) and the event is
+        # what the dispatch consumed.
+        # ``targets[0]`` is NOT "the row the user pointed at". Under the Explorer rule
+        # above, a cursor inside an existing batch keeps the batch, so ``targets`` is the
+        # whole selection and ``targets[0]`` is its **smallest display index**; the cursor
+        # row is ``row``, still on this stack, and is deliberately not the payload --
+        # pointing at one row of a batch requests that batch, so the minimum is the
+        # value that describes what the menu acted on. ``tests/tools/render_matrix.py``
+        # already measures this shape and pins ``min(BATCH_ROWS)``.
         self.context_menu_requested.emit(targets[0], event)
 
         try:
