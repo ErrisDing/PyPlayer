@@ -315,21 +315,32 @@ class MainPresenter(QObject):
             return
 
         # Identity first: after the first deletion the queue cannot be trusted to
-        # say what was playing (R8).
+        # say what was playing (R8). The display index is captured beside it
+        # because it is the only *exact* answer to "was the playing row in this
+        # batch" -- a path cannot answer that when the same file is queued twice.
         playing = self._queue.get_current_track()
         playing_path = playing.path if playing is not None else None
+        playing_idx = self._queue.get_current_position().display_index
 
+        removed = 0
         for display_idx in targets:
-            self._queue.remove_at_display_index(display_idx)
+            if self._queue.remove_at_display_index(display_idx):
+                removed += 1
+        if not removed:
+            # Every index was invalid, so the list is unchanged and nothing may
+            # move: no re-pin, and no stop that the user never asked for.
+            return
 
         entries = self._queue.get_display_entries()
-        if playing_path is not None:
+        if playing_path is not None and playing_idx >= 0 and playing_idx not in targets:
             surviving = next((i for i, entry in enumerate(entries)
                               if not entry.is_folder
                               and entry.full_path == playing_path), -1)
             if surviving >= 0:
                 # Same song, new row. Returns the track, but this is not a request
-                # to play it: the engine is already playing it.
+                # to play it: the engine is already playing it. Among two queued
+                # copies of one path this re-pins the first -- the audio is the
+                # same, exact identity of the copy is batch 5's to settle.
                 self._queue.set_position_by_display_index(surviving)
                 return
 

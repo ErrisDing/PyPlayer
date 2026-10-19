@@ -298,6 +298,70 @@ class BatchRemovalTest(PlaylistActionHarness, unittest.TestCase):
                         'the removed song must not keep playing from the engine')
         self.assertFalse(self.playback.play.called,
                          'clearing after a removal must not start a substitute song')
+        # The "nothing is current" write is this handler's use of a fourth queue
+        # API (ruling R8 permits no others): pinning the exact arguments gives
+        # batch 5 a target when it deletes the compensation.
+        self.assertIn(('set_current_position', -1, -1), self.queue.calls,
+                      'the reset of the current position is what keeps the stale '
+                      'node index from naming another song')
+
+    def test_removing_the_playing_copy_stops_even_when_another_copy_is_queued(self):
+        """Two queued copies of one path: identity by path alone cannot say which went.
+
+        The shape that makes the display index, not the path, the authority here.
+        Removing the *playing* row while an identical path sits elsewhere in the
+        list must stop: the row the user deleted was the one that was playing, and
+        continuing would mean the strip and the highlight describe a row nobody
+        asked to keep. R8's path re-pin, used alone, would read the surviving copy
+        as "same song, new row" and keep playing.
+        """
+        from core.library_manager import Track
+
+        dup = f'{LIB}/duplicate.mp3'
+        self.queue.build_from_tracks([
+            Track(path=f'{LIB}/a.mp3', title='A'),
+            Track(path=dup, title='B first copy'),
+            Track(path=dup, title='B second copy'),
+            Track(path=f'{LIB}/c.mp3', title='C'),
+        ])
+        self.assertEqual(4, len(self.queue.get_display_entries()))
+        self._play(1)
+        self._forget_calls()
+
+        self.presenter._on_remove_tracks([1])
+
+        self.assertTrue(self.playback.stop.called,
+                        'the row that was playing was deleted; a duplicate of the '
+                        'same path elsewhere must not be read as its survivor')
+        self.assertEqual(-1, self.model.get_playing_index(),
+                         'no row may hold the highlight after its own row was deleted')
+        self.assertNotIn(('set_position', 1), self.queue.calls,
+                         'the handler re-pinned the duplicate copy instead of resetting')
+
+    def test_removing_only_invalid_indices_changes_nothing(self):
+        """A batch whose every index is out of range must not stop or re-pin.
+
+        ``remove_at_display_index`` answers ``False`` for an out-of-range row and
+        the queue is untouched, so the removal path must stop there. Before this
+        guard the handler fell through to the reset branch on an empty result and
+        silenced playback the user never asked to stop.
+        """
+        self._load(4)
+        self._play(1)
+        self._forget_calls()
+
+        self.presenter._on_remove_tracks([9, 99])
+
+        # The indices do reach the queue -- that is where out-of-range is decided,
+        # and it answers False. What must not happen is any *consequence*.
+        self.assertEqual([99, 9], self.queue.removals(),
+                         'the handler sorts descending before asking the queue')
+        self.assertEqual(4, len(self.queue.get_display_entries()),
+                         'a no-op removal changed the list')
+        self.assertFalse(self.playback.stop.called,
+                         'nothing was deleted, so playback must not stop')
+        self.assertNotIn(('set_current_position', -1, -1), self.queue.calls,
+                         'the position was reset although the list did not change')
 
     def test_removing_a_row_above_the_playing_row_keeps_the_same_song_playing(self):
         """Review Focus 1 / R8, shape two: a row *above* the playing one goes.

@@ -263,7 +263,7 @@ git commit -m "feat(view): 列表行 hover 反馈，优先级低于播放与选�
 
 `tests/test_playlist_actions.py`（真 `MainWindow` + 真 `QueueService` + 假播放服务，沿用 `tests/test_presenter_status.py` 的装配）：
 - `test_interleaved_batch_removal_leaves_exactly_the_complement`（Review Focus 2）：7 条，移除 `[1,3,5]`，断言剩余显示索引对应原 `{0,2,4,6}` 的曲目路径。
-- `test_removing_the_playing_track_does_not_silently_point_at_another_song`（Review Focus 1）：播放索引 3，移除含 3 的 `[2,3,4]`，断言 `NowPlayingStrip` 的标题未变、且后续高亮不指向任何已删曲目。
+- `test_removing_the_playing_track_does_not_silently_point_at_another_song`（Review Focus 1）：播放索引 3，移除含 3 的 `[2,3,4]`，断言 `NowPlayingStrip` **已清空**且无任何行带播放高亮。原稿此处写「断言标题未变」，与 R8 互斥：歌已被删，唯一能让标题「未变」的实现就是继续标题着一首不存在的曲目，正是 spec:110 点名的最危险形状（Task 5 审查裁定，`tests/test_playlist_actions.py` 的用例文档已把这层理由写进测试自身）。「标题未变」这条语义归 `test_removing_a_row_above_the_playing_row_keeps_the_same_song_playing`——那里歌确实还在。
 - `test_removal_is_descending_order`：用一个记录调用顺序的假队列，断言传给 `remove_at_display_index` 的索引严格递减。
 - `test_empty_selection_does_not_call_the_queue`：`_on_remove_tracks([])` → 队列方法零调用。
 - `test_play_tracks_uses_lowest_display_index`：`_on_play_tracks([4,1,2])` → 播的是索引 1。
