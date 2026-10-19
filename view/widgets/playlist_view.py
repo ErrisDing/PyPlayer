@@ -334,6 +334,45 @@ class PlaylistView(QWidget):
         playing = self._model.get_playing_index()
         return playing >= 0 and playing in targets
 
+    # -- keyboard requests (batch 3, Task 6) -------------------------------
+
+    def request_play_selection(self) -> None:
+        """Emit ``play_requested`` for the selection the way ``Enter`` means it.
+
+        Called by ``MainWindow``'s ``Enter`` binding, which is why it lives here and
+        not in the window: the selection's meaning is this widget's to decide (plan
+        Architecture -- 选择与索引解析留在 `PlaylistView`), and routing the keyboard
+        through the same signal the context menu emits gives the two entries one
+        forward, one presenter handler and one empty-selection rule.
+
+        The payload is a **one-element** list holding the smallest selected display
+        index: spec §5 pins ``Enter`` on that row, the same one a double-click on the
+        batch starts from. The menu's Play entry hands over the whole batch and
+        ``MainPresenter._on_play_tracks`` reduces it with the same ``min`` (Task 5),
+        so the two spellings of the payload cannot start two different songs.
+
+        An empty selection emits nothing -- spec §7 puts the "no rows, no request"
+        rule here rather than in a presenter loop that would merely do nothing.
+        """
+        indices = self.selected_display_indices()
+        if not indices:
+            return
+        self.play_requested.emit([min(indices)])
+
+    def request_remove_selection(self) -> None:
+        """Emit ``remove_requested`` for the whole selection, ascending.
+
+        ``MainWindow``'s ``Delete`` binding calls this. Same no-empty rule as
+        :meth:`request_play_selection`, and the batch -- not one row -- is the point:
+        the removal is multi-row by design, and the presenter sorts it into
+        descending order itself (spec §4.2), so this layer must not re-order anything
+        either (the ``remove_requested`` contract from Task 1).
+        """
+        indices = self.selected_display_indices()
+        if not indices:
+            return
+        self.remove_requested.emit(indices)
+
     def clear(self) -> None:
         """Clear the playlist."""
         self._model.clear()

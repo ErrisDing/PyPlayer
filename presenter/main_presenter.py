@@ -92,6 +92,15 @@ class MainPresenter(QObject):
 
         # Playlist interactions
         self._view.track_double_clicked.connect(self._on_track_double_clicked)
+        # Batch 3, Task 6: the two batch handlers of Task 5 finally get their caller,
+        # plus the clear landing ruling R9 asked for (``clear_playlist_requested`` has
+        # had an emitter since Task 3 and, until this line, nowhere to go). The payloads
+        # arrive ascending and deduplicated from ``PlaylistView``; neither forward
+        # re-sorts them, and neither receives an empty list (spec §7 is enforced in the
+        # view *and* at the top of both handlers).
+        self._view.play_tracks_requested.connect(self._on_play_tracks)
+        self._view.remove_tracks_requested.connect(self._on_remove_tracks)
+        self._view.clear_playlist_requested.connect(self._on_clear_playlist)
 
         # Library management. ``add_library_requested`` and
         # ``manage_libraries_requested`` both come from the floating panel's footer
@@ -350,6 +359,31 @@ class MainPresenter(QObject):
             self._queue.set_current_position(-1, -1)
         else:
             self._queue.clear()
+        self._on_stop()
+
+    @pyqtSlot()
+    def _on_clear_playlist(self) -> None:
+        """清空播放列表: the queue goes, and playback goes with it (ruling R9).
+
+        The menu entry has emitted ``PlaylistView.clear_playlist_requested`` since
+        Task 3 and this window has forwarded it since Task 6; before this slot the
+        route ended in nothing, which is exactly batch 2's inert-shortcut shape -- a
+        signal emitted *and* connected still does no work if no slot sits at the end.
+
+        Two calls, in this order, both existing API (本批次不改队列契约):
+
+        * :meth:`QueueService.clear` is the only way to put ``PlaybackPosition`` back
+          to -1 (ruling R8: ``remove_at_display_index`` never touches it, and a stale
+          node index into an emptied list is one ``advance_to_next()`` away from
+          playing whatever the user queues next). It also emits ``display_changed([])``,
+          which empties the visible list through :meth:`_on_display_changed`.
+        * :meth:`_on_stop` is the same reset the removal path runs when the last row
+          goes -- engine stopped, position timer stopped, progress and
+          ``NowPlayingStrip`` cleared, playing highlight dropped. The first call alone
+          would leave a mock-free engine still headline-ing a track the queue no
+          longer has.
+        """
+        self._queue.clear()
         self._on_stop()
 
     @pyqtSlot(str)
