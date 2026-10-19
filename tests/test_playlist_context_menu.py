@@ -55,9 +55,12 @@ from tests.test_view_smoke import make_app
 
 SOURCE_PATH = ROOT / 'view' / 'widgets' / 'playlist_context_menu.py'
 
-# Quoted English literals the pre-i18n version of this widget used. A docstring
-# is not a quoted literal, so prose about the copy does not trip this.
-FORBIDDEN_LITERALS = ('"Play"', '"Remove"', '"Clear"')
+# The English labels the pre-i18n version of this widget used, in both quote
+# styles -- a scan that watched only double quotes would miss ``addAction('Play')``.
+# A docstring is not a quoted literal, so prose about the copy does not trip this,
+# and this is a list of known labels, not a detector for arbitrary English.
+FORBIDDEN_LITERALS = ('"Play"', '"Remove"', '"Clear"',
+                      "'Play'", "'Remove'", "'Clear'")
 
 
 def _labels(menu) -> list:
@@ -174,8 +177,11 @@ class PlaylistMenuBuildTest(unittest.TestCase):
         self.assertNotIn('{', remove.text())
 
     def test_every_action_carries_its_menu_id(self):
-        """data() across the actions is exactly MENU_IDS, and each is #menuItem."""
-        from view.widgets.playlist_context_menu import MENU_IDS
+        """data() is exactly MENU_IDS, in order; each is #menuItem; the menu has
+        the parent it was handed."""
+        from view.widgets.playlist_context_menu import (
+            MENU_CLEAR, MENU_IDS, MENU_PLAY, MENU_REMOVE,
+        )
 
         menu = self._menu([1, 2])
         actions = _real_actions(menu)
@@ -189,6 +195,22 @@ class PlaylistMenuBuildTest(unittest.TestCase):
             'the action count and MENU_IDS disagree: an id is duplicated or '
             'an action is unregistered',
         )
+        # Position, not just membership. Swapping the remove and clear ids leaves
+        # both the set and the count unchanged, and would have Task 3 batch-remove
+        # rows when the user asked to empty the playlist.
+        self.assertEqual(
+            [MENU_PLAY, MENU_REMOVE, MENU_CLEAR],
+            [action.data() for action in actions],
+            'each id must sit at its own position, not merely somewhere in the menu',
+        )
+
+        # Ownership, pinned rather than left to prose. This is what the lifecycle
+        # warning depends on: a parentless menu nobody keeps a reference to is gone
+        # after exec(), while a parented one survives until the parent dies and has
+        # to be deleted by whoever built it.
+        self.assertIs(menu.parent(), self.parent,
+                      'the menu must belong to the caller-supplied parent')
+
         for action in actions:
             self.assertEqual(
                 action.objectName(), 'menuItem',
@@ -200,7 +222,7 @@ class HardcodedLiteralScanTest(unittest.TestCase):
     """Source scan, no QApplication: the copy has to come from i18n."""
 
     def test_no_hardcoded_english_labels(self):
-        """The module builds its copy from i18n, never from an English literal."""
+        """The copy comes from i18n, never from one of the pre-i18n English labels."""
         source = SOURCE_PATH.read_text(encoding='utf-8')
         for literal in FORBIDDEN_LITERALS:
             hits = [

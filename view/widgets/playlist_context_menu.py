@@ -36,6 +36,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QMenu, QWidget
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -56,7 +57,7 @@ MENU_IDS: tuple[str, ...] = (MENU_PLAY, MENU_REMOVE, MENU_CLEAR)
 _ITEM_OBJECT_NAME = 'menuItem'
 
 
-def _add_item(menu: QMenu, label: str, menu_id: str):
+def _add_item(menu: QMenu, label: str, menu_id: str) -> QAction:
     """Append one entry carrying its id and the shared object name."""
     action = menu.addAction(label)
     action.setObjectName(_ITEM_OBJECT_NAME)
@@ -81,8 +82,7 @@ def build_playlist_menu(target_indices: list[int], target_is_playing: bool,
     Returns:
         The menu, or ``None`` when there is no target and therefore no menu.
     """
-    indices = list(target_indices)
-    if not indices:
+    if not target_indices:
         return None
 
     menu = QMenu(parent)
@@ -94,7 +94,7 @@ def build_playlist_menu(target_indices: list[int], target_is_playing: bool,
 
     # 2. Remove: the single-row copy for one row, the counted copy for a batch,
     # so a three-row target cannot read like it removes one track.
-    count = len(indices)
+    count = len(target_indices)
     remove_label = (i18n.get('ctx.remove') if count == 1
                     else i18n.get('ctx.remove_count', count=count))
     _add_item(menu, remove_label, MENU_REMOVE)

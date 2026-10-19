@@ -15,7 +15,7 @@
 - 解释器固定 `D:/PROGRAMMES/miniconda3/envs/dev_313/python.exe`（仓库 `.venv` **无 PyQt6**）。不安装任何包。
 - 测试框架 `unittest`，不引入 pytest。Qt 测试前置 `QT_QPA_PLATFORM=offscreen`。
 - **验收数字一律来自全量**：`cd /d/Codes/Python/PyPlayer && QT_QPA_PLATFORM=offscreen /d/PROGRAMMES/miniconda3/envs/dev_313/python.exe -m unittest discover -s tests -p "test_*.py"`。单模块或单子集跑出的绿**不作为验收证据**。批次 2 曾出现 agent 报「243 跑 1 失败」而全量实为 2 失败（`mock.patch` 用包限定名，discover 把测试文件注册成顶层模块，两个模块对象，patch 静默失效）。
-- 基线：`Ran 244 tests, FAILED (failures=1)`，唯一失败是 main 上既有的 `test_player.TestHierarchicalPlaylist.test_multiple_libraries_display`。每任务验收 = **不新增失败**。
+- 基线：批次 3 开工时 `Ran 244 tests, FAILED (failures=1)`，唯一失败是 main 上既有的 `test_player.TestHierarchicalPlaylist.test_multiple_libraries_display`。每任务验收 = **不新增失败**。**该数字随任务推进会变**：Task 1 后 250、Task 1 修复轮后 254、Task 2 后 260——派发词里以「不新增失败」为准，不要把这里写死的数字当作当前实测值。
 - 变异检查前先清陈旧字节码：`find . -name __pycache__ -not -path './.venv/*' -exec rm -rf {} +`。
 - **不得为 hover 或任何 item 状态新增 QSS 规则**。`PlaylistItemDelegate` 覆写 `paint()` 且不咨询 style，QSS 的 `::item` 规则从不渲染——批次 2 终审已因此抓到一条死规则。item 状态一律走 delegate。
 - 全仓 `setStyleSheet` 保持**恰好一处**：`view/theme_manager.py`。
@@ -165,6 +165,7 @@ git commit -m "feat(view): 播放列表右键菜单构建"
 - `test_right_click_on_empty_area_does_not_open_menu`（Review Focus 5）：右键空白区 → 未弹菜单、选区不变、`context_menu_requested` 未触发。
 - `test_menu_play_emits_play_requested` / `..._remove_emits_remove_requested` / `..._clear_emits_clear_playlist_requested`：触发对应动作后，断言收到的索引列表与目标一致。
 - `test_context_menu_requested_emitted`：`context_menu_requested` 至少 emit 一次（批次 1 起声明、从未 emit 的那个信号）。
+- `test_repeated_right_clicks_leave_no_menu_behind`（裁定 R7，**这条是 Task 2 唯一没能钉住的东西**）：对同一视图连开两次菜单后，断言 `view.findChildren(QMenu)` 不含仍在世的菜单（`0`，或至少计数不随开合增长）。`build_playlist_menu` 把菜单挂到调用方给的 parent 上（Task 2 已用 `assertIs(menu.parent(), parent)` 钉住），所以**每次右键新建就必须弹完即弃**；不建这条测试，「弹一次漏一个 `QMenu`」在批次 2 的守卫下是静默的。
 
 Run: `PY -m unittest tests.test_playlist_selection -v` → Expected: FAIL。
 
@@ -173,6 +174,8 @@ Run: `PY -m unittest tests.test_playlist_selection -v` → Expected: FAIL。
 顺序：`display_index_at(event.pos(), self)` → `-1` 则直接返回不发信号；否则按目标规则调整选区；`targets = selected_display_indices()`；`menu = build_playlist_menu(targets, self._is_playing_index_in(targets), self)`；`menu.exec(event.globalPosition().toPoint())`；按 `action.data()` 分派到三个信号，并 emit `context_menu_requested(targets[0], event)`。
 
 `display_index_at` 在 Task 1 修复轮改为**必须显式给出坐标来源控件**（`display_index_at(pos, widget)`，内部 `viewport().mapFrom(widget, pos)`）。理由：`_list_view` 上方还有一个 header，两个坐标空间差一个 header 高度；按 `event.pos()` 的原样传进去会让每个目标行整体上移一行，并把 header 当成真行弹菜单。**本任务不得省略第二个参数。**
+
+菜单生命周期（R7）：`exec()` 返回后必须让本次菜单消亡——`menu.deleteLater()` 后补一次 `processEvents()`，或整体改成一次性构建并复用。别指望 `tests/test_view_structure.py:414` 那条「主窗口活树内无 `QMenu`」兜底：它只构造一个全新 `MainWindow`、从不触发右键，因此看不见「每次右键挂一个、常驻不删」这种泄漏（Task 2 审查已实测确认）。判据就是上面那条新测试。
 
 先探针、后实现（本仓库不允许假设 Qt 行为）：`QAbstractItemView` 自己实现了 `contextMenuEvent`，右键落在列表上时**事件是否真的传到外层 `PlaylistView`** 取决于它 accept 还是 ignore。写一个临时脚本，对 `_list_view.viewport()` 与外层 `PlaylistView` 各打一次右键，打印两处 `contextMenuEvent` 是否被调用；据此决定钩子挂在哪一层（若子级吃掉，改挂 `_list_view` 并传 `viewport()` 作坐标来源）。脚本用完即删，不进仓库。
 
