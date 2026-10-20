@@ -139,7 +139,8 @@ class MetadataSweepTask(QRunnable):
     def __init__(self, full_path: str, size_bytes: int, modified_time: float,
                  generation: int,
                  extractor: Callable[[str], Optional[SongMetadata]],
-                 report: Callable[..., None]):
+                 report: Callable[..., None],
+                 is_current: Callable[[], bool]):
         super().__init__()
         self.full_path = full_path
         self.size_bytes = size_bytes
@@ -147,9 +148,28 @@ class MetadataSweepTask(QRunnable):
         self.generation = generation
         self._extractor = extractor
         self._report = report
+        self._is_current = is_current
 
     def run(self) -> None:
-        """Extract this one row; never let anything leave this thread."""
+        """Extract this one row; never let anything leave this thread.
+
+        The generation is checked **before** the extraction, not after it (ruling
+        B4-R21a). ``_deliver_sweep_row`` below is still the only thing that decides
+        whether a result is *used*; this check only decides whether the work is done
+        at all. Without it a superseded plan pays a full extraction per row and throws
+        every answer away -- ``refresh_all`` over k libraries of n rows each used to
+        cost ``(k-1) x n`` pure-waste extractions on the same pool the playing track
+        borrows. A task that starts while its generation is still live can still be
+        superseded halfway through, so this is an optimisation and never a second
+        defence: reading ``MetadataService._generation`` from a worker is a plain int
+        attribute read (atomic under the GIL), and the worst it can do is *not* skip.
+
+        No guard around the check itself: ``is_current`` is this module's own closure
+        over one attribute read, and an unreachable defensive branch is a branch no
+        test can ever take.
+        """
+        if not self._is_current():
+            return
         try:
             row = _row_of(self._extractor(self.full_path))
         except Exception:
@@ -219,10 +239,12 @@ class MetadataService(QObject):
         self._thread_pool = QThreadPool.globalInstance()
         self._extractor = extract_metadata if extractor is None else extractor
         # The sweep generation (spec 4.5, ruling B4-R13): one identity per
-        # ``start_sweep`` call and one per ``cancel_sweep``. Touched on the GUI
-        # thread only: a worker's result arrives through ``_sweep_row_ready``, which
-        # Qt delivers queued, so the staleness test runs where the rows are written
-        # and no lock is needed for either side of it.
+        # ``start_sweep`` call and one per ``cancel_sweep``. **Written** on the GUI
+        # thread only. A worker may *read* it -- ``MetadataSweepTask.run`` asks before
+        # it extracts, so a superseded plan stops paying for extraction (ruling
+        # B4-R21a) -- and that read needs no lock either: one attribute of a plain
+        # int, handed back or not, with the delivery gate below still the only place a
+        # result is decided.
         self._generation = 0
         self._sweep_on_row: Optional[Callable[..., None]] = None
         self._sweep_row_ready.connect(self._deliver_sweep_row)
@@ -294,8 +316,10 @@ class MetadataService(QObject):
         own work started, and the replaced plan's count could never reach its own N.
         One live callback is still the model: the newest ``start_sweep`` owns
         ``on_row``, and it is replaced rather than registered twice. Call this from the
-        GUI thread, like the service's other methods -- the generation and the callback
-        are read there and nowhere else, which is what keeps the whole thing lock-free.
+        GUI thread, like the service's other methods -- the callback is read there and
+        nowhere else, and the generation is *written* there and nowhere else, which is
+        what keeps the whole thing lock-free (a worker only ever reads one int, and only
+        to decide whether to bother extracting).
 
         No concurrency cap is added: the pool already bounds how many files are open
         at once, and a second bound would only delay a library switch showing up.
@@ -314,7 +338,11 @@ class MetadataService(QObject):
         for full_path, size_bytes, modified_time in checked:
             self._thread_pool.start(MetadataSweepTask(
                 full_path, size_bytes, modified_time, generation,
-                self._extractor, self._queue_sweep_row))
+                self._extractor, self._queue_sweep_row,
+                # The worker's own "is this plan still the live one?" question, read
+                # here rather than passed as the generation so the answer cannot be
+                # frozen at queueing time (ruling B4-R21a).
+                lambda: self._generation == generation))
         return generation
 
     def _queue_sweep_row(self, generation: int, full_path: str,

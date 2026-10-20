@@ -453,7 +453,10 @@ class LibraryScanner:
         library_name = Path(library_path).name
         previous = self._cache_manager.load_cache(library_path)
         held: Dict[str, Tuple[Dict[str, Any], int, float]] = {}
-        if previous:
+        # ``is not None``, not a truth test (ruling B4-R8) -- the same reason
+        # ``load_cache_entries`` below spells the check out: an ``Optional[LibraryCache]``
+        # must never collapse "an empty table" into "no cache".
+        if previous is not None:
             for cached in previous.files:
                 if cached.md is not None:
                     held[cached.path] = (cached.md, cached.size_bytes,
@@ -489,9 +492,16 @@ class LibraryScanner:
         A missing, unreadable or out-of-window cache file answers ``[]``: that is
         "nothing warm to start from", the same state as a first scan, and the sweep
         fills it. ``LibraryCacheManager.load_cache`` already reports its own failures.
+
+        ``is None``, not a truth test (ruling B4-R8): ``LibraryCache`` is a plain
+        dataclass today, so an empty ``files`` list must not be readable as "there is
+        no cache" the moment the class grows a ``__len__``. Same shape as
+        :meth:`update_cache_metadata` below.
         """
         cache = self._cache_manager.load_cache(directory)
-        return list(cache.files) if cache else []
+        if cache is None:
+            return []
+        return list(cache.files)
 
     def update_cache_metadata(self, directory: str,
                               updates: Dict[str, Tuple[Optional[Dict[str, Any]],

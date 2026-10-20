@@ -664,7 +664,12 @@ class MetadataSweepPayloadTest(_SweepTestBase):
         generation = service.start_sweep([TARGETS[0]], sink)
         service._thread_pool.start(MetadataSweepTask(
             Path(MP3), 9000, 900.5, generation, extractor,
-            service._queue_sweep_row))
+            service._queue_sweep_row,
+            # The task's own "still the live plan?" question (ruling B4-R21a). This
+            # caller built the task by hand, so it answers the question by hand: the
+            # generation above is still current, so the bad payload does reach the
+            # report step -- which is the half of the claim being tested.
+            lambda: service.current_generation() == generation))
 
         self._pump_until(lambda: len(sink.rows) == 1,
                          'the good row of the same generation never arrived',

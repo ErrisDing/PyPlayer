@@ -38,33 +38,44 @@ from core.library_manager import Track
 
 #: Rows the sweep may answer before the cache file is rewritten.
 #:
-#: Measured on this host through the repo's own paths by the one-shot probe kept at
-#: ``.superpowers/sdd/2026-10-20-ui-batch4-metadata-columns/in-flight/successor-task7/probe_metadata_batch.py``
-#: (never committed); the full numbers and the derivation are in ``task-7-report.md``.
-#: Samples are the repository's own real recording, re-encoded into each container:
+#: Measured on this host through the repository's own paths. The raw output, the probe
+#: and the derivation are recorded in ``task-7-report.md`` §6 (the probe itself is a
+#: one-shot and is deliberately not committed). Samples are the repository's own real
+#: recording, re-encoded into each container. Three costs make a sweep, and all three
+#: were measured -- the second one is the reason the first round's derivation had to be
+#: re-run:
 #:
-#: * extraction is **cheap and flat** -- medians of 0.13 ms (flac), 0.32 ms (mp3),
-#:   0.36 ms (mp3 carrying a 7 KB embedded cover) and 0.012 ms for a file no extractor
-#:   claims (wav, unknown suffix). The cover read that B4-R15 leaves in place costs
-#:   0.036 ms of that (0.125 -> 0.161 ms on the same flac). ogg/m4a were not measured:
-#:   this host has no encoder for either, and they cross the same mutagen open-and-parse
-#:   branch the two containers that were measured cross.
-#: * one write-back is **whole-file and on the GUI thread**: ``save_cache`` dumps the
-#:   entire document every call, and a flush is a ``load_cache`` plus a ``save_cache``
-#:   (exactly what ``update_cache_metadata`` does) -- 7.9 ms at 200 rows, 19.0 ms at
-#:   1000, 44.7 ms at 3000, 71.3 ms at 5000, i.e. about 14 us per entry once the fixed
+#: * **extraction** (pool thread, per file): medians of 0.129 ms (flac), 0.318 ms
+#:   (mp3), 0.358 ms (the same mp3 carrying a 7 KB embedded cover) and 0.013 ms for a
+#:   file no extractor claims (wav and an unknown suffix alike). The cover read
+#:   B4-R15 leaves in place costs +0.040 ms on the mp3 and +0.010 ms on the flac.
+#:   ogg/m4a were not measured: this host has no encoder for either, and they cross the
+#:   same mutagen open-and-parse branch the containers that were measured cross.
+#: * **the pre-write re-check** (GUI thread, one ``os.stat`` per dirty row, so one
+#:   batch worth per flush): 15.3 us a row -- 7.7 ms for a full batch of 500, and
+#:   76.7 ms for a 5000-row sweep *whatever* the batch size is.
+#: * **the write-back** (GUI thread, whole file): ``save_cache`` dumps the entire
+#:   document every call, and a flush is a ``load_cache`` plus a ``save_cache``
+#:   (exactly what ``update_cache_metadata`` does) -- 7.95 ms at 200 rows, 18.88 at
+#:   1000, 44.85 at 3000, 71.59 at 5000, i.e. about 14 us per entry once the fixed
 #:   cost is amortised.
 #:
 #: This number therefore trades JSON writing, not row latency: rows are repainted as they
 #: arrive whatever it is (``_on_metadata_row``), and the ``⋯`` marks are the sweep's
 #: visible progress. With the plan's draft value of 25, a 5000-row library pays 200
-#: flushes x 71 ms = 14.3 s of writing against 1.8 s of actual extraction (793% of it) --
-#: the O(n^2) shape spec §4.4 and §10 risk 2 exist to prevent. The data puts the floor
-#: anywhere at or above ~250 for writing to stay under extraction at that size (20
-#: flushes = 79%), and 500 leaves real headroom without giving up much durability: 10
-#: flushes = 0.71 s (40%) at 5000 rows, 2 = 38 ms (11%) at 1000, 1 = 7.9 ms (11%) at 200.
-#: What it gives up is granularity: a lost batch is at most 500 rows, and those rows are
-#: pending again after a restart, so re-extracting them costs 500 x 0.36 ms ~ 0.2 s.
+#: flushes x 71.6 ms = 14.3 s of writing against 1.79 s of actual extraction (799% of it,
+#: the O(n^2) shape spec §4.4 and §10 risk 2 exist to prevent); the stat walk is the same
+#: 76.7 ms in total at any batch size, so it rides along rather than deciding anything.
+#: Writing plus walk as a share of extraction puts the floor at B=250 (84.2% at 5000
+#: rows) and 500 leaves the headroom: 10 flushes = 715.9 + 76.7 = 44.2% of extraction at
+#: 5000 rows, 2 = 53.1 ms = 14.8% at 1000, 1 = 11.0 ms = 15.4% at 200. B=1000 would cut
+#: that to 24.2% and is refused by what it costs instead: one flush blocks the GUI for
+#: the write (71.6 ms at 5000 rows, set by the library size) *plus* the walk (B x 15.3 us,
+#: set by this constant), so 79.3 ms at 500 rather than 86.9 ms at 1000 -- the walk is
+#: the only term a bigger batch makes worse, and it is a tenth of a flush.
+#: What the batch gives up is granularity: a lost batch is at most 500 rows, and those
+#: rows are pending again after a restart, so re-extracting them costs
+#: 500 x 0.358 ms ~ 0.18 s.
 METADATA_WRITE_BATCH = 500
 
 
@@ -933,6 +944,15 @@ class MainPresenter(QObject):
           condition). ``start_sweep`` itself validates the whole list before queuing
           anything (ruling B4-R14) and *raises* in this thread when it refuses -- which
           is why the call sits inside the guard below rather than beside it.
+        * an empty plan is flushed *here*, because it is the one plan that can never be
+          flushed by ``_on_metadata_row``: with no targets there is no delivery, and the
+          closing write-back is keyed to "every target came back". Spec §4.1's invariant
+          is ``md`` missing ⟺ something is waiting to fetch it, so a library whose rows
+          were all answered on the spot -- an all-``.ncm`` library, where ``validate``
+          records "tried, nothing" itself -- would otherwise re-record the same answer on
+          every start and never persist it. An *already warm* library is not a write: the
+          rows ``validate`` left alone are not dirty, so ``take_dirty`` answers empty and
+          :meth:`_flush_metadata_cache` saves nothing (criterion 6).
 
         A failure here is a library whose columns stay ``⋯``, so the except is not a
         courtesy: ``_on_library_loaded`` is a slot, and an exception leaving one on this
@@ -951,6 +971,8 @@ class MainPresenter(QObject):
             self._metadata_since_flush = 0
             generation = self._metadata.start_sweep(targets, self._on_metadata_row)
             self._metadata_generation = generation
+            if not targets:
+                self._flush_metadata_cache()
             return generation
         except Exception as exc:
             print(f'PyPlayer: metadata for {library_path} was not scheduled: {exc}')

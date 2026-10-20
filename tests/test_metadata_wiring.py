@@ -54,6 +54,9 @@ half of the observation is connected signals (``display_changed``, ``dataChanged
 Concurrency, as in ``tests/test_metadata_sweep.py``: every wait is
 ``processEvents()`` rotation under a wall-clock cap, a blocked extractor waits on a
 ``threading.Event`` with a capped timeout, and every gate is opened in ``tearDown``.
+One test parks the *whole* shared pool on such an event (:meth:`_park_the_pool`) to
+make "this task never started" observable; the blocker is released by an ``addCleanup``
+registered the moment it exists, so no path through the suite leaves it parked.
 
 Run:
     QT_QPA_PLATFORM=offscreen python -m unittest tests.test_metadata_wiring -v
@@ -110,6 +113,12 @@ DRAIN_MS = 250
 #: Cap for a blocked fake extractor, so a production change that extracted on the
 #: calling thread fails an assertion instead of deadlocking the suite.
 GATE_WAIT_S = 3.0
+
+#: Cap for the pool blockers of :meth:`WiringHarness._park_the_pool`. The event is
+#: released by ``addCleanup`` the moment it is created, so this only bounds the case
+#: where a blocker outlives its own test -- and a blocker that outlived the run would
+#: otherwise park every later sweep in the process.
+BLOCK_WAIT_S = 20.0
 
 METADATA_ROLES = frozenset({
     PlaylistModel.DurationRole, PlaylistModel.ArtistRole,
@@ -284,6 +293,34 @@ class WiringHarness:
     def _release(self, *paths):
         for path in paths:
             self.gates[str(path)].set()
+
+    def _park_the_pool(self):
+        """Occupy every worker of the shared pool, so later tasks cannot *start*.
+
+        ``QThreadPool`` cannot pull a queued task back, and the only way to prove a
+        task was never given the chance to extract is to keep it queued while the
+        generation it belongs to is replaced. Every blocker waits on one event this
+        test (and, as a backstop, ``BLOCK_WAIT_S``) releases, so no failure path here
+        can leave the suite's shared pool parked.
+        """
+        from PyQt6.QtCore import QRunnable, QThreadPool
+
+        pool = QThreadPool.globalInstance()
+        slots = pool.maxThreadCount()
+        self.assertGreaterEqual(slots, 1, 'the global pool reports no worker at all')
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+
+        class _Blocker(QRunnable):
+            def run(self):
+                gate.wait(BLOCK_WAIT_S)
+
+        for _ in range(slots):
+            pool.start(_Blocker())
+        self._pump_until(lambda: pool.activeThreadCount() >= slots,
+                         'the shared pool never took the blockers on',
+                         state=lambda: f'active={pool.activeThreadCount()} of {slots}')
+        return gate
 
     # === library fixtures ===
 
@@ -595,6 +632,66 @@ class MetadataSweepStartTest(WiringHarness, unittest.TestCase):
         self.assertEqual({'artist': None, 'album': None, 'duration': None},
                          entry.get('md'),
                          'the excluded format\'s answer never reached the cache file')
+
+    def test_a_library_whose_rows_are_all_answered_on_the_spot_still_flushes(self):
+        """I1: a plan with no target has no delivery, so nothing ever *closes* it.
+
+        The closing write-back is keyed to "every target came back". A library made
+        only of excluded formats takes no target at all -- ``validate`` answers each
+        row itself with "tried, nothing" -- so those records used to live in memory
+        for the length of the run and never reach the file: every start re-made them.
+        Spec §4.1's invariant is that ``md`` is missing exactly when something is
+        waiting to fetch it, and nothing is ever going to fetch an ``.ncm``, so the
+        answer has to be persisted. The display was never the symptom (the row reads
+        取不到 either way), which is why the nail is the file.
+
+        The second scan is the other half of the rule: a plan with nothing *dirty*
+        must still cost zero writes (criterion 6).
+        """
+        library = self._make_library('ncm-only', count=0)
+        for name in ('locked-a.ncm', 'locked-b.ncm'):
+            (library / name).write_bytes(b'ncm' * 24)
+        names = sorted(path.name for path in library.glob('*.ncm'))
+
+        self._scan(library)
+        self._pump_for(DRAIN_MS)
+
+        self.assertEqual(1, len(self.metadata.plans),
+                         'a library of excluded formats started no plan at all, so '
+                         'the rows never got their answer')
+        self.assertEqual([], self.metadata.plans[-1][1],
+                         'an excluded format was handed to the sweep')
+        self.assertEqual([], self.extract_calls,
+                         'the sweep extracted a format the store answers by itself')
+        writes = self._writes_for(library)
+        self.assertEqual(1, len(writes),
+                         f'a plan with zero targets never ran its closing write-back: '
+                         f'{self.library.written} -- those "tried, nothing" records are '
+                         're-made on every start and never persisted')
+        _, updates = writes[0]
+        self.assertEqual(sorted(str(library / name) for name in names),
+                         sorted(updates),
+                         'the zero-target flush wrote something other than the rows '
+                         'validate had answered')
+        by_name = self._raw_by_name(library)
+        for name in names:
+            with self.subTest(entry=name):
+                self.assertEqual({'artist': None, 'album': None, 'duration': None},
+                                 by_name[name].get('md'),
+                                 'the answer never reached the file: without the ``md`` '
+                                 'key the next start reads the row as never tried')
+        self.assertEqual([STATE_UNKNOWN] * 2, self._states(),
+                         f'{self._states()} -- the rows must read 取不到, not 未取到')
+
+        self.library.written.clear()
+        self._scan(library)
+        self._pump_for(DRAIN_MS)
+
+        self.assertEqual([], self.library.written,
+                         'a warm all-excluded library rewrote its cache file for '
+                         'nothing: the closing flush must still cost zero writes when '
+                         'no row is dirty')
+        self.assertEqual([STATE_UNKNOWN] * 2, self._states())
 
     def test_an_empty_library_starts_no_sweep_and_writes_nothing(self):
         library = self._make_library(count=0)
@@ -1131,6 +1228,50 @@ class LibrarySwitchTest(WiringHarness, unittest.TestCase):
         self.assertEqual(0, len(self._writes_for(first)),
                          'a retired plan\'s rows were flushed into the library it was '
                          'replaced by')
+
+
+    def test_a_plan_replaced_before_it_started_never_extracts(self):
+        """I2(a), ruling B4-R21a: the generation is compared *before* extracting.
+
+        ``_deliver_sweep_row`` already refused a superseded row, so the old shape was
+        *correct* -- and paid one full extraction per row for an answer it then threw
+        away. ``refresh_all`` walks k libraries and every scan replaces the previous
+        plan, so the bill was (k-1) x n extractions on the same pool the playing track
+        borrows.
+
+        The parked workers are what makes the claim observable. While every worker of
+        the global pool is blocked, a queued task cannot have started, so a path of the
+        *first* library anywhere in the extraction log means the check ran after the
+        work instead of before it -- which is exactly the shape that used to be true.
+        """
+        first = self._make_library('rock', count=2)
+        second = self._make_library('jazz', count=1, prefix='jazz')
+        first_paths = set(self._file_paths(first))
+        second_paths = self._file_paths(second)
+        gate = self._park_the_pool()
+
+        self.presenter._metadata_library_path = str(first)
+        self.presenter._start_metadata_sweep(self.library.get_files(str(first)))
+        self.assertEqual(1, len(self.metadata.plans))
+        self.assertEqual([], self.extract_calls,
+                         'the pool was not really parked: the first plan had already '
+                         'extracted before it was replaced, so the assertion below '
+                         'would prove nothing')
+
+        self.presenter._metadata_library_path = str(second)
+        generation = self.presenter._start_metadata_sweep(
+            self.library.get_files(str(second)))
+        gate.set()
+
+        self._await_plan(second_paths, what='the replacing plan')
+        self.assertEqual(generation, self.metadata.current_generation())
+        self.assertEqual([], sorted(set(self.extract_calls) & first_paths),
+                         'a superseded plan still ran every one of its extractions and '
+                         'threw the answers away at delivery (I2a): the cost is pool '
+                         'time the listener is paying for while it plays')
+        self.assertEqual(sorted(second_paths), sorted(self.extract_calls),
+                         f'the live plan is the one that must still do its work: '
+                         f'{self.extract_calls}')
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
