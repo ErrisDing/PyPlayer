@@ -18,6 +18,12 @@ dataclass means "no key", and ``to_dict`` must then leave the key out entirely
 -- writing ``"md": null`` would turn every pending row into a tried-and-empty
 one and silently kill the background fill on the second open of a library.
 
+A third shape reaches the reader only from a half-written or hand-edited file:
+``md`` present but not a mapping (``5``, ``"abc"``, a bare ``null``). It reads
+as the same "tried, nothing" dict and must never raise -- ``load_cache`` guards
+just OSError/JSONDecodeError, so an exception here would take the whole file
+table down for one bad cell.
+
 Pure data: ``core.cache_manager`` imports no Qt, so no ``QApplication`` here.
 The cache directory is redirected through ``_get_cache_dir`` so the real
 ``~/.pyplayer`` is never touched; filename hashing, ``_get_cache_filepath``,
@@ -40,9 +46,14 @@ sys.path.insert(0, str(ROOT))
 from core import cache_manager
 from core.cache_manager import CachedFile, LibraryCacheManager
 
-#: The canonical key set of ``md`` (B4-R1). Task 3's ``record`` builds dicts in
-#: this shape; Tasks 5-8 consume these names verbatim.
+#: The canonical key set of ``md`` (B4-R1), spelled locally on purpose: later
+#: batch-4 tasks are expected to use these names, and a test that imported the
+#: production constant would not notice a rename on either side.
 MD_KEYS = ('artist', 'album', 'duration')
+
+#: Sentinel for "this entry has no ``md`` key at all" (= pending). No md *value*
+#: can express that -- ``None`` is the other state (present, tried, found empty).
+NO_MD_KEY = object()
 
 #: A full "known" entry -- the values are arbitrary but must survive verbatim.
 KNOWN_MD = {'artist': 'B', 'album': 'M', 'duration': 227.0}
@@ -96,7 +107,11 @@ class CacheMetadataTestCase(unittest.TestCase):
             json.dumps(payload, ensure_ascii=False), encoding='utf-8')
 
     def _legacy_payload(self, version: str = '1.0') -> dict:
-        """A pre-batch-4 file: no ``md`` key anywhere, old shape only."""
+        """A file whose entries carry no ``md`` key at all, i.e. all pending.
+
+        That is the pre-batch-4 shape, but the version stamp is a parameter so
+        read-side cases can hold ``md`` shapes ``to_dict`` never writes.
+        """
         return {
             'version': version,
             'library_path': self.library_path,
@@ -121,6 +136,18 @@ class CacheMetadataTestCase(unittest.TestCase):
                 },
             ],
         }
+
+    def _write_entry_md(self, md=NO_MD_KEY, index: int = 0) -> dict:
+        """Hand-write a 2.0 file whose entry ``index`` carries this raw ``md``.
+
+        ``to_dict`` cannot produce a present-but-null or non-mapping value, so
+        those shapes reach the reader only through the file itself.
+        """
+        payload = self._legacy_payload(version='2.0')
+        if md is not NO_MD_KEY:
+            payload['files'][index]['md'] = md
+        self._write_raw(payload)
+        return payload
 
 
 class CacheMdRoundTripTest(CacheMetadataTestCase):
@@ -180,7 +207,10 @@ class CacheMdRoundTripTest(CacheMetadataTestCase):
         self.assertIn('md', raw['files'][0],
                       'an all-null md lost its key on the way out')
         self.assertEqual(EMPTY_MD, raw['files'][0]['md'])
-        self.assertEqual(sorted(MD_KEYS), sorted(raw['files'][0]['md'].keys()))
+        # No separate "keys are exactly MD_KEYS" check here: it is entailed by
+        # the equality above and could never be the first failure. The key set is
+        # pinned independently by
+        # test_mapping_md_missing_canonical_key_comes_back_complete.
         self.assertNotIn('md', raw['files'][1])
 
         loaded = self.manager.load_cache(self.library_path)
@@ -277,6 +307,115 @@ class CacheVersionCompatibilityTest(CacheMetadataTestCase):
             with self.subTest(path=entry.path):
                 self.assertIsNone(entry.md,
                                   'the upgrade invented md keys for old entries')
+
+
+class CacheMdReadSideToleranceTest(CacheMetadataTestCase):
+    """The ``md`` shapes ``to_dict`` cannot write, read off the disk as written.
+
+    Every case here builds the JSON by hand. That is the point: a round-trip
+    through the writer cannot reach these branches, so a regression that folds
+    them into "pending" (or lets them raise) would keep the other five cases
+    green.
+    """
+
+    def test_present_null_md_reads_as_tried_not_pending(self):
+        """``"md": null`` on disk loads as the all-null dict, never as ``None``.
+
+        The two states are separated by key presence alone, so a key that is
+        present with a null payload still claims "extraction was tried". Reading
+        it as ``None`` -- the shortest "simplification" of ``_read_md`` -- makes
+        every excluded (NCM) or empty-tag file pending again, and the next start
+        retries it forever (spec criterion 6).
+        """
+        self._write_entry_md(md=None)
+
+        # Guard the fixture itself: the file must really hold key-present-null
+        # on entry 0 and no key at all on entry 1.
+        raw = self._read_raw()
+        self.assertIn('md', raw['files'][0], 'the fixture lost the md key')
+        self.assertIsNone(raw['files'][0]['md'], 'the fixture wrote a value, not null')
+        self.assertNotIn('md', raw['files'][1], 'the fixture did not build the pair')
+
+        loaded = self.manager.load_cache(self.library_path)
+        self.assertIsNotNone(
+            loaded, 'a 2.0 cache whose md is null was refused outright')
+        tried, pending = loaded.files[0].md, loaded.files[1].md
+        self.assertIsNotNone(
+            tried,
+            'an "md" key present with a null value loaded as None: presence is the '
+            'only claim that extraction was tried, so this collapses "tried, '
+            'nothing" into "not tried" and the sweep retries the file forever')
+        self.assertEqual(
+            EMPTY_MD, tried,
+            'a present-null md did not load as the three-null dict')
+        self.assertIsNone(
+            pending,
+            'the keyless entry in the same file stopped being pending')
+        self.assertNotEqual(
+            tried, pending,
+            'present-null and absent md loaded to the same value')
+
+    def test_corrupt_md_value_reads_as_tried_and_never_raises(self):
+        """A non-mapping ``md`` is the same state as a null one -- and cannot raise.
+
+        ``dict(5)`` / ``dict("abc")`` raise ValueError/TypeError, while
+        ``load_cache`` catches only OSError/IOError/JSONDecodeError, so the
+        exception escaped all four read APIs (``load_cache``,
+        ``has_valid_cache``, ``is_cache_fresh``, ``get_cached_files``) and cost
+        the library its whole file table for one damaged cell -- even though the
+        same reader refuses a truncated JSON file quietly. A damaged md counts as
+        "already tried": no retry, no raise.
+        """
+        for md in (5, 'abc'):
+            with self.subTest(md=md):
+                self._write_entry_md(md=md)
+
+                loaded = self.manager.load_cache(self.library_path)
+                self.assertIsNotNone(
+                    loaded,
+                    f'an md value of {md!r} was allowed to abort load_cache '
+                    'instead of reading as "tried, nothing"')
+                self.assertEqual(
+                    EMPTY_MD, loaded.files[0].md,
+                    f'a corrupt md value of {md!r} did not load as the '
+                    'three-null dict')
+
+                # The other three public read APIs parse the same file; each must
+                # return a verdict rather than propagate.
+                self.assertTrue(
+                    self.manager.has_valid_cache(self.library_path),
+                    'has_valid_cache did not treat the damaged md as readable')
+                self.assertFalse(
+                    self.manager.is_cache_fresh(self.library_path),
+                    'is_cache_fresh reports on the missing directory, not the md')
+                self.assertIsNone(
+                    self.manager.get_cached_files(self.library_path),
+                    'get_cached_files returned entries for a stale library')
+
+    def test_mapping_md_missing_canonical_key_comes_back_complete(self):
+        """A mapping with gaps comes back holding all three canonical keys.
+
+        The reader is the one place that knows B4-R1's key set, so it fills the
+        gap with ``None`` (= unknown) instead of leaving consumers to index a
+        missing key or each invent a default. Values that are present survive
+        verbatim; nothing is invented for them.
+        """
+        self._write_entry_md(md={'artist': 'x', 'duration': 227.0})
+
+        self.assertEqual(
+            {'artist': 'x', 'duration': 227.0}, self._read_raw()['files'][0]['md'],
+            'the fixture did not write a gap in the mapping')
+
+        loaded = self.manager.load_cache(self.library_path)
+        self.assertIsNotNone(loaded, 'a mapping md with a missing key was refused')
+        md = loaded.files[0].md
+        self.assertEqual(
+            sorted(MD_KEYS), sorted(md),
+            'a mapping md missing a canonical key came back with a different key '
+            'set: consumers were promised artist/album/duration')
+        self.assertIsNone(md['album'], 'the filled-in canonical key is not unknown')
+        self.assertEqual('x', md['artist'], 'a present value was overwritten')
+        self.assertEqual(227.0, md['duration'], 'a present value was overwritten')
 
 
 if __name__ == '__main__':

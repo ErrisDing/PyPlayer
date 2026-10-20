@@ -27,8 +27,10 @@ LEGACY_CACHE_VERSION = "1.0"
 SUPPORTED_CACHE_VERSIONS: frozenset[str] = frozenset(
     {LEGACY_CACHE_VERSION, CACHE_VERSION})
 
-#: The canonical key set of an entry's ``md`` dict (ruling B4-R1). Every later
-#: batch-4 task consumes these three names verbatim.
+#: The canonical key set of an entry's ``md`` dict (ruling B4-R1). Later batch-4
+#: tasks are *expected* to consume these three names -- as of this task nothing
+#: outside this module imports them, and the round-trip test only spot-checks part
+#: of the set, so this is the contract, not a surveyed list of consumers.
 MD_KEYS = ("artist", "album", "duration")
 
 
@@ -44,6 +46,9 @@ class CachedFile:
     * a dict whose values are all ``None`` -- extraction was tried and the tag
       had nothing (or the format is excluded, e.g. NCM): the entry must not be
       retried, and the view shows "no metadata" rather than "not fetched yet";
+      a damaged payload (a bare ``null`` or a non-mapping) reads as exactly this
+      dict, and a mapping with gaps gets its missing canonical keys added as
+      ``None`` -- see :func:`_read_md`;
     * a dict with values -- known metadata.
 
     The two first states differ by key *presence*, never by value, which is why
@@ -88,16 +93,29 @@ class CachedFile:
 def _read_md(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Map an entry's ``md`` key to the tri-state value ``CachedFile`` stores.
 
-    Absent key -> ``None`` (pending). Key present with a ``null`` value -> the
-    all-``None`` dict: the key existing is already the claim that extraction was
-    tried, so a null payload cannot mean "not tried".
+    Absent key -> ``None`` (pending). Key present -> always a dict holding the
+    three canonical keys: a ``null`` payload, a non-mapping payload and a mapping
+    with gaps all land in the same bucket. The key existing is already the claim
+    that extraction was tried, so a damaged or partial payload cannot mean
+    "not tried", and filling the gaps keeps the consumers' index on
+    ``md["album"]`` total without inventing values for the keys that are there.
     """
     if "md" not in entry:
         return None
     value = entry["md"]
-    if value is None:
+    if value is None or not isinstance(value, dict):
+        # A corrupt md value is read as "already tried": no retry, no raise.
+        # ``dict(5)``/``dict("abc")`` would raise ValueError/TypeError, and
+        # load_cache only catches (OSError, IOError, JSONDecodeError), so the
+        # exception would escape load_cache, has_valid_cache, is_cache_fresh and
+        # get_cached_files and cost the library its whole file table for one bad
+        # cell -- while the same reader refuses a truncated JSON quietly. Marking
+        # it tried instead keeps the sweep from retrying damage forever.
         return {key: None for key in MD_KEYS}
-    return dict(value)
+    normalized = dict(value)
+    for key in MD_KEYS:
+        normalized.setdefault(key, None)
+    return normalized
 
 
 @dataclass
