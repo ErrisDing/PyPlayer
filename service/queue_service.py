@@ -5,7 +5,7 @@ Solves the index confusion problem by providing a single source of truth
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from PyQt6.QtCore import QObject, pyqtSignal
 
 import sys
@@ -16,6 +16,48 @@ from core.library_manager import (
     QueueNode, FileNode, FolderNode, Track,
     DisplayIndexMap, PlaybackQueue, PlaybackState
 )
+from service.metadata_store import (
+    RowMetadata,
+    STATE_KNOWN,
+    STATE_PENDING,
+    STATE_UNKNOWN,
+)
+
+
+def _state_for_payload(md: Optional[RowMetadata]) -> str:
+    """Name the state of a values-only payload (rulings B4-R5 and B4-R8).
+
+    ``set_metadata`` receives ``path -> RowMetadata`` and nothing else, so the
+    three-state word has to come from the payload itself. The rules are the
+    store's, in the store's order: ``md is None`` -- never ``if md``, which would
+    collapse an all-``None`` "tried, got nothing" row back into "not fetched yet"
+    -- then "any field present" is known, and only then unknown.
+    ``QueueStateMatchesStoreStateTest`` in ``tests/test_queue_metadata.py`` reads
+    ``LibraryMetadataStore.state_of`` as the reference for exactly this function,
+    so the two copies cannot drift apart silently.
+    """
+    if md is None:
+        return STATE_PENDING
+    if md.artist is not None or md.album is not None or md.duration is not None:
+        return STATE_KNOWN
+    return STATE_UNKNOWN
+
+
+def _write_metadata(entry: 'DisplayEntry', md: Optional[RowMetadata],
+                    state: str) -> None:
+    """Put one table row onto one display entry -- the single place that does it.
+
+    ``md is None`` clears all three columns rather than leaving whatever the entry
+    carried: a row that went back to pending (``set_metadata({})`` on a library
+    switch, or the sweep answering "still nothing") must not keep showing the
+    previous library's length. The values and the ``state`` are always written
+    together, so no path through this class can leave a column and a state word
+    describing different moments.
+    """
+    entry.duration = md.duration if md is not None else None
+    entry.artist = md.artist if md is not None else None
+    entry.album = md.album if md is not None else None
+    entry.metadata_state = state
 
 
 @dataclass
@@ -37,6 +79,22 @@ class DisplayEntry:
     full_path: str = ""
     is_playing: bool = False  # True if this is the currently playing entry
     relative_position: str = ""  # Relative position to library root (e.g., "root", "Rock/Albums")
+    # Batch 4's three columns (spec §4.9). These are carried here, never on
+    # ``Track``: ``Track.duration`` is ``float`` with ``0.0`` for "no length",
+    # so the value that means "unknown" and the value that means "zero seconds"
+    # are the same number, and a delegate reading it cannot tell them apart.
+    # ``None`` is the only spelling of "no value" at this layer (ruling B4-R8).
+    #
+    # ``metadata_state`` is one of the three strings imported from
+    # ``service.metadata_store`` (ruling B4-R5); it is *not* derived at paint
+    # time. The values and the state are written by the queue's path-keyed table
+    # when the table is *built*, so a rebuild cannot lose them (see
+    # ``_rebuild_display_entries``). A folder header row owns no columns and stays
+    # ``STATE_PENDING`` forever -- Task 8's grid is what keeps it out of sight.
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    duration: Optional[float] = None
+    metadata_state: str = STATE_PENDING
 
 
 class QueueService(QObject):
@@ -74,6 +132,22 @@ class QueueService(QObject):
 
         # Current library path for display optimization
         self._current_library_path: str = ""
+
+        # Batch 4: ``full_path -> (values, state)`` for the rows this queue shows.
+        #
+        # This table -- not the ``DisplayEntry`` objects -- is where the metadata
+        # lives, because ``_rebuild_display_entries()`` throws every entry away and
+        # builds new ones on each structural change (call sites at the four build
+        # methods and ``remove_at_display_index``). Writing values only onto the
+        # entries of the moment would mean "remove one song, the rest of the
+        # playlist falls back to ``⋯``" -- green tests, broken UI.
+        #
+        # The value is a pair rather than a bare ``RowMetadata`` so the state word
+        # survives the same rebuild: ``apply_metadata`` is handed the store's word
+        # and must not have to re-derive it, while ``set_metadata`` receives values
+        # only and names the state through ``_state_for_payload``. A single dict
+        # keeps the two from ever disagreeing about one path.
+        self._row_metadata: Dict[str, Tuple[Optional[RowMetadata], str]] = {}
 
     # === Queue Building ===
 
@@ -230,7 +304,96 @@ class QueueService(QObject):
                 self._display_entries.append(entry)
                 display_idx += 1
 
+        # Batch 4: the columns are filled **here**, from the queue's own table, and
+        # never looked up again while a row is painted -- spec §4.9's "no second
+        # lookup" is about the drawing side, and this is the one place the table is
+        # read. A freshly built entry whose path the table does not know is pending
+        # with three empty columns, which is the same thing a brand-new scan shows.
+        self._fill_display_metadata()
+
         self.display_changed.emit(self._display_entries)
+
+    # === Row Metadata (batch 4) ===
+
+    def _fill_display_metadata(self) -> None:
+        """Write the table onto every entry that exists right now.
+
+        Shared by the rebuild (new objects) and :meth:`set_metadata` (existing
+        ones), so the two can never disagree about what a path means.
+        """
+        for entry in self._display_entries:
+            if entry.is_folder or not entry.full_path:
+                # A folder header owns no columns; ``full_path`` is empty for it by
+                # construction, and the guard also keeps an empty path from ever
+                # matching the table.
+                continue
+            md, state = self._row_metadata.get(
+                entry.full_path, (None, STATE_PENDING))
+            _write_metadata(entry, md, state)
+
+    def set_metadata(self, mapping: Dict[str, Optional[RowMetadata]]) -> None:
+        """Replace the whole row-metadata table, then refresh the visible rows.
+
+        Two uses, one operation: the one-shot fill right after a scan built the
+        display (every value the library cache already holds), and the wipe on a
+        library switch (``set_metadata({})``, which Task 7 calls *after*
+        ``cancel_sweep`` so an in-flight row of the library being left cannot land
+        in this one's rows).
+
+        It is a **replacement**, not a merge: a path missing from ``mapping`` is
+        pending again, because keeping the previous library's values under paths
+        that happen to exist in both would be exactly the cross-library leak
+        spec §10 risk 1 names. The state word is derived from the payload here
+        (``_state_for_payload``) because the mapping carries values only; the sweep
+        path hands the store's own word through :meth:`apply_metadata`.
+
+        No signal is emitted: the caller already holds the list it would send, and
+        :class:`~view.models.playlist_model.PlaylistModel` is refreshed by the
+        presenter through the existing ``display_changed`` route or, for single
+        rows, by :meth:`apply_metadata`'s return value (batch 3 ruling R9).
+        """
+        self._row_metadata = {
+            full_path: (md, _state_for_payload(md))
+            for full_path, md in mapping.items()
+        }
+        self._fill_display_metadata()
+
+    def apply_metadata(self, full_path: str, md: Optional[RowMetadata],
+                       state: str) -> List[int]:
+        """Update the rows showing ``full_path``; return their **row numbers**.
+
+        Returns every display row that carries this path, ascending, and updates
+        all of them: one file inside a folder node can legitimately occupy several
+        rows, and updating only the first would show the same song with a length
+        in one place and ``⋯`` in the other. ``[]`` means no row of this queue
+        shows that path -- the caller (Task 7's sweep callback) then updates
+        nothing, and the result is deliberately not remembered: this table mirrors
+        the rows, the store is what persists an answer for a file nobody is
+        looking at.
+
+        The numbers are *display* rows -- the same space as
+        ``PlaylistView.selected_display_indices()`` and ``remove_at_display_index``,
+        never ``DisplayEntry.node_idx``; with a folder in front of them the two
+        differ by one per folder row. They exist so the caller can hand each row to
+        ``PlaylistModel.update_row_metadata`` without a reset, which is why there is
+        no signal on this method.
+
+        ``state`` is stored verbatim (it is the store's ``state_of`` answer, and
+        re-deriving it here would put a second owner on the tri-state), and it
+        travels into the table with the values so a later rebuild sees both.
+        """
+        if not full_path:
+            return []
+
+        rows = [idx for idx, entry in enumerate(self._display_entries)
+                if not entry.is_folder and entry.full_path == full_path]
+        if not rows:
+            return []
+
+        self._row_metadata[full_path] = (md, state)
+        for idx in rows:
+            _write_metadata(self._display_entries[idx], md, state)
+        return rows
 
     # === Position Management ===
 
