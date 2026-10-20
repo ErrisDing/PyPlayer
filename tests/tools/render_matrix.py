@@ -85,10 +85,15 @@ matrix loop walks:
     ``State_MouseOver`` on that row *and on no other*, out of the delegate's own
     recorded option states, plus a before/after pixel delta -- a frame of an
     unhovered row is otherwise indistinguishable from a frame of a hovered one.
-    **Offscreen only**: under the real ``windows`` QPA neither
-    ``QTest.mouseMove`` nor ``QCursor.setPos`` sets ``underMouse()`` (measured;
-    :func:`cursor_lands`), so the window run prints a skip line for these two
-    frames rather than writing a PNG of a row nobody hovered.
+    **Offscreen only**: the ``--capture window`` run prints a skip line for these
+    two frames rather than writing a PNG of a row nobody hovered. The skip is a
+    ``platformName()`` comparison (:func:`cursor_lands`), so the reason it gives --
+    that a real QPA will not let the harness move the pointer -- is a
+    **hypothesis, not a measurement taken here**: this batch has never run the tool
+    under a live QPA. Confirm it once with
+    ``python tests/tools/render_matrix.py --capture window --interaction`` (the
+    README checklist); if the skip lines print and no hover PNG appears, the
+    hypothesis held, and either way the hover *look* still needs a real mouse.
   * ``multi-selected``: real Ctrl+clicks on rows 2, 3 and 5 -- non-contiguous on
     purpose, because a fill that ran past its own row is invisible when the batch
     is a range. Row 3 is the playing row, so one picture carries batch 3's
@@ -184,16 +189,21 @@ What neither capture can show, and no reading of the PNGs makes verified:
   delegate's row hover and the QSS ``:hover`` family (a ``#railButton`` grab goes
   from transparent to ``button_hover`` ``#f0f0f0``, and ``setFocus`` paints the
   focus ring) -- which is why the ``hover`` frame is buildable at all, and why
-  this bullet used to read "cannot be photographed". Under the real ``windows``
-  QPA the same call leaves ``underMouse()`` False, and so does ``QCursor.setPos``
-  even though it visibly moves the pointer, because Qt takes that attribute from
-  the window system's enter events rather than from synthetic ones. So the hover
-  frame is an offscreen product, the ``--capture window`` run says so and skips
-  it, and whether a real mouse's hover *reads* on a real panel at real gamma --
-  and whether the tint clears when the pointer leaves -- is a human judgement.
+  this bullet used to read "cannot be photographed". The other half is a
+  **hypothesis this tool acts on but has never tested**: that under a real
+  ``windows`` QPA the same call leaves ``underMouse()`` False (and
+  ``QCursor.setPos`` moves the pointer without changing it, because Qt takes the
+  attribute from the window system's enter events rather than from synthetic
+  ones). :func:`cursor_lands` decides by ``platformName()``, so no run here has
+  ever observed the refusal -- the README checklist carries the one
+  ``--capture window --interaction`` run that would confirm it, alongside the
+  judgements only a real mouse can make: whether a hover *reads* on a real panel
+  at real gamma, and whether the tint **clears when the pointer leaves** (the
+  frame photographs a pointer that arrived, never one that went away).
 * **HiDPI offscreen.** ``offscreen`` reports device pixel ratio 1, so the
-  ``icon(..., dpr)`` 2x path only runs under ``--capture window`` on a scaled
-  display.
+  ``icon(..., dpr)`` 2x path in ``view/icons.py`` only runs under
+  ``--capture window`` on a scaled display -- and nothing here has ever looked at
+  those pixels; it is a README checklist item, not a verified shape.
 * **A live popup.** See ``--interaction`` above: the menu half of that frame is a
   ``QMenu.grab()`` composited over the window in *both* capture modes, so nothing
   about the popup's native frame, its shadow, its edge-flipping or its pointer
@@ -1087,16 +1097,25 @@ def rows_crop(window, first: int, last: int) -> tuple:
 
 
 def cursor_lands(app) -> bool:
-    """Whether this platform lets the harness put the pointer on a widget.
+    """Whether this platform is *expected* to let the harness put the pointer on a
+    widget -- a name comparison, not an observation.
 
-    Measured on this host, Qt 6.11: under ``offscreen`` ``QTest.mouseMove`` does
-    mark the target ``underMouse()`` and the delegate then sees
-    ``State_MouseOver``; under the real ``windows`` QPA it does not -- and neither
-    does ``QCursor.setPos``, which moves the *pointer* (``QCursor.pos()`` agrees)
-    while ``underMouse()`` stays ``False``, because Qt updates that attribute from
-    the window system's enter events, not from synthetic mouse events. So row
-    hover is photographable offscreen and needs a human hand on a real desktop,
-    and this function is the difference rather than a guess about it.
+    What is measured: under ``offscreen`` ``QTest.mouseMove`` does mark the target
+    ``underMouse()`` and the delegate then sees ``State_MouseOver`` -- this run
+    proves it on every hover frame, because the frame is not writable without it.
+    What is **not** measured, and is only assumed here: that a real ``windows``
+    QPA refuses the same call. This function decides by ``platformName()``, so the
+    skip it produces rests on the hypothesis recorded in the module docstring --
+    that Qt takes ``underMouse()`` from the window system's enter events rather
+    than from synthetic ones, so neither ``QTest.mouseMove`` nor ``QCursor.setPos``
+    (which moves the *pointer*, ``QCursor.pos()`` agrees, while the attribute stays
+    ``False``) sets it. No run in this batch has executed the tool under a live
+    QPA, so the hypothesis is untested and is on the README requires-a-human
+    checklist: one ``--capture window --interaction`` run would either print the
+    two skip lines and write no hover PNG, or contradict the reason this function
+    exists. The behaviour stays as shipped -- a frame of an unhovered row labelled
+    "hover" is the lie, and skipping on a hypothesis is the conservative side of
+    that risk.
     """
     return app.platformName() == 'offscreen'
 
@@ -1141,10 +1160,13 @@ def drive_hover(window, app, tokens) -> dict:
             # the lie every guard in this file exists to prevent.
             return {'skipped': (
                 f'hover SKIPPED on the {app.platformName()!r} QPA: the pointer never '
-                'landed (QTest.mouseMove leaves underMouse() False under a real '
-                'platform, and QCursor.setPos moves the pointer without changing '
-                'it), so row hover has to be judged with a real mouse on a real '
-                'desktop -- see the batch report\'s requires-a-human checklist')}
+                'landed, and this tool decides that by platformName() rather than by '
+                'having watched a real QPA refuse it (see cursor_lands -- the '
+                'refusal is a hypothesis, and confirming it is a checklist item: run '
+                '--capture window --interaction once and check that skip lines print '
+                'and no hover PNG appears). Either way row hover has to be judged '
+                'with a real mouse on a real desktop -- see the README '
+                'requires-a-human checklist')}
         require(False,
                 'the synthesized mouse move did not land on the list viewport even '
                 'though this platform is supposed to let it: no row can be hovered, '
