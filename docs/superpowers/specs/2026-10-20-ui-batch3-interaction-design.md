@@ -36,7 +36,9 @@
 
 | 文件 | 变化 |
 |---|---|
-| `view/widgets/playlist_view.py` | `SingleSelection` → `ExtendedSelection`；新增 `contextMenuEvent` 使 `context_menu_requested`（批次 1 起声明、至今无 emit）终于有主；新增 `selected_display_indices() -> list[int]`、`display_index_at(pos: QPoint, widget: QWidget) -> int`（坐标来源显式传入，见 §4.3 与裁定 R6）；新信号 `play_requested(list[int])`、`remove_requested(list[int])`、`clear_playlist_requested` |
+| `view/widgets/playlist_view.py` | `SingleSelection` → `ExtendedSelection`；新增 `contextMenuEvent` 使 `context_menu_requested`（批次 1 起声明、至今无 emit）终于**有生产者**；新增 `selected_display_indices() -> list[int]`、`display_index_at(pos: QPoint, widget: QWidget) -> int`（坐标来源显式传入，见 §4.3 与裁定 R6）；新信号 `play_requested(list[int])`、`remove_requested(list[int])`、`clear_playlist_requested` |
+
+> **订正（终审修复波 A + B，2026-10-20）**：本行原写「终于**有主**」——过头了。出厂状态是：它有生产者（`contextMenuEvent` 里那条 emit），并且**刻意没有产品侧的接收者/槽位**，只有两个自动监听者（`tests/test_playlist_selection.py`、`tests/tools/render_matrix.py`）。裁定 R9 定义的正是「发射且已连接、末端无落点」这个缺陷形状，所以这里不是重犯，而是一条**被命名的观察钩子**：`tests/test_dead_code_removed.py` 钉它仍被监听，`tests/test_playlist_selection.py::test_context_menu_requested_has_no_production_consumer` 钉「生产侧一出现 `connect` 就红」，评论因此不会静默过期。载荷另见 §4.3 与计划 Task 3 的订正：`targets[0]` 是批次最小值，不是被指点的行。
 | **新建** `view/widgets/playlist_context_menu.py` | `build_playlist_menu(target_indices: list[int], target_is_playing: bool, parent: QWidget) -> QMenu` |
 | `view/delegates/playlist_delegate.py` | 补 `State_MouseOver` 分支，画 `tokens.hover_bg` |
 | `view/main_window.py` | 转发三个新信号为 View 公开 API；新增 `_setup_shortcuts()` |

@@ -109,10 +109,12 @@ git commit -m "feat(view): 播放列表升级为资源管理器式多选并暴�
 - Create: `view/widgets/playlist_context_menu.py`、`tests/test_playlist_context_menu.py`
 - Modify: `locales/interface/main.{zh_CN,en_US}.properties`
 - Modify: `view/widgets/__init__.py`
+  - **订正（终审修复波 A）**：这条 re-export 已被撤销。`MENU_PLAY`/`MENU_REMOVE`/`MENU_CLEAR`/`MENU_IDS`/`build_playlist_menu` 只由 `view/widgets/playlist_context_menu.py` 导出，包 `view/widgets/__init__.py` 只导出 widget 类；每个消费者（`view/widgets/playlist_view.py`、两份菜单测试、`tests/tools/render_matrix.py`）本来就按模块名导入，包层的第二拼写只会悄悄过期。
 
 **Interfaces:**
 - Consumes: `core.i18n.get`
 - Produces: `MENU_PLAY, MENU_REMOVE, MENU_CLEAR` 三个字符串常量；`MENU_IDS: tuple[str, ...]`；`build_playlist_menu(target_indices: list[int], target_is_playing: bool, parent: QWidget) -> Optional[QMenu]`——空目标返回 `None`；每个 `QAction` 的 `setData(menu_id)`，且 `objectName('menuItem')`
+  - **订正（终审修复波 A）**：这些名字的唯一出口就是上面那个新建模块；本页原本还把它们算作 `view/widgets/__init__.py` 的 Produces，现已不成立。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -145,6 +147,8 @@ git add view/widgets/playlist_context_menu.py tests/test_playlist_context_menu.p
 git commit -m "feat(view): 播放列表右键菜单构建"
 ```
 
+（终审修复波 A 的订正：那次提交里 `view/widgets/__init__.py` 的改动后来被整体撤销，菜单 id 与 builder 只由 `view/widgets/playlist_context_menu.py` 导出；这一行按原样留着是为了记录派发时的计划，不是记录出厂状态。）
+
 ---
 
 ## Task 3: 右键接线与目标行规则
@@ -164,7 +168,7 @@ git commit -m "feat(view): 播放列表右键菜单构建"
 - `test_right_click_inside_selection_keeps_the_batch`：多选 `[0,1,2]`，右键第 1 行 → 选区仍是 `[0,1,2]`，菜单目标为 `[0,1,2]`。
 - `test_right_click_on_empty_area_does_not_open_menu`（Review Focus 5）：右键空白区 → 未弹菜单、选区不变、`context_menu_requested` 未触发。
 - `test_menu_play_emits_play_requested` / `..._remove_emits_remove_requested` / `..._clear_emits_clear_playlist_requested`：触发对应动作后，断言收到的索引列表与目标一致。
-- `test_context_menu_requested_emitted`：`context_menu_requested` 至少 emit 一次（批次 1 起声明、从未 emit 的那个信号）。
+- `test_context_menu_requested_emitted`：`context_menu_requested` 至少 emit 一次（批次 1 起声明、**当时**从未 emit 的那个信号——Task 3 起它已有 emit；终审修复波 A 进一步把它命名为「无产品槽位的观察钩子」，唯二监听者是 `tests/test_playlist_selection.py` 与 `tests/tools/render_matrix.py`，并由 `test_context_menu_requested_has_no_production_consumer` 钉住「生产侧一旦出现 `connect` 即红」）。
 - `test_repeated_right_clicks_leave_no_menu_behind`（裁定 R7，**这条是 Task 2 唯一没能钉住的东西**）：对同一视图连开两次菜单后，断言 `view.findChildren(QMenu)` 不含仍在世的菜单（`0`，或至少计数不随开合增长）。`build_playlist_menu` 把菜单挂到调用方给的 parent 上（Task 2 已用 `assertIs(menu.parent(), parent)` 钉住），所以**每次右键新建就必须弹完即弃**；不建这条测试，「弹一次漏一个 `QMenu`」在批次 2 的守卫下是静默的。
 
 Run: `PY -m unittest tests.test_playlist_selection -v` → Expected: FAIL。
@@ -173,7 +177,9 @@ Run: `PY -m unittest tests.test_playlist_selection -v` → Expected: FAIL。
 
 顺序：`display_index_at(event.pos(), self)` → `-1` 则直接返回不发信号；否则按目标规则调整选区；`targets = selected_display_indices()`；`menu = build_playlist_menu(targets, self._is_playing_index_in(targets), self)`；**先 emit `context_menu_requested(targets[0], event)`，再** `menu.exec(...)`；最后按 `action.data()` 分派到三个信号。
 
-emit 在弹窗**之前**、分派之后（与本页原稿「分派后 emit」相反，Task 3 实施时按语义纠正并已用 `_names()` 顺序断言锁死）：`context_menu_requested` 播报的是「用户请求了这个目标的菜单」，其载荷 `targets[0]` 只在没有任何动作跑过之前才保证仍描述用户指的那一行；一旦动作信号触发 Task 5 的移除，行可能已不存在。
+emit 在弹窗**之前**、分派之后（与本页原稿「分派后 emit」相反，Task 3 实施时按语义纠正并已用 `_names()` 顺序断言锁死）：`context_menu_requested` 播报的是「用户请求了这个目标的菜单」，其载荷 `targets[0]` 只在没有任何动作跑过之前才保证仍描述**这次请求所针对的那批行**；一旦动作信号触发 Task 5 的移除，行可能已不存在。
+
+> **订正（终审修复波 A，2026-10-20）**：本页原句写的是「才保证仍描述**用户指的那一行**」——**错**。按 §4.3 的资源管理器规则，光标已在选区内时选区**不改**，`targets` 就是整个选区，于是 `targets[0]` 是**批次里最小的显示索引**，不是被指点的那一行；被指点的行是同一栈上的局部变量 `row`，它刻意**不是**载荷。实测出口：`tests/test_playlist_selection.py::test_context_menu_requested_payload_is_the_batch_minimum`（按下 `[1,3,4]` 里的第 4 行，载荷必须是 `1`；把 emit 改成 `emit(row, event)` 即红），`tests/tools/render_matrix.py` 独立钉的是 `min(BATCH_ROWS)`。`view/widgets/playlist_view.py` 的 emit 注释已按这个口径改写。顺序那半句（先 emit 后弹窗、两侧载荷都只在动作跑过之前稳定）仍然成立，未动。
 
 `display_index_at` 在 Task 1 修复轮改为**必须显式给出坐标来源控件**（`display_index_at(pos, widget)`，内部 `viewport().mapFrom(widget, pos)`）。理由：`_list_view` 上方还有一个 header，两个坐标空间差一个 header 高度；按 `event.pos()` 的原样传进去会让每个目标行整体上移一行，并把 header 当成真行弹菜单。**本任务不得省略第二个参数。**
 

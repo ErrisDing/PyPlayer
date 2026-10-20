@@ -468,6 +468,20 @@ def pump(app, settle: float = 0.0) -> None:
 def empty(window) -> None:
     """The first-launch state: no libraries, no entries, no track."""
     window.set_libraries([])
+    # ``MainWindow.clear_playlist`` -> ``PlaylistView.clear`` is kept on the
+    # strength of THIS line and nothing else: production and the suite never call
+    # it, which is why the batch-3 final review read the pair as dead. Wave A
+    # checked the dynamic-lookup routes (no ``.ui`` file in the repo, no
+    # ``getattr`` names these, no object-name query) and still kept the pair,
+    # because this harness is its only caller and that file was the wave's
+    # forbidden pair. Retire the two methods **together with this call site**, not
+    # before it -- deleting the chain first would break the matrix, and deleting
+    # only this call would silently drop the ``empty`` state the 12-frame contract
+    # walks. The same reason is written at both ends of the chain
+    # (``MainWindow.clear_playlist`` and ``PlaylistView.clear``) and in
+    # ``.superpowers/.../final-fix-wave-A-report.md`` item 8; ``tests/
+    # test_dead_code_removed.py`` deliberately does not list this pair, because
+    # listing it there would assert it is dead while this line keeps it alive.
     window.clear_playlist()
     window.clear_now_playing()
     window.reset_progress()
