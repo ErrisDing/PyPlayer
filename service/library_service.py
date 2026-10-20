@@ -3,13 +3,14 @@
 Library Service - Media library management with PyQt signals
 """
 
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple, Any
 from PyQt6.QtCore import QObject, pyqtSignal
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from core.cache_manager import CachedFile
 from core.library_manager import LibraryManager, MediaFile, LibraryRuntime, PlaybackQueue
 
 
@@ -70,6 +71,29 @@ class LibraryService(QObject):
     def get_files(self, library_path: str) -> List[MediaFile]:
         """Get cached files for a library."""
         return self._manager.get_cached_files(library_path)
+
+    def get_cache_entries(self, library_path: str) -> List[CachedFile]:
+        """The library's cached entries, ``md`` included -- a warm start's input.
+
+        Not :meth:`get_files`: ``MediaFile`` carries no ``md``, and the three states
+        batch 4 shows are decided by the key's *presence*. The presenter asks for the
+        entries so ``LibraryMetadataStore`` can fill the rows a scan cannot -- and can
+        then compare each stored fingerprint against the file it now describes.
+        """
+        return self._manager.get_cache_entries(library_path)
+
+    def save_cache_metadata(self, library_path: str,
+                            updates: Dict[str, Tuple[Optional[Dict[str, Any]],
+                                                     int, float]]) -> int:
+        """Write one batch of answered rows into the cache file; entries stamped.
+
+        Batched by design (spec §4.4): ``save_cache`` rewrites the whole document, so
+        one write per row would be quadratic in the library size. Returns the number of
+        entries the cache actually held -- a path that left the file table is dropped
+        rather than added, and the caller's disk re-check is what keeps a deleted or
+        rewritten file out of ``updates`` in the first place.
+        """
+        return self._manager.save_cache_metadata(library_path, updates)
 
     def get_runtime(self, library_path: str) -> Optional[LibraryRuntime]:
         """Get runtime for a library."""

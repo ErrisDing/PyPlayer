@@ -434,15 +434,111 @@ class LibraryScanner:
         )
 
     def _save_to_cache(self, library_path: str, files: List[MediaFile]) -> None:
-        """Save scan results to JSON cache."""
+        """Save scan results to JSON cache, carrying over the metadata that still fits.
+
+        Batch 4's write-back lands in this same file, which makes this the one place a
+        re-scan can destroy it: ``_media_to_cached_file`` builds each entry from a
+        ``MediaFile``, and ``MediaFile`` has no ``md`` -- so an unconditional save here
+        would drop every answer the sweep had just persisted and a refreshed library
+        would re-extract from scratch (spec §4.3's "the version bump must not silently
+        re-scan the file table" applies to the metadata just as much).
+
+        The carry-over rule is the store's own, applied at the writer (ruling B4-R10):
+        a payload travels only with the fingerprint it describes, so an old ``md`` is
+        copied when and only when ``(size_bytes, modified_time)`` came back the same.
+        A file that moved is written *without* an ``md`` key -- pending again, the one
+        shape that asks the next sweep for it -- rather than with a stale answer
+        stamped as if it were current.
+        """
         library_name = Path(library_path).name
-        cached_files = [self._media_to_cached_file(f) for f in files]
+        previous = self._cache_manager.load_cache(library_path)
+        held: Dict[str, Tuple[Dict[str, Any], int, float]] = {}
+        if previous:
+            for cached in previous.files:
+                if cached.md is not None:
+                    held[cached.path] = (cached.md, cached.size_bytes,
+                                         cached.modified_time)
+
+        cached_files = []
+        for media in files:
+            cached = self._media_to_cached_file(media)
+            keep = held.get(cached.path)
+            if keep is not None:
+                md, size_bytes, modified_time = keep
+                if (cached.size_bytes, cached.modified_time) == (size_bytes,
+                                                                 modified_time):
+                    cached.md = md
+            cached_files.append(cached)
+
         cache = self._cache_manager.create_cache(
             library_path=library_path,
             library_name=library_name,
             files=cached_files
         )
         self._cache_manager.save_cache(cache)
+
+    def load_cache_entries(self, directory: str) -> List[CachedFile]:
+        """The cached entries of one library, ``md`` included -- a warm start's input.
+
+        ``get_cached_files`` cannot serve this: it converts to ``MediaFile``, which has
+        no ``md``, and it only answers while the root directory is untouched (its
+        ``is_cache_fresh`` check), which a refresh by definition is not. Task 3's store
+        wants the entries as they were written, fingerprints and all, and is the layer
+        that decides whether they still describe the files on disk.
+
+        A missing, unreadable or out-of-window cache file answers ``[]``: that is
+        "nothing warm to start from", the same state as a first scan, and the sweep
+        fills it. ``LibraryCacheManager.load_cache`` already reports its own failures.
+        """
+        cache = self._cache_manager.load_cache(directory)
+        return list(cache.files) if cache else []
+
+    def update_cache_metadata(self, directory: str,
+                              updates: Dict[str, Tuple[Optional[Dict[str, Any]],
+                                                       int, float]]) -> int:
+        """Stamp one write-back batch onto the cached entries, in one save.
+
+        ``updates`` maps a full path to the ``(md, size_bytes, modified_time)`` triple
+        the caller asserts about that file. Payload and fingerprint are one argument
+        and not two *because* of ruling B4-R10: they describe one version of one file
+        or they describe nothing, and a signature that let one move without the other
+        is the shape that made the silent loss possible. It is also what lets this
+        method tell "not in this batch" (no key) from "answered as nothing" (a triple
+        whose ``md`` is ``None``), which a ``Dict[str, dict]`` could not.
+
+        This is the mechanism, not the policy: it writes exactly what it is handed, and
+        the caller that holds the store is the one that decides a pending row is never
+        offered. Two rules it does own, because they are about this file:
+
+        * **No entry is invented.** Only paths already in the table are stamped, so a
+          result for a file outside the scan cannot add a row to the library's list
+          (which would then be served as if the scan had found it).
+        * **One save per batch, and none at all for an empty one.** ``save_cache``
+          dumps the whole document every call, which is why Task 7 batches; a batch
+          whose paths were all gone by the time it got here costs zero writes.
+
+        The ``scan_timestamp`` travels with the loaded object: this is not a re-scan,
+        and claiming one would make the file table look fresher than it is.
+        """
+        cache = self._cache_manager.load_cache(directory)
+        if cache is None:
+            return 0
+
+        stamped = 0
+        for cached in cache.files:
+            update = updates.get(cached.path)
+            if update is None:
+                continue
+            md, size_bytes, modified_time = update
+            cached.md = dict(md) if md is not None else None
+            cached.size_bytes = size_bytes
+            cached.modified_time = modified_time
+            stamped += 1
+        if not stamped:
+            return 0
+
+        self._cache_manager.save_cache(cache)
+        return stamped
 
     def _get_cached_files(self, path: str) -> Tuple[Optional[float], List[MediaFile]]:
         """Get cached file list (legacy method for backward compatibility)."""
@@ -582,6 +678,28 @@ class LibraryManager:
         cached = self._scanner.scan_directory(path)
         self._cache[path] = cached
         return list(cached)
+
+    def get_cache_entries(self, path: str) -> List[CachedFile]:
+        """The raw cached entries of one library, ``md`` included.
+
+        Separate from :meth:`get_cached_files` on purpose: that one returns the
+        *file table* (``MediaFile``, no metadata, and a freshness rule that a refresh
+        deliberately bypasses), while batch 4's store needs the entries as written --
+        payload and fingerprint together -- to warm-start its three states from.
+        """
+        return self._scanner.load_cache_entries(path)
+
+    def save_cache_metadata(self, path: str,
+                            updates: Dict[str, Tuple[Optional[Dict[str, Any]],
+                                                     int, float]]) -> int:
+        """Write one metadata batch into a library's cache file; entries stamped.
+
+        The write-back half of batch 4 (spec §4.4: by batch, never per row), reached
+        through the scanner because it owns the cache and its path hashing. The policy
+        -- which rows may be offered, and the disk re-check each one must pass -- is
+        the caller's, because that caller holds the store and the sweep's fingerprints.
+        """
+        return self._scanner.update_cache_metadata(path, updates)
 
     def get_all_files(self) -> Dict[str, List[MediaFile]]:
         """Get files from all media libraries"""

@@ -4,7 +4,8 @@ Main Presenter - Coordinates View and Service layers
 Implements MVP pattern for clean separation of concerns
 """
 
-from typing import Optional, List
+import os
+from typing import Dict, Optional, List, Tuple
 from PyQt6.QtCore import QObject, QTimer, pyqtSlot
 
 import sys
@@ -24,11 +25,47 @@ from service.playback_service import PlaybackService
 from service.queue_service import QueueService, PlaybackPosition, DisplayEntry as QueueDisplayEntry
 from service.library_service import LibraryService
 from service.metadata_service import MetadataService
+# Batch 4's Task 7 wiring. The store owns the three states and the per-file expiry, and
+# the presenter is the one layer that meets all four parties -- the scan, the sweep, the
+# queue's rows and the cache file. The state words are never spelled here (ruling B4-R5):
+# every one that reaches a row was read back from the store that decided it.
+from service.metadata_store import LibraryMetadataStore, RowMetadata
 from service.config_service import ConfigService
 
 from core import i18n
 from core.player import PlayerState
 from core.library_manager import Track
+
+#: Rows the sweep may answer before the cache file is rewritten.
+#:
+#: Measured on this host through the repo's own paths by the one-shot probe kept at
+#: ``.superpowers/sdd/2026-10-20-ui-batch4-metadata-columns/in-flight/successor-task7/probe_metadata_batch.py``
+#: (never committed); the full numbers and the derivation are in ``task-7-report.md``.
+#: Samples are the repository's own real recording, re-encoded into each container:
+#:
+#: * extraction is **cheap and flat** -- medians of 0.13 ms (flac), 0.32 ms (mp3),
+#:   0.36 ms (mp3 carrying a 7 KB embedded cover) and 0.012 ms for a file no extractor
+#:   claims (wav, unknown suffix). The cover read that B4-R15 leaves in place costs
+#:   0.036 ms of that (0.125 -> 0.161 ms on the same flac). ogg/m4a were not measured:
+#:   this host has no encoder for either, and they cross the same mutagen open-and-parse
+#:   branch the two containers that were measured cross.
+#: * one write-back is **whole-file and on the GUI thread**: ``save_cache`` dumps the
+#:   entire document every call, and a flush is a ``load_cache`` plus a ``save_cache``
+#:   (exactly what ``update_cache_metadata`` does) -- 7.9 ms at 200 rows, 19.0 ms at
+#:   1000, 44.7 ms at 3000, 71.3 ms at 5000, i.e. about 14 us per entry once the fixed
+#:   cost is amortised.
+#:
+#: This number therefore trades JSON writing, not row latency: rows are repainted as they
+#: arrive whatever it is (``_on_metadata_row``), and the ``⋯`` marks are the sweep's
+#: visible progress. With the plan's draft value of 25, a 5000-row library pays 200
+#: flushes x 71 ms = 14.3 s of writing against 1.8 s of actual extraction (793% of it) --
+#: the O(n^2) shape spec §4.4 and §10 risk 2 exist to prevent. The data puts the floor
+#: anywhere at or above ~250 for writing to stay under extraction at that size (20
+#: flushes = 79%), and 500 leaves real headroom without giving up much durability: 10
+#: flushes = 0.71 s (40%) at 5000 rows, 2 = 38 ms (11%) at 1000, 1 = 7.9 ms (11%) at 200.
+#: What it gives up is granularity: a lost batch is at most 500 rows, and those rows are
+#: pending again after a restart, so re-extracting them costs 500 x 0.36 ms ~ 0.2 s.
+METADATA_WRITE_BATCH = 500
 
 
 class MainPresenter(QObject):
@@ -40,6 +77,8 @@ class MainPresenter(QObject):
     - Update View based on Service state changes
     - Handle track end events and navigation
     - Manage playback position updates
+    - Schedule the library's metadata sweep after a scan, hand each answered row to the
+      view, and write the answers back in batches (batch 4, Task 7)
     """
 
     # Update interval for position polling (ms)
@@ -66,6 +105,36 @@ class MainPresenter(QObject):
 
         # Current library tracking
         self._current_library_path: str = ""
+
+        # === batch 4: the metadata sweep ===
+        #
+        # The store belongs to one library and outlives a re-scan of *that* library, so
+        # a row an earlier plan answered but never got as far as writing stays answered
+        # (and a row invalidated between two scans keeps the shape that proves it was
+        # invalidated -- see ``_flush_metadata_cache``). A switch replaces it, because
+        # rows of the library being left must never reach this one's cache file
+        # (spec §10 risk 1).
+        self._metadata_store: Optional[LibraryMetadataStore] = None
+        self._metadata_store_library: str = ""
+        # The library the *next* ``_start_metadata_sweep`` belongs to. The scan entries
+        # set it rather than deriving it from ``_current_library_path``, because
+        # ``library_loaded`` fires for every library a refresh-all walks and only the
+        # first of them is current.
+        self._metadata_library_path: str = ""
+        # The live plan's bookkeeping, per ``task-4-report.md`` §5.1's five conditions:
+        # the count that decides completion is *this* generation's deliveries against
+        # *this* generation's ``len(targets)``. ``_metadata_generation`` of -1 means no
+        # plan is live, which is what makes a refusal (see ``_start_metadata_sweep``)
+        # unable to leave a retired plan looking alive.
+        self._metadata_generation: int = -1
+        self._metadata_expected: int = 0
+        self._metadata_delivered: int = 0
+        self._metadata_since_flush: int = 0
+        # ``(size, mtime)`` per path as this scan measured it -- the pair each stored
+        # ``md`` claims to describe, and the one the write-back re-checks against the
+        # disk. The store holds the same pair privately; a row missing from this map is
+        # a row whose pairing this plan cannot vouch for, so it is not written.
+        self._metadata_fingerprints: Dict[str, Tuple[int, float]] = {}
 
         # Position update timer
         self._position_timer = QTimer(self)
@@ -155,7 +224,6 @@ class MainPresenter(QObject):
         # Load and check background image
         bg_path = self._config.get_background_image()
         if bg_path:
-            import os
             if os.path.exists(bg_path):
                 self._view.set_background_image(bg_path)
             else:
@@ -388,7 +456,16 @@ class MainPresenter(QObject):
 
     @pyqtSlot(str)
     def _on_scan_folder(self, folder: str) -> None:
-        """Handle scan folder request."""
+        """Handle scan folder request.
+
+        No progress report here, and none from the sweep this scan ends up starting
+        (Task 7): ``ActionRail.set_progress`` *raises* for an id outside
+        ``PROGRESSABLE_IDS`` (``view/widgets/action_rail.py:269-270``), this button's id
+        is not in it, and the presenter reaches the rail from a Qt slot -- so a spinner
+        for 打开文件夹 would promise a scan the button does not do *and* take the process
+        with it. The unfilled ``⋯`` marks are that progress (spec §10 risk 4). The work
+        is scheduled where the scan reports back, in ``_on_library_loaded``.
+        """
         self._library.load_library(folder)
 
     @pyqtSlot(str)
@@ -445,7 +522,21 @@ class MainPresenter(QObject):
 
     @pyqtSlot(str)
     def _on_library_selected(self, library_path: str) -> None:
-        """Handle library selection from UI."""
+        """Handle library selection from UI.
+
+        The first two metadata calls are an ordering ruling (B4-R18), not tidiness:
+        retire the sweep that is running *before* wiping the rows it might still be
+        filling. Reversed, a row of the library being left is delivered into a table that
+        has just been cleared and re-filled from the new library's paths -- and two
+        libraries are allowed to overlap on absolute paths, which is exactly how one
+        library's length ends up on another library's row (spec §10 risk 1).
+
+        The wipe is unconditional while the sweep is not: with no files to show the
+        queue keeps the rows it has (pre-existing behaviour this task does not change),
+        and starting a plan for a library nobody is looking at would hand its cache file
+        the write-back target. ``_cancel_metadata_sweep`` already cleared the table.
+        """
+        self._cancel_metadata_sweep()
         self._current_library_path = library_path
         self._queue.set_current_library(library_path)
 
@@ -462,6 +553,10 @@ class MainPresenter(QObject):
                     title=media_file.title
                 )
                 tracks.append(track)
+            # Same rule as ``_on_library_loaded``: fill the columns and schedule what is
+            # missing, then push -- the rebuild is where the table reaches the rows.
+            self._metadata_library_path = library_path
+            self._start_metadata_sweep(files)
             self._queue.build_from_tracks(tracks)
             self._view.show_toast(
                 i18n.get('status.library_switched',
@@ -729,6 +824,281 @@ class MainPresenter(QObject):
         """
         self._view.set_playlist_entries(entries)
 
+    # === Metadata sweep wiring (batch 4, Task 7) ===
+    #
+    # The chain these eight methods form, in the order it runs:
+    #
+    #   scan -> ``_start_metadata_sweep`` -> ``_metadata_store_for`` (warm load)
+    #        -> ``_metadata_plan`` (``validate`` + the ``(str, int, float)`` triples)
+    #        -> ``QueueService.set_metadata`` (the columns as far as the cache knows them)
+    #        -> ``MetadataService.start_sweep`` (background extraction)
+    #        -> ``_on_metadata_row`` per answered row -> ``record`` -> ``apply_metadata``
+    #        -> ``MainWindow.update_row_metadata`` -> ``_flush_metadata_cache`` by batch
+    #        and once more when the plan's own deliveries reach its own ``len(targets)``.
+    #
+    # ``_cancel_metadata_sweep`` is the other way in, and the only one allowed to reorder
+    # the two halves it calls (B4-R18).
+
+    def _metadata_store_for(self, library_path: str) -> LibraryMetadataStore:
+        """The store of one library: warm-loaded on sight, kept across a re-scan.
+
+        Reuse is the point. ``load_cache_entries`` *replaces* the whole table, so
+        reloading on every refresh would discard each row an earlier plan answered but a
+        cancelled or superseded sweep never got as far as writing -- those files would be
+        extracted again for nothing on the next scan. Keeping the store is also the only
+        way ``take_dirty`` can answer a ``None`` at all (a row recorded here and
+        invalidated by a later ``validate``), and that shape is what
+        :meth:`_flush_metadata_cache` refuses to write (ruling B4-R10).
+
+        A *different* library gets a fresh store: rows of the library being left must not
+        be writable into this one's cache file (spec §10 risk 1).
+        """
+        store = self._metadata_store
+        if store is not None and self._metadata_store_library == library_path:
+            return store
+        store = LibraryMetadataStore()
+        store.load_cache_entries(self._library.get_cache_entries(library_path))
+        self._metadata_store = store
+        self._metadata_store_library = library_path
+        return store
+
+    @staticmethod
+    def _numeric_pair(size_bytes, modified_time) -> Optional[Tuple[int, float]]:
+        """One row's measured pair, or ``None`` when it is not a pair at all.
+
+        The ``float()`` is the ruling (B4-R16), not a style choice: ``start_sweep``
+        checks its payload strictly and refuses an ``int`` mtime, so a fingerprint that
+        came back from a hand-edited (or externally written) cache as an integer would
+        take the *whole* library's sweep down -- the symptom is three columns of ``⋯``
+        forever, with nothing on screen saying why. The sweep's strictness stays where
+        the review left it and the producer normalises instead.
+
+        ``None`` for a value that is not a number at all, because such a row can be
+        neither swept nor re-checked before a write: dropping it leaves that one row
+        pending, which is the honest state, while raising would have cost the plan and an
+        escaping exception from a slot would have cost the process.
+        """
+        try:
+            return (int(size_bytes), float(modified_time))
+        except (TypeError, ValueError):
+            return None
+
+    def _metadata_plan(self, store: LibraryMetadataStore, files: list) -> Tuple[
+            List[Tuple[str, int, float]], Dict[str, Tuple[int, float]]]:
+        """``(targets, fingerprints)`` for one scan -- the two halves of the pair rule.
+
+        ``validate`` is the only place that decides what to extract: pending rows, rows
+        whose fingerprint moved, and nothing else, with the excluded formats answered on
+        the spot (so a ``.ncm`` row is never ``⋯``, and never a target either). It has to
+        be asked before the columns are filled, because that record is the answer.
+
+        The fingerprints are taken from the *same* file list as the triples, so every
+        number this plan later compares against the disk is the one this scan measured
+        (Task 3's "one instant" rule) rather than a re-stat three layers down -- and rows
+        whose pair is not a number at all are missing from both halves, which is the only
+        honest way to refuse them: no sweep, no write, still pending.
+        """
+        fingerprints: Dict[str, Tuple[int, float]] = {}
+        for media in files:
+            pair = self._numeric_pair(media.size_bytes, media.modified_time)
+            if pair is not None:
+                fingerprints[media.path] = pair
+
+        targets: List[Tuple[str, int, float]] = []
+        for full_path, size_bytes, modified_time in store.validate(files):
+            pair = self._numeric_pair(size_bytes, modified_time)
+            if pair is not None:
+                targets.append((full_path, pair[0], pair[1]))
+        return targets, fingerprints
+
+    def _start_metadata_sweep(self, files: list) -> int:
+        """Fill the rows from the cache, then schedule what the cache does not know.
+
+        Returns the generation this plan runs under, or -1 when nothing was started. The
+        value is the caller's to compare with ``current_generation()`` later (the brief's
+        interface), and -1 is what makes "there is no live plan" distinguishable from the
+        first real generation, which is 1.
+
+        Three things about the order, all measured rather than assumed:
+
+        * ``set_metadata`` before anything is pushed. A rebuild is where the queue's
+          table reaches the rows, and a re-push at an unchanged row count repaints
+          nothing (``tests/test_metadata_wiring.py`` pins both halves), so a later fill
+          would be readable and invisible.
+        * the counters are installed *before* ``start_sweep``, never after a callback:
+          one of the five completion conditions is that a delivery can arrive as soon as
+          the plan exists.
+        * ``start_sweep`` is called even for an empty plan, because taking a generation
+          is what retires the rows the previous plan left in flight (§5.1's fourth
+          condition). ``start_sweep`` itself validates the whole list before queuing
+          anything (ruling B4-R14) and *raises* in this thread when it refuses -- which
+          is why the call sits inside the guard below rather than beside it.
+
+        A failure here is a library whose columns stay ``⋯``, so the except is not a
+        courtesy: ``_on_library_loaded`` is a slot, and an exception leaving one on this
+        host is ``qFatal``, not a traceback. Everything the failure touches is put back
+        the way ``_cancel_metadata_sweep`` wants it found -- nothing live, nothing stale.
+        """
+        library_path = self._metadata_library_path
+        try:
+            store = self._metadata_store_for(library_path)
+            targets, fingerprints = self._metadata_plan(store, files)
+            mapping = {media.path: store.get(media.path) for media in files}
+            self._queue.set_metadata(mapping)
+            self._metadata_fingerprints = fingerprints
+            self._metadata_expected = len(targets)
+            self._metadata_delivered = 0
+            self._metadata_since_flush = 0
+            generation = self._metadata.start_sweep(targets, self._on_metadata_row)
+            self._metadata_generation = generation
+            return generation
+        except Exception as exc:
+            print(f'PyPlayer: metadata for {library_path} was not scheduled: {exc}')
+            self._cancel_metadata_sweep()
+            return -1
+
+    def _cancel_metadata_sweep(self) -> None:
+        """Retire the live plan, then wipe the rows -- in that order (B4-R18).
+
+        ``cancel_sweep`` is the only drop point (the service's generation comparison, and
+        deliberately nothing else), so it has to run first; the wipe that follows is what
+        makes sure that nothing which *did* arrive is still painted on rows that now
+        belong to another library. ``QueueService.clear`` keeps the table by design
+        (ruling B4-R18 says that is correct behaviour, not a gap), so ``set_metadata({})``
+        is the only thing that empties it -- and a library switch that shows an empty file
+        list never rebuilds the queue at all, which is why this half is unconditional.
+
+        The counters go with the plan they counted: a retired plan delivers nothing, not
+        "the rest of its rows", and a count carried over would let the next plan declare
+        itself finished before its own work landed.
+        """
+        self._metadata.cancel_sweep()
+        self._queue.set_metadata({})
+        self._metadata_store = None
+        self._metadata_store_library = ''
+        self._metadata_generation = -1
+        self._metadata_expected = 0
+        self._metadata_delivered = 0
+        self._metadata_since_flush = 0
+        self._metadata_fingerprints = {}
+
+    def _on_metadata_row(self, full_path: str, md: Optional[RowMetadata],
+                         size: int, mtime: float) -> None:
+        """One answered row: record it, repaint it, and flush when a batch is full.
+
+        Called by ``MetadataService._deliver_sweep_row`` -- on the GUI thread, once per
+        target of the live plan, with that target's own fingerprint.
+
+        **It may not raise.** On this host (PyQt6 6.11) an exception leaving a pool
+        worker's ``run`` aborts the process -- exit 127, no traceback, not even the
+        runner's ``Ran`` line -- and the broad ``except`` on the delivery side only
+        covers the ``emit``, not this callback. So the row work is guarded here, and
+        :meth:`_flush_metadata_cache` guards its own disk access: a failed repaint costs
+        one row and a failed write costs one batch, never the player.
+
+        Record, then read back from the store, then repaint -- in that order, because the
+        store is what normalizes the duration (ruling B4-R7). Handing ``md`` straight to
+        the rows would put ``0.0`` on screen as ``0:00`` and disagree with the state word
+        the same row carries.
+
+        The trailing counter/flush block is *outside* the ``try`` on purpose: the write
+        back must happen for a row whose repaint failed (the answer is real whether or not
+        a widget was listening), and neither the arithmetic nor ``_flush_metadata_cache``
+        can raise.
+        """
+        store = self._metadata_store
+        if store is None:
+            return
+        if self._metadata_generation != self._metadata.current_generation():
+            # The service already refused this row; the question asked here is about the
+            # *counters*, which are this file's invention: a delivery of a retired plan
+            # must not be added to the live plan's total (report §5.1's second condition)
+            # and must not be recorded into the store of the library the user switched to.
+            return
+        try:
+            store.record(full_path, md, size, mtime)
+            self._metadata_fingerprints[full_path] = (size, mtime)
+            row = store.get(full_path)
+            state = store.state_of(full_path)
+            # ``apply_metadata`` returns the rows it wrote, and only they get repainted:
+            # the model shares the entry objects with the queue, so re-pushing the whole
+            # table would let the new values be read and never drawn (fact 1 in the report).
+            for display_row in self._queue.apply_metadata(full_path, row, state):
+                self._view.update_row_metadata(display_row, row, state)
+        except Exception as exc:
+            print(f'PyPlayer: metadata row {full_path} was not applied: {exc}')
+
+        self._metadata_delivered += 1
+        self._metadata_since_flush += 1
+        if (self._metadata_since_flush >= METADATA_WRITE_BATCH
+                or self._metadata_delivered >= self._metadata_expected):
+            self._flush_metadata_cache()
+
+    def _fingerprint_still_current(self, full_path: str,
+                                   pair: Tuple[int, float]) -> bool:
+        """Whether the file on disk is still the one the stored answer describes.
+
+        Review Focus 1: a file deleted or rewritten between the scan and the write-back
+        must not have its metadata persisted, because the pair written beside it would
+        claim a version nothing extracted. ``False`` also covers "cannot be stat'ed" --
+        an unreadable file is not going into the cache either -- and leaves the cached
+        entry exactly as it was, which is what makes the next scan ask for it again.
+        """
+        try:
+            stat = os.stat(full_path)
+        except OSError:
+            return False
+        return (stat.st_size, stat.st_mtime) == pair
+
+    def _flush_metadata_cache(self) -> None:
+        """Write the rows answered since the last flush, in one save -- or in no save.
+
+        Three rules, all about the file rather than the rows:
+
+        * **Only what the store says was answered.** ``take_dirty`` hands back
+          ``(path, md | None)``, and a ``None`` is a row that went back to pending (a
+          later ``validate`` invalidated one that had not been flushed yet). It must not
+          be offered at all: writing it would either drop an answer the disk still
+          supports or advance a fingerprint beside a payload that does not describe it,
+          and either way the invalidation stops being re-fetchable after a restart
+          (ruling B4-R10 -- this is the branch its ``dict | None`` was kept for).
+        * **Re-checked against the disk, one row at a time.** The pair in
+          ``_metadata_fingerprints`` is the instant the scan measured; a row the file has
+          moved past is skipped, and so is a row this plan has no pair for (a leftover of
+          a retired plan, which the store still holds an answer for). Skipping costs a
+          re-extraction after a restart and nothing else.
+        * **Never a row the cache file does not list.** The writer stamps paths it finds
+          and invents none, so an answer for a file outside this library's table cannot
+          become a row of it.
+
+        Batching is why this exists: ``save_cache`` rewrites the whole document, so one
+        call per row would make a sweep quadratic in the library size (spec §4.4, §10
+        risk 2). A failed write leaves the in-memory rows and the repaints standing --
+        spec §6's third item, with no new error channel -- and costs that batch's
+        persistence, which is exactly the work the next start does again.
+        """
+        store = self._metadata_store
+        library_path = self._metadata_store_library
+        self._metadata_since_flush = 0
+        if store is None or not library_path:
+            return
+
+        updates: Dict[str, Tuple[dict, int, float]] = {}
+        for full_path, md in store.take_dirty():
+            if md is None:
+                continue
+            pair = self._metadata_fingerprints.get(full_path)
+            if pair is None or not self._fingerprint_still_current(full_path, pair):
+                continue
+            updates[full_path] = (md, pair[0], pair[1])
+        if not updates:
+            return
+
+        try:
+            self._library.save_cache_metadata(library_path, updates)
+        except Exception as exc:
+            print(f'PyPlayer: metadata cache write for {library_path} failed: {exc}')
+
     @pyqtSlot(str, object)
     def _on_metadata_loaded(self, filepath: str, metadata) -> None:
         """Handle metadata loaded."""
@@ -776,6 +1146,13 @@ class MainPresenter(QObject):
 
         # Set current library BEFORE building queue so display optimization works
         self._queue.set_current_library(library_path)
+        # Batch 4, Task 7: fill the columns from the cache and schedule what is missing
+        # *before* the table is pushed. That order is not cosmetic -- rebuilding the
+        # display is the only place the queue's row table reaches the rows (spec §4.9),
+        # and at an unchanged row count the model compares only display text and the
+        # playing flag, so a fill that came after the push would be readable and unpainted.
+        self._metadata_library_path = library_path
+        self._start_metadata_sweep(files)
         # Build queue from tracks
         self._queue.build_from_tracks(tracks)
 
