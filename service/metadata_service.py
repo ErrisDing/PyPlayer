@@ -11,9 +11,16 @@ libraries increments that generation instead of trying to retract tasks: queued 
 on a shared ``QThreadPool`` cannot be pulled back reliably, and the failure this
 prevents is specific and expensive -- the previous library's rows landing in the
 current library's cache and view (spec 4.5, spec 10 risk 1).
+
+One sweep is one generation, including two sweeps of the same library back to back:
+``start_sweep`` increments too (ruling B4-R13). A generation that identifies a
+*library* would leave a re-scan without a cancel sharing its predecessor's id, and
+the predecessor's in-flight rows would then be delivered to the *new* callback --
+which is how "one delivery per target, count them to know the sweep is done" turns
+into "done" too early.
 """
 
-from typing import Callable, Dict, Optional, Sequence, Tuple
+from typing import Callable, Dict, Optional
 from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool
 
 import sys
@@ -37,6 +44,66 @@ def _row_of(extracted: Optional[SongMetadata]) -> Optional[RowMetadata]:
         return None
     return RowMetadata(artist=extracted.artist, album=extracted.album,
                        duration=extracted.duration)
+
+
+def _validated_targets(
+        targets: list[tuple[str, int, float]]) -> list[tuple[str, int, float]]:
+    """Check the whole target list in the calling thread, before anything moves.
+
+    Three failures are closed here, and all three are cheaper here than anywhere
+    later (ruling B4-R14, plus review items M7 and M2):
+
+    * **The mispaired shapes.** Two parallel lists were rejected as an API because a
+      mispairing raises nowhere -- it just pairs a row with another row's
+      fingerprint. Handing this method a bare path list, or entries of the wrong
+      length, used to blow up only by an accident of tuple unpacking; requiring a
+      typed triple per entry turns that rejection into the tested contract instead
+      of a side effect (review item M7).
+    * **The payload that kills the process.** ``_sweep_row_ready`` declares its
+      second argument as ``str``. A ``pathlib.Path`` (or bytes, or an int) reaches
+      that slot inside a pool thread, ``emit`` raises ``TypeError`` there, and an
+      exception leaving ``QRunnable.run`` under PyQt6 6.11 aborts the whole player
+      (measured: exit 127, no traceback). A caller that violates the contract gets
+      a ``TypeError`` in its own thread instead.
+    * **The half-started sweep.** Validation is a separate pass over the whole list,
+      so a bad entry late in the list cannot leave the earlier rows already queued
+      and already counting against a sweep the caller believes never started.
+
+    Raises:
+        TypeError: ``targets`` is not a list, or an entry's field has the wrong
+            type. A list is required because this function reads the sequence
+            twice -- a generator would be consumed by the check and then sweep
+            nothing, silently.
+        ValueError: an entry is not three fields long.
+    """
+    if not isinstance(targets, list):
+        raise TypeError(
+            'targets must be the list validate() returned, not '
+            f'{type(targets).__name__}')
+    checked = []
+    for position, target in enumerate(targets):
+        try:
+            full_path, size_bytes, modified_time = target
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f'target {position} is not a '
+                f'(full_path, size_bytes, modified_time) triple: {target!r} '
+                f'({exc})') from exc
+        if not isinstance(full_path, str):
+            raise TypeError(
+                f'target {position} carries a full_path of type '
+                f'{type(full_path).__name__}, not str: the delivery channel '
+                'declares str, so this would raise inside a pool thread')
+        if not isinstance(size_bytes, int):
+            raise TypeError(
+                f'target {position} carries a size_bytes of type '
+                f'{type(size_bytes).__name__}, not int')
+        if not isinstance(modified_time, float):
+            raise TypeError(
+                f'target {position} carries a modified_time of type '
+                f'{type(modified_time).__name__}, not float')
+        checked.append((full_path, size_bytes, modified_time))
+    return checked
 
 
 class MetadataLoadTask(QRunnable):
@@ -99,10 +166,21 @@ class MetadataSweepTask(QRunnable):
         try:
             self._report(self.generation, self.full_path, row,
                          self.size_bytes, self.modified_time)
-        except RuntimeError:
-            # The service's C++ side was destroyed while this task was queued or
-            # running. There is nobody left to report to; dropping is the only
-            # possible answer, and it must not become a second way to escape.
+        except Exception:
+            # Reporting is allowed to fail and must cost exactly this row (ruling
+            # B4-R14). Two shapes reach here: the service's C++ side was destroyed
+            # while this task was queued (``RuntimeError``), and a payload the
+            # channel refuses -- ``_sweep_row_ready`` declares ``str`` for the path,
+            # so anything else raises ``TypeError`` right here, in a pool thread,
+            # where an escaping exception is the same process abort the block above
+            # goes out of its way to avoid. Either way there is nobody left to
+            # report to, so dropping is the only possible answer, and it must not
+            # become a second way to escape.
+            #
+            # ``BaseException`` is deliberately *not* caught, matching the block
+            # above: this guard's job is a payload the channel refuses, not an
+            # interrupt reaching a worker (ruled deliberate in the ledger, review
+            # item M3).
             pass
 
 
@@ -140,10 +218,11 @@ class MetadataService(QObject):
         super().__init__(parent)
         self._thread_pool = QThreadPool.globalInstance()
         self._extractor = extract_metadata if extractor is None else extractor
-        # The library generation (spec 4.5). Touched on the GUI thread only: a
-        # worker's result arrives through ``_sweep_row_ready``, which Qt delivers
-        # queued, so the staleness test runs where the rows are written and no lock
-        # is needed for either side of it.
+        # The sweep generation (spec 4.5, ruling B4-R13): one identity per
+        # ``start_sweep`` call and one per ``cancel_sweep``. Touched on the GUI
+        # thread only: a worker's result arrives through ``_sweep_row_ready``, which
+        # Qt delivers queued, so the staleness test runs where the rows are written
+        # and no lock is needed for either side of it.
         self._generation = 0
         self._sweep_on_row: Optional[Callable[..., None]] = None
         self._sweep_row_ready.connect(self._deliver_sweep_row)
@@ -169,20 +248,28 @@ class MetadataService(QObject):
         green while this line did the work), and it would mean a result is silenced
         by "nobody is listening" when the honest answer is "that library is gone".
         The next :meth:`start_sweep` overwrites it.
+
+        :meth:`start_sweep` advances the same counter, so a cancel and a re-scan have
+        the identical effect on what is in flight -- worthless -- and differ only in
+        that a cancel queues nothing.
         """
         self._generation += 1
         return self._generation
 
-    def start_sweep(self, targets: Sequence[Tuple[str, int, float]],
+    def start_sweep(self, targets: list[tuple[str, int, float]],
                     on_row: Callable[
                         [str, Optional[RowMetadata], int, float], None]) -> int:
         """Extract every target on the shared pool and report rows back.
 
         Args:
             targets: exactly what ``LibraryMetadataStore.validate`` returned --
-                ``(full_path, size_bytes, modified_time)`` per row. A list of paths
-                is not accepted, and neither are two parallel lists: the fingerprint
-                has to belong to its own row (see :class:`MetadataSweepTask`).
+                ``(full_path, size_bytes, modified_time)`` per row, in a list. The
+                shape is checked here, in the calling thread, over the whole list,
+                before a single task is queued: a bare path list, two parallel lists
+                and a wrongly typed field are each refused, because a mispaired
+                fingerprint is silent and a path that is not ``str`` raises inside a
+                pool thread, where the casualty is the process (see
+                :func:`_validated_targets`).
             on_row: called once per target, on the GUI thread, with that target's own
                 ``(size_bytes, modified_time)``. A row whose extraction failed arrives
                 as ``md=None``; a row whose generation went stale mid-sweep never
@@ -192,25 +279,39 @@ class MetadataService(QObject):
                 pins that for the write-back path).
 
         Returns:
-            The generation this sweep runs under -- *not* the number of tasks. The
-            service owns it; a caller that passed one in could pass a stale value and
-            get a silent no-callback in place of the feature (the reason this shape
-            was chosen over the earlier draft).
+            The **new** generation this sweep runs under -- *not* the number of tasks,
+            and not the value the service held beforehand. The service owns it; a
+            caller that passed one in could pass a stale value and get a silent
+            no-callback in place of the feature (the reason this shape was chosen over
+            the earlier draft).
 
-        One live callback per generation is the model: a second ``start_sweep``
-        without an intervening :meth:`cancel_sweep` is the same library asking again,
-        and it replaces the callback rather than running two listeners for one
-        library. Call this from the GUI thread, like the service's other methods --
-        the generation and the callback are read there and nowhere else, which is
-        what keeps the whole thing lock-free.
+        Every call takes a fresh identity, so a second ``start_sweep`` without an
+        intervening :meth:`cancel_sweep` retires the first one's in-flight rows rather
+        than sharing their generation (ruling B4-R13). Sharing was not merely untidy:
+        under one id the older plan's rows are delivered to the *newer* callback, so a
+        caller that counts deliveries against ``len(targets)`` -- which is exactly how
+        Task 7 learns a sweep finished -- would declare the new plan done before its
+        own work started, and the replaced plan's count could never reach its own N.
+        One live callback is still the model: the newest ``start_sweep`` owns
+        ``on_row``, and it is replaced rather than registered twice. Call this from the
+        GUI thread, like the service's other methods -- the generation and the callback
+        are read there and nowhere else, which is what keeps the whole thing lock-free.
 
         No concurrency cap is added: the pool already bounds how many files are open
         at once, and a second bound would only delay a library switch showing up.
-        Empty ``targets`` still answers with the generation and queues nothing.
+        Empty ``targets`` still answers with a generation of its own and queues
+        nothing; taking an id even then is what keeps the previous plan's rows from
+        arriving at an empty sweep's callback.
         """
-        self._sweep_on_row = on_row
+        checked = _validated_targets(targets)
+        # The order is the point: check the whole list, and only then take a
+        # generation and install the callback. A call that is going to be refused
+        # must leave the running sweep exactly as it found it -- its generation, its
+        # callback, and nothing new queued against a count its owner is keeping.
+        self._generation += 1
         generation = self._generation
-        for full_path, size_bytes, modified_time in targets:
+        self._sweep_on_row = on_row
+        for full_path, size_bytes, modified_time in checked:
             self._thread_pool.start(MetadataSweepTask(
                 full_path, size_bytes, modified_time, generation,
                 self._extractor, self._queue_sweep_row))

@@ -15,12 +15,16 @@ What is pinned below, in the order the rules bite:
   sweep and Task 7's write-back re-check). A sweep that re-stats lets the three
   views of "current" drift apart mid-sweep; a sweep that zips two lists mispairs
   silently, and a mispaired fingerprint is a dirty write (spec §10 risk 1).
-* **The generation is held by the service, not passed in by the caller.**
-  ``start_sweep`` returns the generation it ran under, ``cancel_sweep`` increments
-  and returns the new one, ``current_generation`` reads it. A caller-supplied
-  generation was rejected in review because an already-stale argument makes the
-  *correct* behaviour ("the previous library's rows are dropped") indistinguishable
-  from a callback that simply never fires -- a silently dead feature with green tests.
+* **The generation is held by the service, and one sweep is one generation.**
+  ``start_sweep`` takes a fresh generation and returns it, ``cancel_sweep`` takes one
+  too, ``current_generation`` reads the live one. A caller-supplied generation was
+  rejected in review because an already-stale argument makes the *correct* behaviour
+  ("the previous library's rows are dropped") indistinguishable from a callback that
+  simply never fires -- a silently dead feature with green tests. A generation
+  *shared by two calls* is rejected for the same kind of reason (ruling B4-R13): the
+  second call's callback then also receives the first plan's in-flight rows, and a
+  caller counting deliveries against ``len(targets)`` -- which is exactly how Task 7
+  learns a sweep finished -- declares the new plan done before its own work lands.
 * **A stale result is dropped without calling ``on_row`` at all.** Not "called with
   ``None``": the previous library must not touch the current library's rows even
   to say "nothing found". And the drop has to be the *generation comparison's* work,
@@ -28,6 +32,18 @@ What is pinned below, in the order the rules bite:
   generation at the end: if the service silenced a switch by detaching the callback
   instead, the comparison would be untested (measured: an "always current" mutation
   survived the first draft of that test for exactly that reason).
+* **A bad target list is refused in the caller's own thread, before anything moves**
+  (ruling B4-R14). Every entry has to be the ``(str, int, float)`` triple
+  ``validate`` hands out: a bare path list or two parallel lists pair a row with
+  another row's fingerprint silently, and a path that is not ``str`` would raise
+  ``TypeError`` inside ``emit`` on a pool thread -- the same class of escaping
+  exception that aborts the process two bullets down. Refusal is also atomic: a bad
+  entry late in the list may not leave the rows before it queued and counted against
+  a sweep its caller was told never started.
+* **A payload the channel refuses costs one row, not the run.** The report step is
+  wrapped in ``except Exception``, so a task carrying something the ``str`` slot
+  will not take drops that row, delivers the rest of the sweep, and lets the process
+  survive to assert it.
 * **One bad file is one row, not one sweep** (spec §6's first two items): the
   extraction is wrapped per entry, the failure arrives as ``md=None`` (which is
   "tried, nothing" to the store, so it survives a restart instead of being retried
@@ -69,10 +85,11 @@ from tests.test_view_smoke import QT_AVAILABLE, make_app
 from core.metadata import SongMetadata
 
 try:  # ``MetadataService`` needs Qt; the skipUnless below is what guards it.
-    from service.metadata_service import MetadataService
+    from service.metadata_service import MetadataService, MetadataSweepTask
     from service.metadata_store import RowMetadata
 except ImportError:  # pragma: no cover - environment without PyQt6
     MetadataService = None
+    MetadataSweepTask = None
     RowMetadata = None
 
 #: Paths only: the fake extractor never touches the disk, and Task 4 must not
@@ -84,6 +101,11 @@ OGG = str(Path('library', 'jazz', 'live.ogg'))
 #: Distinct per row on purpose -- a shared fingerprint would let a mispaired
 #: ``(size, mtime)`` pass every assertion below.
 TARGETS = ((MP3, 1000, 100.0), (FLAC, 2000, 200.5), (OGG, 3000, 300.25))
+
+#: A second plan for the same library, on paths the gated targets do not use, so a
+#: re-scan's rows can be told apart from the retired plan's.
+EXTRA = ((str(Path('library', 'rock', 'bonus.mp3')), 4000, 400.5),
+         (str(Path('library', 'rock', 'encore.flac')), 5000, 500.75))
 
 #: How long a blocked fake extractor may hold a pool thread. Capped so that a
 #: regression which runs the sweep on the calling thread surfaces as a failed
@@ -327,34 +349,51 @@ class MetadataSweepTest(_SweepTestBase):
         # enqueue count would answer 0 here and look like a generation.
         service.cancel_sweep()
         service.cancel_sweep()
-        generation = service.current_generation()
+        before = service.current_generation()
 
-        self.assertEqual(generation, service.start_sweep([], sink))
+        generation = service.start_sweep([], sink)
+        self.assertEqual(
+            before + 1, generation,
+            'an empty sweep still takes a generation of its own: inheriting the '
+            'previous one is how that plan\'s rows reach an empty callback')
         self.assertEqual(generation, service.current_generation(),
-                         'an empty sweep must not consume a generation')
+                         'start_sweep must answer with the generation it just took, '
+                         'not the number of queued tasks')
         self._pump_for(DRAIN_MS)
         self.assertEqual([], calls, 'an empty target list started an extraction')
         self.assertEqual([], sink.rows, 'an empty target list called back')
 
-    def test_generations_move_only_on_cancel(self):
-        """``start`` adopts, ``cancel`` advances: the generation is the library's."""
+    def test_every_start_and_every_cancel_advances_the_generation(self):
+        """Both mutators advance by exactly one; ``start`` is not a read.
+
+        The counter identifies *this* sweep, not this library (ruling B4-R13) -- the
+        delivery half of that is pinned by
+        :meth:`MetadataSweepRescanTest.test_a_rescan_without_a_cancel_retires_the_first_sweep`,
+        which is where sharing an id actually does damage.
+        """
         calls = []
         service = self._service(_fake_extractor({}, calls))
+
         first = service.start_sweep([TARGETS[0]], RowSink())
+        self.assertEqual(first, service.current_generation(),
+                         'current_generation must report the sweep that is live now')
         second = service.start_sweep([TARGETS[1]], RowSink())
         self.assertEqual(
-            first, second,
-            'a second sweep of the same library must not invalidate the first one; '
-            'only switching libraries (cancel) does that (spec §4.5)')
+            first + 1, second,
+            'a re-scan of the same library must not share the retired plan\'s '
+            'generation; only advancing the counter makes its rows worthless')
 
         cancelled = service.cancel_sweep()
-        self.assertEqual(cancelled, service.current_generation())
-        self.assertEqual(first + 1, cancelled,
+        self.assertEqual(second + 1, cancelled,
                          'cancel must advance the generation by exactly one and '
                          'answer with the new value')
-        self.assertEqual(cancelled, service.start_sweep([], RowSink()),
-                         'the sweep after a cancel runs under the new generation')
-        self.assertEqual(cancelled, service.cancel_sweep() - 1)
+        self.assertEqual(cancelled, service.current_generation())
+
+        empty = service.start_sweep([], RowSink())
+        self.assertEqual(
+            cancelled + 1, empty,
+            'an empty sweep is still a sweep: it owns a callback, so it must not '
+            'inherit one that is still in flight')
 
     def test_default_extractor_is_the_real_extraction_entry_point(self):
         """Injection is a test seam, not the production path.
@@ -412,7 +451,11 @@ class MetadataSweepCancellationTest(_SweepTestBase):
 
         # The same service must still sweep the new library normally.
         started_generation = service.start_sweep([TARGETS[1]], new_sink)
-        self.assertEqual(new_generation, started_generation)
+        self.assertNotEqual(
+            new_generation, started_generation,
+            'starting the new library takes a generation of its own; the cancel '
+            'only retired what was in flight before it')
+        self.assertEqual(started_generation, service.current_generation())
         self._pump_until(lambda: len(new_sink.rows) == 1,
                          'the sweep after a cancel never delivered',
                          state=lambda: f'new={new_sink} old={old_sink}')
@@ -433,6 +476,209 @@ class MetadataSweepCancellationTest(_SweepTestBase):
                          state=lambda: f'old={old_sink} new={new_sink}')
         self.assertEqual([OGG], old_sink.paths,
                           'the stale row arrived after all, next to the live one')
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class MetadataSweepRescanTest(_SweepTestBase):
+    """Two sweeps on one library with no cancel between them: one of them survives."""
+
+    def test_a_rescan_without_a_cancel_retires_the_first_sweep(self):
+        """Ruling B4-R13 -- the shape the review measured before this fix.
+
+        Three targets queued and blocked, then two more on the same service without
+        a cancel. While only ``cancel_sweep`` advanced the counter, both plans shared
+        one generation, so the *new* callback received **five** rows -- the retired
+        plan's three included -- while the retired callback got none. Task 7 counts
+        deliveries against ``len(targets)`` to learn when a sweep finished, so that
+        shape declares a two-row sweep done before its own two rows land, and the
+        plan it replaced can never reach its own count at all.
+        """
+        gate = self._new_gate()
+        started, returned, calls = [], [], []
+        first_sink, second_sink = RowSink(), RowSink()
+        values = {path: _song(path) for path, _, _ in TARGETS + EXTRA}
+        service = self._service(_fake_extractor(
+            values, calls, started=started, returned=returned,
+            gates={path: gate for path, _, _ in TARGETS}))
+
+        first = service.start_sweep(list(TARGETS), first_sink)
+        self._pump_until(lambda: len(started) == len(TARGETS),
+                         'the first plan never reached the pool threads',
+                         state=lambda: f'started={started} calls={calls}')
+
+        second = service.start_sweep(list(EXTRA), second_sink)
+        self.assertNotEqual(
+            first, second,
+            'one start_sweep is one generation; sharing one with the plan it '
+            'replaced is exactly what lets that plan\'s rows reach this callback')
+        self.assertEqual(second, service.current_generation())
+
+        self._pump_until(lambda: len(second_sink.rows) == len(EXTRA),
+                         'the re-scan did not deliver its own two rows',
+                         state=lambda: f'first={first_sink} second={second_sink}')
+
+        # The retired plan is still in flight: let it finish and land, so the drop
+        # below is an observation about the gate and not a race against the pool.
+        gate.set()
+        self._pump_until(lambda: len(returned) == len(TARGETS) + len(EXTRA),
+                         'the blocked extractions never came back',
+                         state=lambda: f'returned={returned} started={started}')
+        self._pump_for(DRAIN_MS)
+
+        self.assertEqual([], first_sink.rows,
+                         'the retired callback still receives its own rows')
+        self.assertEqual(
+            len(EXTRA), len(second_sink.rows),
+            'the live callback received the retired plan as well, so a count '
+            f'against len(targets) would finish early: {second_sink}')
+        self.assertEqual(sorted(path for path, _, _ in EXTRA),
+                         sorted(second_sink.paths),
+                         'the rows delivered to the live callback are not the live '
+                         'plan\'s')
+        for full_path, md, size_bytes, modified_time in second_sink.rows:
+            expected = next(triple for triple in EXTRA if triple[0] == full_path)
+            self.assertEqual((expected[1], expected[2]), (size_bytes, modified_time),
+                             'a re-scan row came back with a fingerprint that is not '
+                             'its own')
+            self.assertIsNotNone(md, 'the live plan\'s row arrived as nothing')
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class MetadataSweepInputTest(_SweepTestBase):
+    """``start_sweep`` eats ``validate``'s triples, or refuses in the caller's thread."""
+
+    def test_a_bare_path_list_is_refused_before_anything_is_queued(self):
+        """The shape review item M7 could only claim behaviourally until now."""
+        calls = []
+        sink = RowSink()
+        service = self._service(_fake_extractor(
+            {path: _song(path) for path, _, _ in TARGETS}, calls))
+        before = service.current_generation()
+
+        with self.assertRaises(ValueError):
+            service.start_sweep([MP3, FLAC], sink)
+
+        self.assertEqual(
+            before, service.current_generation(),
+            'a refused start_sweep consumed a generation, retiring a sweep that is '
+            'still running and that its caller never heard about')
+        self._pump_for(DRAIN_MS)
+        self.assertEqual([], calls, 'a refused target list queued an extraction')
+        self.assertEqual([], sink.rows, 'a refused target list called back')
+
+    def test_every_mis_shaped_or_wrongly_typed_entry_is_refused(self):
+        """The triple's types and the list itself are the contract (ruling B4-R14).
+
+        ``ValueError`` for the arity cases, ``TypeError`` for the type cases, and the
+        split is not decoration: a caller has to be able to tell "that is not a
+        triple" from "that triple carries a path the delivery channel cannot take".
+        The ``Path`` case is the one that used to be fatal -- see the payload test.
+        """
+        cases = [
+            ('a path instead of a triple', [MP3], ValueError),
+            ('one field', [(MP3,)], ValueError),
+            ('a path plus its fingerprint pair -- two parallel lists',
+             [(MP3, (1000, 100.0)), (FLAC, (2000, 200.5))], ValueError),
+            ('a Path instead of a str path', [(Path(MP3), 1000, 100.0)], TypeError),
+            ('no path at all', [(None, 1000, 100.0)], TypeError),
+            ('a str instead of the size', [(MP3, '1000', 100.0)], TypeError),
+            ('an int instead of the mtime', [(MP3, 1000, 100)], TypeError),
+            ('a tuple of triples instead of a list', (TARGETS[0],), TypeError),
+            ('an iterator, which a two-pass check would swallow',
+             iter([TARGETS[0]]), TypeError),
+        ]
+        calls = []
+        service = self._service(_fake_extractor(
+            {path: _song(path) for path, _, _ in TARGETS}, calls))
+        before = service.current_generation()
+
+        for what, targets, expected in cases:
+            with self.subTest(what):
+                with self.assertRaises(expected):
+                    service.start_sweep(targets, RowSink())
+
+        self.assertEqual(before, service.current_generation(),
+                         'nine refusals consumed nine generations')
+        self._pump_for(DRAIN_MS)
+        self.assertEqual([], calls, 'a refused target list queued an extraction')
+
+    def test_a_refusal_leaves_the_running_sweep_untouched(self):
+        """Review item M2: the old implementation queued while it checked.
+
+        Measured there: a bad triple in the *second* position raised, and the first
+        task had already been queued and had already been delivered -- into the
+        callback of the sweep its caller had just been told had not started. A
+        refusal has to be a no-op, and the live sweep has to survive it.
+        """
+        calls = []
+        running, refused = RowSink(), RowSink()
+        values = {path: _song(path) for path, _, _ in TARGETS}
+        service = self._service(_fake_extractor(values, calls))
+
+        live = service.start_sweep([TARGETS[0]], running)
+        with self.assertRaises(ValueError):
+            service.start_sweep([TARGETS[1], (OGG, FLAC)], refused)
+
+        self.assertEqual(
+            live, service.current_generation(),
+            'a refused start_sweep advanced the counter, so the live sweep\'s rows '
+            'went stale in a library nobody switched to')
+        self._pump_until(lambda: len(running.rows) == 1,
+                         'the live sweep stopped being delivered after a later call '
+                         'was refused',
+                         state=lambda: f'running={running} refused={refused}')
+        self._pump_for(DRAIN_MS)
+        self.assertEqual([], refused.rows,
+                         'the refused sweep reached the callback it never installed')
+        self.assertEqual([MP3], calls,
+                         f'a refused sweep queued extra extraction work: {calls}')
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class MetadataSweepPayloadTest(_SweepTestBase):
+    """The report step's own guard: a payload the channel refuses costs one row."""
+
+    def test_a_payload_the_channel_refuses_is_dropped_not_fatal(self):
+        """Ruling B4-R14: ``except Exception`` -- and deliberately not ``BaseException``.
+
+        ``_sweep_row_ready`` declares ``str`` for the path, so a non-``str`` payload
+        raises ``TypeError`` *inside the emit call*: on a pool thread, inside a Python
+        override of a C++ virtual, which is the one shape that takes the whole process
+        with it (PyQt6 6.11, measured: exit 127, no traceback, not even the runner's
+        summary line). ``start_sweep`` now refuses such a target in the caller's own
+        thread, so the way one still reaches a task is a caller that built
+        :class:`MetadataSweepTask` directly -- hence the direct construction below.
+        This guard is the last line rather than the first, and the test getting as far
+        as its own last assertion is the "the process is still here" half of it.
+
+        ``_thread_pool`` and ``_queue_sweep_row`` are read on purpose: the point is to
+        send the bad payload through the *real* channel, not through a stand-in that
+        could not fail.
+        """
+        calls = []
+        sink = RowSink()
+        extractor = _fake_extractor(
+            {path: _song(path) for path, _, _ in TARGETS}, calls)
+        service = self._service(extractor)
+
+        generation = service.start_sweep([TARGETS[0]], sink)
+        service._thread_pool.start(MetadataSweepTask(
+            Path(MP3), 9000, 900.5, generation, extractor,
+            service._queue_sweep_row))
+
+        self._pump_until(lambda: len(sink.rows) == 1,
+                         'the good row of the same generation never arrived',
+                         state=lambda: f'{sink} calls={calls}')
+        # The bad task has had its turn by now: either its row was dropped, or this
+        # process is already gone.
+        self._pump_for(DRAIN_MS)
+
+        self.assertEqual([MP3], sink.paths,
+                         'a payload the str slot refused still reached on_row')
+        self.assertEqual(1, len(sink.rows),
+                         f'a dropped payload was reported more than once: {sink}')
+        self.assertEqual(_song(MP3).artist, sink.rows[0][1].artist,
+                         'the row that survived is not the sweep\'s own row')
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
@@ -539,13 +785,24 @@ class MetadataSweepShapeTest(_SweepTestBase):
         behind the store's back or hand a ``RowMetadata`` to ``load_async``'s cover
         path. This pins that reading so a later task cannot merge the two by
         accident -- the sweep's caller is Task 7's presenter.
+
+        ``start_sweep`` is patched with ``wraps`` rather than replaced: a plain mock
+        swallows a rewire, and the third assertion below was then guaranteed by
+        construction (review item M5). With the real method still reachable behind
+        the recorder, a rewire *does* run a sweep and *does* light the extractor up,
+        so both halves of the reading are falsifiable again -- and the loop is
+        rotated before looking at the recorder, so a task the pool had not picked up
+        yet cannot hide behind the timing (measured: without this drain, a rewire that
+        builds ``MetadataSweepTask`` directly slipped through green).
         """
         calls = []
         service = self._service(_fake_extractor({MP3: _song(MP3)}, calls))
         service.clear_cache()  # the cache is class-level; a warm entry skips loading
         with mock.patch.object(service, 'load_async') as load_async, \
-                mock.patch.object(service, 'start_sweep') as start_sweep:
+                mock.patch.object(service, 'start_sweep',
+                                  wraps=service.start_sweep) as start_sweep:
             service.preload_files([MP3, FLAC])
+        self._pump_for(DRAIN_MS)
 
         self.assertEqual([mock.call(MP3), mock.call(FLAC)], load_async.call_args_list)
         start_sweep.assert_not_called()
