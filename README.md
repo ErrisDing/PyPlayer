@@ -34,15 +34,62 @@
 
 - **56 px 图标栏 (ActionRail)**: 固定在左侧的七个动作（打开文件、打开文件夹、刷新当前库、刷新全部、媒体库切换、外观设置、关于），Ctrl+Q 退出挂在窗口级快捷键上。
 - **全宽播放列表**: 列表宽度恒等于窗口宽度减 56 px，不再被任何左栏占用。
-- **浮层媒体库面板 (LibrarySidebar)**: 由图标栏的媒体库按钮开合，浮在列表之上而不向其取宽；页脚集中了添加媒体库与管理媒体库两个入口。选择库、点击面板外或 Esc 都会收起面板。
+- **浮层媒体库面板 (LibrarySidebar)**: 由图标栏的媒体库按钮开合，浮在列表之上而不向其取宽；页脚集中了添加媒体库与管理媒体库两个入口。选择库、点击面板外或 Esc 都会收起面板。面板左边缘与其父容器（图标栏右侧的内容区）原点重合，因此**与图标栏之间没有间隙**（批次 3 修正了批次 2 在这里双重扣除 56 px 的坐标假设；渲染矩阵的 `--sidebar-open` 帧把这条量成 `gap=0 FLUSH ON THE RAIL`）。
 - **正在播放条**: 见上，位于底部栏第一行。
 - **限时提示 (Toast)**: 一两行文字的瞬时反馈，2.5 秒后自动消失。
 
 状态反馈按三类分流 / status is routed three ways: 进度显示在发起它的图标栏按钮上（running 态），成功反馈走 toast，错误仍是模态对话框；窗口标题恒为应用名，不再被任何运行时状态改写。
 Progress rides on the rail button that started it, feedback is a transient toast, errors stay dialogs -- and the window title is never rewritten by runtime state.
 
-- ⚠️ **macOS 注意 / macOS caveat**: 批次 2 删除了原生菜单栏。Qt 在没有任何 `QMenuBar` 内容时是否仍会合成一个最小应用菜单（应用名、退出等），**尚未在真实 macOS 硬件上验证**（本仓库在 Windows 上开发，离屏平台无法回答该问题）。macOS 用户在升级到此版本前必须先在实际设备上确认这一点；若 Qt 不再合成应用菜单，Cmd+Q 之外的系统级菜单项将不复存在。
-  The native menu bar was removed in batch 2. Whether Qt still synthesises an application menu with no `QMenuBar` content has **not been verified on real macOS hardware**; confirm it on an actual device before a macOS user upgrades.
+- ⚠️ **macOS 注意 / macOS caveat**: 批次 2 删除了原生菜单栏。Qt 在没有任何 `QMenuBar` 内容时是否仍会合成一个最小应用菜单（应用名、退出等），**尚未在真实 macOS 硬件上验证**（本仓库在 Windows 上开发，离屏平台无法回答该问题）。批次 3 没有触及外壳或菜单结构，这条声明原样保留。macOS 用户在升级到此版本前必须先在实际设备上确认这一点；若 Qt 不再合成应用菜单，Cmd+Q 之外的系统级菜单项将不复存在。
+  The native menu bar was removed in batch 2. Whether Qt still synthesises an application menu with no `QMenuBar` content has **not been verified on real macOS hardware**; batch 3 changed nothing about the shell or the menu structure, so the caveat stands unchanged. Confirm it on an actual device before a macOS user upgrades.
+
+## 播放列表交互 / Playlist Interaction (批次 3 / batch 3)
+
+- 🖱️ **多选语义 = Windows 资源管理器**: `Ctrl+点击` 切换单行、`Shift+点击` 选择区间、`Ctrl+A` 全选。选区读回是 `PlaylistView.selected_display_indices()`，**升序去重的显示索引**（可见列表里的行号），不是队列的 `node_idx`。
+- 🎯 **右键目标规则**: 光标下那行不在选区内 → 选区收缩为它，菜单只作用于它；已在选区内 → 不改选区，菜单作用于整批；空白区（最后一行以下、header 条、空列表）→ 不弹菜单、不发信号、不动选区。
+- 📋 **右键菜单三项**: `播放`（目标批次里含正在播放那行时改成 `暂停`）、`从播放列表移除`（多行时是 `移除 {count} 项`）、分隔线之后 `清空播放列表`。文案全部走 `ctx.*` 两组 locale 同步；不用 `menu.*` 前缀——那是批次 2 拆掉 `QMenuBar` 后遗留的菜单栏文案块。
+- ⌨️ **快捷键 / Shortcuts**:
+
+  | 键 | 动作 | 归属 |
+  |---|---|---|
+  | `Delete` | 移除整个选区（按显示索引**降序**删，否则交错删除会删错歌） | `PlaylistView.keyPressEvent` |
+  | `Enter` / 小键盘 `Enter` | 播放选区中显示索引最小的那行（与双击同源） | 同上 |
+  | `Ctrl+Space` | 播放 / 暂停 | `MainWindow._setup_shortcuts()` |
+  | `Ctrl+↑` / `Ctrl+↓` | 上一首 / 下一首 | 同上 |
+  | `Ctrl+Q` | 退出 | 同上（批次 2） |
+  | `Ctrl+O` | 打开文件 | `ActionRail`（批次 2 刻意钉在按钮上） |
+  | `↑` / `↓` / 裸 `Space` | **列表原生导航，本批次不劫持** | `QListView` |
+  | `Ctrl+A` | 全选 | **Qt 原生 `selectAll`，仓库没有自己实现**，只有一条测试钉住它仍是原生行为 |
+
+  裸 `Space` 让给列表而不是播放/暂停，是实测决定的：`QListView` 的 `Space` 会把当前行下移一行并选中它，一次按下就能塌缩整个选区，所以播放/暂停退到 `Ctrl+Space`。`Delete`/`Enter` 之所以是**窗口层绑定的两个例外**：`QAction.setShortcutWidget` 在 PyQt6 6.11 里根本不存在，而窗口级快捷键一旦匹配 Qt 就已消费按键——槽里再判焦点也还不回按钮和输入框（实测 `#playButton` 的 `keyPressEvent` 计数 0）。反过来，`QListView` 不吃这三个键，它们才会冒泡到外层视图，所以「能进这个 handler 的按键」定义上就是列表此刻没在用的按键。
+- 🎨 **行状态一律 delegate 绘制**: 底色优先级 `playing_bg` > `selection_bg` > `hover_bg` > 无，三条是 `elif` 链、从不叠加；hover 还需要 `QListView.viewport()` 上的 `WA_Hover`，否则 Qt 根本不发 `State_MouseOver`。QSS 的 `#playlistView::item` 规则在本项目**从不渲染**（delegate 覆写 `paint()` 且不咨询 style），所以一条也没有。
+- 🧯 **删除的两种危险形状**: 移除**正在播放**那行 → 清空正在播放条并保持停止态，不会把高亮指向另一首；移除播放行**上方**的行 → 播放中曲目不变（presenter 以曲目身份重解析新的显示索引）。
+
+## 需真机核对 / Requires a human on a real desktop (批次 3 / batch 3)
+
+下面每一条都被**实测判定为离屏平台观察不到**，所以本批次的测试一条也没有主张它们——不是测试的缺口，而是交付的一部分。
+运行方式：`python main.py` 逐项手测；另外两次矩阵跑（`--capture window` 与 `--interaction`）在下面第 13 条点名。
+Every item below was measured to be unobservable offscreen, so no test in this batch claims it. This is a deliverable, not a gap.
+批次 2 的 macOS 声明（见上文「界面布局」一节的 ⚠️）仍然成立，本批次没有触及外壳，第 6 条就是它。
+
+1. **`Enter` 真的激活 `#playButton` 与 `LibraryRow` 按钮**。离屏对聚焦按钮注入 Enter 报 `pressed=0 clicked=0`，所以 Task 6 只能用投递计数器断言。**这份清单里风险最高的一条**：它正是裁定 R11 要恢复的那个行为，若真机不成立，键盘层就是在交付一个自动测试无法兑现的承诺。
+2. **带真实 `KeypadModifier` 的小键盘 `Enter`**。范围已订正：只有「修饰键那一半」需要人。`Key_Enter` 的**代码路径**已被 `tests/test_playlist_shortcuts.py::test_numpad_enter_plays_selection` 钉住（它按的是 `(Key_Enter, NO_MODS)`），而 `PlaylistView.keyPressEvent` 有意不查修饰键；自动路径看不见的是真实按键的**到达形状**本身。
+3. **新菜单与正在播放条文案的中文可读性**——离屏把中文画成方框。
+4. **DARK 下 hover 是否真的看得见**：`hover_bg` 比交替底色**更暗**。按本仓库量表（BT.709 luma，通道为 gamma 编码值，**不是** WCAG 相对亮度）：DARK `#2a2d2e` 对交替底 `#2d2d30` 是 **−0.30**、对实测纯底 `#242424` 是 **+3.31**；LIGHT 是 **−1.96** 与 **−5.49**（实测纯底 `#fefefe`）。「这算不算反馈」只能由眼睛判。
+5. **右键菜单作为活弹窗**：矩阵帧是 `QMenu.grab()` 合成图，弹窗自身的原生边框、阴影、边界翻转与指针响应都不在里面。更尖锐的一半：生产 `_popup_menu` 的函数体（`return menu.exec(global_pos)`，`view/widgets/playlist_view.py`）**在任何自动路径都没执行过**——本工具的帧与所有菜单测试都替换了这个缝。所以那一帧证明的是**路由与构建**，不是**交互**：菜单是否模态打开在光标处、是否跟随指针、点击是否生效。
+6. **macOS**：移除 `QMenuBar` 后 Qt 是否仍合成应用菜单（批次 2 的升级前置检查，本批次未变）。
+7. **spec §10 的交互走查**：Ctrl/Shift 多选、右键批量移除（含删掉正在播放那首）、`Delete`、`Enter`、`Space` vs `Ctrl+Space`、`Ctrl+A`、`Ctrl+↑/↓`、裸 `↑/↓` 仍能导航、面板与图标栏齐平无间隙。
+8. **自发（非注入）右键落在空白区**——最后一行以下、header 条、空列表。`PlaylistView.contextMenuEvent` 明确拒绝替这个问题下结论，并把答案**按名字推给真机核对**（`view/widgets/playlist_view.py:240-246`：空白路径既不 accept 也不 ignore，于是「被忽略的事件是否会继续上行到祖先」在本批次无人观测）。这是本批次代码自己记账的那笔欠债。
+9. **指针移开后 hover 底色是否真的消失**。hover 帧拍的是指针**到来**，而 `park_cursor()` 只是把指针挪到播放行、从未离开列表，所以没有任何自动路径看着那片颜色退场；若 `State_MouseOver` 卡住不清，帧仍然会通过守卫。
+10. **多选在两套主题下是否可辨**（不只看 hover）。奇数行是最紧的一档：`selection_bg` 在 DARK 只比交替底 `#2d2d30` 高 **+2.42** luma 点（`#2f343a`），在 LIGHT 比 `#f5f5f5` 低 **−2.55**（`#eceff1`）——即 LIGHT 下选中奇数行读作**变暗**。同一把量表见第 4 条。请判断一眼能否认出整批，以及它与 `playing_bg` 并排时是否分得开。
+11. **真实运行的声音那一半**。关于「移除正在播放那行」的自动断言全是**状态**断言：测试里的 playback service 是 mock（`tests/test_playlist_actions.py:174` 自陈「The engine is a mock」），最强的一条只是 `playback.stop.called`——stop 被**调用**过，不等于声音停了。真机请确认：删掉播放行后声音真的停（无尾音、无偷换成另一首）、正在播放条与进度跟着复位；同一趟走查的另一半——删掉播放行**上方**的行时播放不中断。
+12. **HiDPI**。`view/icons.py:91` 的 `icon(..., dpr)` 2× 光栅化路径在离屏永远走不到（离屏报 device pixel ratio 1），工具文档也把它列进「读 PNG 读不出来的东西」。请在缩放显示上跑 `--capture window`，核对图标栏与传输键图标是原生 2× 而非放大的 1×。
+13. **确认「跳过」这件事本身**。在真实桌面上跑一次
+    `python tests/tools/render_matrix.py --out DIR --capture window --interaction`：
+    应当打印两条 `hover SKIPPED on the 'windows' QPA` 并且**不**写出任何 `*_hover_1100x720.png`，
+    而多选帧与菜单帧照常写出。理由——真实 QPA 不肯让 harness 移动指针——目前是 `cursor_lands()`
+    里一次 `platformName()` 比较，**不是本批次观测到的事实**（已在工具里改写成假说）；这一跑要么把它升级为实测，要么推翻它。
 
 ## 外观设置 / Appearance Settings
 
@@ -56,8 +103,8 @@ Progress rides on the rail button that started it, feedback is a transient toast
   Twelve hand-authored SVGs in `resource/icons/`, rasterised through a theme token instead of being drawn as polygons or typed as characters, so a glyph can never keep a light-mode colour in dark mode.
 - 🧾 **播放状态区分**: 「正在播放」行用 `playing_bg` 底色 + `playing_text` 文字 + 左侧 3px `playing_bar` 色条，与仅选中行的中性 `selection_bg` 分属两族；进度条与音量条共用同一套滑块规则。
 - 🎛️ **统一配置**: 通过图标栏的 `外观设置` 按钮打开配置弹窗（批次 2 起不再有 `文件` 菜单）
-- 📸 **渲染矩阵 / Render matrix**: `python tests/tools/render_matrix.py --out DIR` 在离屏环境渲染 12 张对比图（`light|dark` × `空|有数据|三十库` × `820×520|1100×720`，其中三十库帧浮层面板展开），另有 `--sidebar-open` / `--toast` 两张可选浮层帧与 `--crops` 2x 局部放大，用于改动主题层或外壳后的目视核对。注意离屏 harness 的中文字形会退化为方框，文字正确性需在真实桌面（`--capture window`）运行确认。
-  `python tests/tools/render_matrix.py --out DIR` renders the 12-frame shell matrix (light|dark × empty|populated|thirty-libraries × 820×520|1100×720), plus opt-in sidebar/toast overlay frames and 2x crops. Offscreen, CJK glyphs degrade to boxes, so copy still needs a real desktop run (`--capture window`).
+- 📸 **渲染矩阵 / Render matrix**: `python tests/tools/render_matrix.py --out DIR` 在离屏环境渲染 12 张对比图（`light|dark` × `空|有数据|三十库` × `820×520|1100×720`，其中三十库帧浮层面板展开），另有三类可选帧：`--sidebar-open`（面板展开，量出面板与图标栏的间隙并打印 `FLUSH ON THE RAIL`）、`--toast`（真实 toast 文案压在有数据的列表上）、`--interaction`（批次 3 的三个状态：`hover` / `multi-selected` / `context-menu-grab-composite`，**深浅两套各一张**），以及 `--crops` 2x 局部放大，用于改动主题层或外壳后的目视核对。交互帧自带前置断言：光标没落上、邻行也带上了 hover 底色、选区不是点的那三行、菜单不是真 handler 建的那一份，脚本直接停下，不会交出一张「看起来像」的图。**`context-menu-grab-composite` 这张图的名字就是它的性质**：`QMenu.exec()` 进的是嵌套事件循环，自动化路径不能进去，所以脚本替换掉 `PlaylistView._popup_menu` 这个缝、在缝**内**用 `menu.grab()` 取像素、再把这张 grab 合成到点击坐标上（裁切图同样叫 `…__menu-grab-composite.png`）。于是这一帧证明的是**路由与构建**：真实 `QContextMenuEvent` 走到了 `contextMenuEvent`、资源管理器目标规则跑了、菜单的 id／分隔线／带计数的文案确由 `build_playlist_menu` 做出；它**不证明交互**——生产 `_popup_menu` 的函数体（`return menu.exec(global_pos)`）在任何自动路径里都没执行过（本工具与所有菜单测试都替换了这个缝），所以弹窗是否真的模态打开、是否落在光标处、是否跟随指针、点击是否生效，只能真机看。合成图里也没有弹窗自身的原生边框、阴影与边界翻转。注意离屏 harness 的中文字形会退化为方框，文字正确性需在真实桌面（`--capture window`）运行确认；反过来，**行 hover 只有离屏跑得起来**——按 `cursor_lands()` 的判断，真实 QPA 下 `QTest.mouseMove` 与 `QCursor.setPos` 都不会让 `underMouse()` 变真，所以 `--capture window` 会为 hover 帧打印一条跳过说明而不是图片。**这条理由是假说而非实测**（该函数比的是 `platformName()`，本批次从未在真实 QPA 下跑过这个工具），核对方法见上一节第 13 条。
+  `python tests/tools/render_matrix.py --out DIR` renders the 12-frame shell matrix (light|dark × empty|populated|thirty-libraries × 820x520|1100x720), plus opt-in `--sidebar-open` / `--toast` / `--interaction` frames and 2x crops. The interaction frames assert their own preconditions and stop the run rather than photographing a state that is not on screen. **The third frame's name is its disclaimer**: `context-menu-grab-composite` is a `QMenu.grab()` composited onto the window at the click point, not a photographed popup, because `QMenu.exec()` spins a nested event loop no automated path may enter -- the harness replaces the `PlaylistView._popup_menu` seam and paints the menu from inside it (its crop is `…__menu-grab-composite.png`). So that frame proves **routing and the builder** (a real `QContextMenuEvent` reached `contextMenuEvent`, the Explorer target rule ran, and the ids / separator / counted copy come from the real `build_playlist_menu`) and **not the interaction**: production's `_popup_menu` body (`return menu.exec(global_pos)`) never executes in any automated path -- this tool and every menu test patch that seam -- so whether the popup really opens modally at the cursor, tracks the pointer and acts on a click is a real-run judgement. Such a composite also lacks the popup's own native frame, shadow and edge-flip. Offscreen, CJK glyphs degrade to boxes, so copy still needs a real desktop run (`--capture window`) -- and row hover needs the offscreen run, because `cursor_lands()` assumes a real QPA will not let the harness move the pointer. That assumption is a hypothesis, not a measurement this batch took; checklist item 13 above is the one run that settles it.
 
 ## NCM 格式支持 / NCM Format Support
 

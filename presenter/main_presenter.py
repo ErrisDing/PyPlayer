@@ -92,6 +92,15 @@ class MainPresenter(QObject):
 
         # Playlist interactions
         self._view.track_double_clicked.connect(self._on_track_double_clicked)
+        # Batch 3, Task 6: the two batch handlers of Task 5 finally get their caller,
+        # plus the clear landing ruling R9 asked for (``clear_playlist_requested`` has
+        # had an emitter since Task 3 and, until this line, nowhere to go). The payloads
+        # arrive ascending and deduplicated from ``PlaylistView``; neither forward
+        # re-sorts them, and neither receives an empty list (spec §7 is enforced in the
+        # view *and* at the top of both handlers).
+        self._view.play_tracks_requested.connect(self._on_play_tracks)
+        self._view.remove_tracks_requested.connect(self._on_remove_tracks)
+        self._view.clear_playlist_requested.connect(self._on_clear_playlist)
 
         # Library management. ``add_library_requested`` and
         # ``manage_libraries_requested`` both come from the floating panel's footer
@@ -246,6 +255,136 @@ class MainPresenter(QObject):
         track = self._queue.set_position_by_display_index(display_idx)
         if track:
             self._playback.play(track.path)
+
+    @pyqtSlot(list)
+    def _on_play_tracks(self, indices: List[int]) -> None:
+        """Play a batch of selected rows: the lowest display index wins.
+
+        spec §5 fixes ``Enter`` (and the context menu's Play) on the *smallest*
+        display index, not on the last row clicked, "与双击语义一致" -- so this
+        delegates to the double-click handler instead of repeating its two lines.
+        One route means the three entries cannot drift apart later.
+
+        An empty selection returns without touching anything: spec §7 puts the
+        "no rows, no call" rule here as well as in the view, so the presenter is
+        never one accidental ``[]`` away from a loop that does nothing while its
+        caller believes something was removed.
+        """
+        if not indices:
+            return
+        self._on_track_double_clicked(min(indices))
+
+    @pyqtSlot(list)
+    def _on_remove_tracks(self, indices: List[int]) -> None:
+        """Remove a batch of rows, then put the playback position back by identity.
+
+        Two rules and one compensation, in that order.
+
+        **Descending** (spec §4.2): ``remove_at_display_index`` addresses one row,
+        so deleting row 3 turns former row 5 into row 4. ``sorted(set(...),
+        reverse=True)`` dedupes and removes from the bottom up. An empty batch
+        returns first, for the same reason as above (spec §7).
+
+        **The compensation** is the reason this method is longer than the loop.
+        Ruling R8, measured on this host and pinned by
+        :class:`tests.test_playlist_actions.QueuePositionAfterRemovalCharacterizationTest`:
+        ``QueueService.remove_at_display_index`` only rebuilds the display entries
+        (``service/queue_service.py:486-513``) and **never touches
+        ``PlaybackPosition``** -- unlike ``clear()`` at ``:478-484``, which does.
+        After a removal the queue therefore answers its own stale ``node_index``
+        against the shrunken node list, and reads back a *different song*: with T2
+        playing on a flat five-row queue, removing T2 itself returns T3, and
+        removing T0 -- a row *above* it, which does not delete the song at all --
+        also returns T3. Only removing the tail so the index falls past the end
+        answers ``None``, which is precisely why one test would have missed this.
+        So the post-removal ``get_current_track()`` is not evidence of anything.
+
+        The batch's scope line is 本批次不改队列契约, so the position cannot be fixed
+        inside the service and no new queue API may be invented. The presenter
+        re-establishes it **by track identity**: capture the playing track's path
+        *before* mutating, then look for that path among the entries that survived.
+        Found -- the song is still in the list, only at a new row -- re-point the
+        position there through the existing ``set_position_by_display_index``, which
+        recomputes the highlights and emits ``position_changed`` so the view's
+        playing row follows the song instead of the old number. Not found -- the
+        playing row was one of the removed ones -- there is nothing to re-point at:
+        the position goes to "no track" and playback resets.
+
+        The reset keeps to existing API as well. ``set_current_position(-1, -1)`` is
+        the only way to un-point a position while rows remain: no display entry ever
+        carries ``node_idx == -1``, so it recomputes to ``display_index == -1`` and
+        clears every ``is_playing`` flag. Once nothing is left, spec §7 calls the
+        batch equivalent to clearing the playlist, and ``clear()`` is what the queue
+        itself uses to put ``_position`` back to -1 -- which matters beyond tidiness:
+        a stale ``node_index`` into an emptied node list is one ``advance_to_next()``
+        away from whatever row the user adds next.
+        """
+        targets = sorted(set(indices), reverse=True)
+        if not targets:
+            return
+
+        # Identity first: after the first deletion the queue cannot be trusted to
+        # say what was playing (R8). The display index is captured beside it
+        # because it is the only *exact* answer to "was the playing row in this
+        # batch" -- a path cannot answer that when the same file is queued twice.
+        playing = self._queue.get_current_track()
+        playing_path = playing.path if playing is not None else None
+        playing_idx = self._queue.get_current_position().display_index
+
+        removed = 0
+        for display_idx in targets:
+            if self._queue.remove_at_display_index(display_idx):
+                removed += 1
+        if not removed:
+            # Every index was invalid, so the list is unchanged and nothing may
+            # move: no re-pin, and no stop that the user never asked for.
+            return
+
+        entries = self._queue.get_display_entries()
+        if playing_path is not None and playing_idx >= 0 and playing_idx not in targets:
+            surviving = next((i for i, entry in enumerate(entries)
+                              if not entry.is_folder
+                              and entry.full_path == playing_path), -1)
+            if surviving >= 0:
+                # Same song, new row. Returns the track, but this is not a request
+                # to play it: the engine is already playing it. Among two queued
+                # copies of one path this re-pins the first -- the audio is the
+                # same, exact identity of the copy is batch 5's to settle.
+                self._queue.set_position_by_display_index(surviving)
+                return
+
+        # The playing row is gone (or there was no position at all). Whatever is
+        # left in the list stays left; only the playback state resets.
+        if entries:
+            self._queue.set_current_position(-1, -1)
+        else:
+            self._queue.clear()
+        self._on_stop()
+
+    @pyqtSlot()
+    def _on_clear_playlist(self) -> None:
+        """清空播放列表: the queue goes, and playback goes with it (ruling R9).
+
+        The menu entry has emitted ``PlaylistView.clear_playlist_requested`` since
+        Task 3 and this window has forwarded it since Task 6; before this slot the
+        route ended in nothing, which is exactly batch 2's inert-shortcut shape -- a
+        signal emitted *and* connected still does no work if no slot sits at the end.
+
+        Two calls, in this order, both existing API (本批次不改队列契约):
+
+        * :meth:`QueueService.clear` is the only way to put ``PlaybackPosition`` back
+          to -1 (ruling R8: ``remove_at_display_index`` never touches it, and a stale
+          node index into an emptied list is one ``advance_to_next()`` away from
+          playing whatever the user queues next). It also emits ``display_changed([])``,
+          which empties the visible list through :meth:`_on_display_changed`.
+        * :meth:`_on_stop` is the same reset the removal path runs when the last row
+          goes -- engine stopped, position timer stopped, progress and
+          ``NowPlayingStrip`` cleared, playing highlight dropped. The first call alone
+          would leave a mock-free engine still headline-ing a track the queue no
+          longer has.
+        """
+        self._queue.clear()
+        self._on_stop()
 
     @pyqtSlot(str)
     def _on_scan_folder(self, folder: str) -> None:

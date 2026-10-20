@@ -61,7 +61,6 @@ from PyQt6.QtWidgets import (
 
 from core import i18n
 from core.theme import (
-    RAIL_WIDTH,
     ROW_HEIGHT,
     SIDEBAR_WIDTH,
     SPACE_1,
@@ -436,25 +435,47 @@ class LibrarySidebar(QFrame):
             self.show_panel()
 
     def _place_panel(self) -> None:
-        """Spec §6 geometry: right of the rail, clamped by the parent.
+        """Spec §6 geometry: flush with the parent, clamped by the parent.
 
-        ``min(SIDEBAR_WIDTH, parent - RAIL_WIDTH)`` is the whole contract. The
-        ``max(0, ...)`` floor keeps a pathological parent from producing a
-        negative width (Qt would take that as "use the size hint", i.e. a panel
-        wider than the window -- the exact overflow this task removes), and the
-        height is capped by the parent so the list always scrolls internally
-        instead of running past the window.
+        The arithmetic is **parent-relative and names no rail**. Batch 2 reparented
+        the panel to ``MainWindow``'s ``content_stack``, the container the shell
+        lays out *right of* the ``RAIL_WIDTH`` column, so the parent's own origin is
+        already the rail's right edge. Reading the rail again here paid for it twice
+        -- 56 px of playlist left showing between rail and panel, and a clamp 56 px
+        narrower than the parent -- which is the defect this method's geometry used
+        to enshrine. The contract is therefore:
+
+        * ``x = 0``, width ``min(SIDEBAR_WIDTH, parent.width())`` -- the clamp exactly
+          as the plan and the task-7 brief specify it, **with no floor**. The
+          ``max(0, ...)`` this method carried from batch 2 was load-bearing only while
+          the term read ``parent.width() - RAIL_WIDTH``; a bare ``QWidget.width()`` is
+          never negative, so it guarded a branch nothing can reach. It used to be
+          justified here as plan-mandated, which the whole-branch review checked and
+          disproved (``docs/superpowers/plans/2026-10-20-ui-batch3-interaction.md:369``
+          and ``task-7-brief.md:22`` both spell the width without a floor), and the
+          dead term has been deleted with this bullet rewritten to say the same.
+        * ``y`` and the height keep the batch-2 arithmetic. Neither ever involved
+          the rail: the height is capped by the parent so the list always scrolls
+          internally instead of running past the window.
+
+        Both coordinate spaces are pinned separately in
+        ``tests/test_library_sidebar.py`` (``x == 0`` in the parent's space, and
+        ``mapTo(window, QPoint(0, 0)).x() == RAIL_WIDTH`` in the window's), because
+        either one alone is also satisfied by an offset that merely moved.
         """
         parent = self.parentWidget()
         if parent is None:
             return
-        width = min(SIDEBAR_WIDTH, max(0, parent.width() - RAIL_WIDTH))
+        width = min(SIDEBAR_WIDTH, parent.width())
         available = max(_MIN_PANEL_HEIGHT, parent.height() - 2 * SPACE_2)
         height = min(self._preferred_height(), available, parent.height())
-        # ``x`` never pushes the panel past the right edge: with the clamp above
-        # it cannot, but the parent may be narrower than the rail itself.
-        x = max(0, min(RAIL_WIDTH, parent.width() - width))
-        self.setGeometry(x, SPACE_2, width, height)
+        # The parent's origin, not an inset from it: insetting would re-add the very
+        # offset this method exists to remove. The clamp above keeps the right edge
+        # inside the parent; below ``RAIL_WIDTH`` of parent width the panel simply
+        # goes full-bleed, which batch 2 did not do (it collapsed to width 0 at
+        # x == parent width) -- a difference no shipped window can reach, since the
+        # window's own 800px minimum keeps this parent above 744.
+        self.setGeometry(0, SPACE_2, width, height)
 
     def _preferred_height(self) -> int:
         """Title + rows + footer + chrome, without asking the scroll area."""

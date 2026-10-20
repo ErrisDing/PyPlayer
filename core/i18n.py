@@ -164,7 +164,7 @@ def get(keyword: str, **kwargs) -> str:
                   if default provided.
 
     Returns:
-        Localized string, "[[MISSING: {keyword}]]" if not found, or the 'default' value
+        Localized string, "[MISSING: {keyword}]" if not found, or the 'default' value
         if provided and keyword not found.
 
     Examples:
@@ -202,7 +202,7 @@ def get_category(category: str, keyword: str, **kwargs) -> str:
                   as fallback string.
 
     Returns:
-        Localized string, "[[MISSING: {keyword}]]" if not found, or the 'default' value
+        Localized string, "[MISSING: {keyword}]" if not found, or the 'default' value
         if provided and keyword not found.
     """
     global _current_locale, _initialized

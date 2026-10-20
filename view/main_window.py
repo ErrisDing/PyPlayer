@@ -82,6 +82,34 @@ class MainWindow(QMainWindow):
     add_library_requested = pyqtSignal(str)     # new library path from the panel
     manage_libraries_requested = pyqtSignal()   # open library management dialog
     manage_appearance_requested = pyqtSignal()  # open appearance settings dialog
+    # Batch 3 (Task 6): the three playlist batch routes. The payloads are ascending,
+    # deduplicated *display* rows straight from ``PlaylistView`` -- this layer converts
+    # nothing and must not re-sort (the removal loop reverses them itself, spec §4.2)
+    # and must not read an empty list as a request (``PlaylistView.request_*`` already
+    # refuse to emit one, spec §7). ``clear_playlist_requested`` carries nothing:
+    # clearing is not scoped to a target.
+    play_tracks_requested = pyqtSignal(list)    # display indices
+    remove_tracks_requested = pyqtSignal(list)  # display indices
+    clear_playlist_requested = pyqtSignal()
+
+    # === Window-level key bindings (Task 6, shaped by ruling R11) ===
+    # Literals, deliberately not ``QKeySequence.StandardKey`` lookups: measured on this
+    # host under ``QT_QPA_PLATFORM=offscreen``, ``StandardKey.Quit`` resolves to the
+    # string ``"Exit"`` (batch 2), so a StandardKey-based test can inject
+    # ``QKeyEvent(Key_Space, ControlModifier)`` all day and never hit the binding. A
+    # literal is the same sequence on every platform, which is what makes the
+    # key-injection tests in ``tests/test_playlist_shortcuts.py`` deterministic.
+    #
+    # Three keys, not five. ``Delete`` and ``Enter`` are answered by
+    # ``PlaylistView.keyPressEvent`` (view/widgets/playlist_view.py) since ruling R11,
+    # because a window-level binding for them cannot be scoped to the list on this
+    # binding (``QAction.setShortcutWidget`` does not exist in PyQt6 6.11) and an
+    # in-slot focus gate does not un-consume the press -- it only hides the effect. What
+    # stays here is exactly the set of keys whose meaning is *not* "these rows":
+    # play/pause and prev/next are transport, so they belong to the window.
+    SHORTCUT_PLAY_PAUSE = 'Ctrl+Space'
+    SHORTCUT_PREV = 'Ctrl+Up'
+    SHORTCUT_NEXT = 'Ctrl+Down'
 
     def __init__(self, theme_manager, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -105,13 +133,14 @@ class MainWindow(QMainWindow):
 
         self._setup_window()
         self._setup_ui()
+        self._setup_shortcuts()
         self._setup_connections()
 
         theme_manager.theme_changed.connect(self.recolor)
         self.recolor(theme_manager.tokens)
 
     def _setup_window(self) -> None:
-        """Set up window properties, including the window-level shortcuts."""
+        """Set up window properties: title, size, minimum size."""
         # The title is written exactly once, here. The status channel batch 1 left
         # behind rewrote it on every event; spec §1 criterion 3 retires that, and
         # Task 8 deleted the channel with it. Task 8's source scan of ``view/`` and
@@ -134,6 +163,62 @@ class MainWindow(QMainWindow):
 
         self.setMinimumSize(800, 500)
 
+    # === Keyboard (batch 3, spec §5) ===
+
+    def _setup_shortcuts(self) -> None:
+        """Install every window-level key binding, and nothing else's.
+
+        ``addAction`` is the load-bearing line, not the ``QKeySequence``: batch 2
+        deleted the menu bar, and an action that is constructed but never attached to a
+        widget is reachable by nothing -- the shortcut string exists, the key is dead.
+        ``Ctrl+Q`` came here from :meth:`_setup_window` for the same reason: spec §5
+        asks for the window's key bindings to sit in one place, and it is the only
+        action batch 2 left behind.
+
+        Two rules from the measurements this shape depends on:
+
+        * **``Ctrl+Space`` and never bare ``Space``** (spec §4.4 / ruling R4). Task 1
+          measured the bare key on this host: it walks the list cursor and replaces the
+          selection with the row it landed on, and ``Ctrl+Space`` reaches the *same*
+          built-in handler. So the binding has to be one that **consumes** the press
+          before ``QListView`` sees it -- which is what an enabled window ``QAction``
+          does, and what ``test_shortcut_beats_the_focused_widget_to_the_key`` proves
+          by requiring the selection and the current row to come back unchanged
+          (ruling R10). ``tests/test_playlist_shortcuts.py``
+          :class:`NativeKeyBehaviourProbeTest` re-measures the unconstrained view
+          beside it, so the two halves cannot both go quiet on a Qt upgrade.
+        * **No ``Ctrl+A``.** ``QListView`` already answers it natively (measured:
+          ``[1] -> [0, 1, 2]`` on a three-row list), and a window action on the same
+          key would eat the press before the view's ``selectAll()`` ran.
+
+        Ownership: every action here is parented to and added to *this* window, and
+        ``BottomPanel`` binds nothing of its own (pinned by
+        ``test_the_widgets_bind_no_shortcuts_of_their_own``). The two exemptions are
+        ``ActionRail``'s ``Ctrl+O``, which batch 2 deliberately pinned on the rail, and
+        ``Delete``/``Enter``, which ruling **R11** moved to
+        :meth:`view.widgets.playlist_view.PlaylistView.keyPressEvent`.
+
+        R11 is the fix for Important 1 of the Task 6 review, and it is a change of
+        mechanism, not of wording. What was shipped at ``3356222`` bound ``Delete`` and
+        ``Return`` as window ``QAction``s and made "do nothing when focus is outside the
+        list" true by returning early from the slot. That does not work: matching has
+        already consumed the key by then, so the early return leaves the focused widget
+        with nothing either. Measured with ``#playButton`` focused -- the button's own
+        ``keyPressEvent`` saw ``Enter`` and ``Delete`` **0** times, while an identical
+        button in a window with no bindings at all saw each **1** time. So the two keys
+        were dead across the whole window subtree: the five ``QPushButton``s of the
+        control bar, every ``LibraryRow``, and the ``QLineEdit`` batch 6 will add for
+        search. The alternatives were measured too and none is available:
+        ``QAction.setShortcutWidget`` (the API that would give a real subtree scope) does
+        not exist in PyQt6 6.11; narrowing the context to ``WidgetShortcut`` stops the
+        binding answering *inside* the list as well; and re-enabling the focused
+        widget around the press (enable/disable bookkeeping) was **not probed** -- it
+        is named here as a shape, not as a measurement, and it would still be the
+        window hand-managing a key it has already taken. Handling the two keys in the view needs neither, because the press only
+        reaches :class:`PlaylistView` when ``QListView`` was not using it -- measured:
+        ``Delete``/``Enter``/numpad ``Key_Enter`` arrive, bare ``Space`` and the bare
+        arrows do not. See the plan's 裁定 R11 for the numbers.
+        """
         # Ctrl+Q has no rail button -- closing the window *is* quitting, and
         # spec §6 keeps Exit off the column -- so it needs a window-level owner
         # here or the shortcut dies with the menu bar. The platform standard
@@ -151,6 +236,59 @@ class MainWindow(QMainWindow):
         ])
         exit_action.triggered.connect(self.close)
         self.addAction(exit_action)
+
+        # Transport only. Adding a Delete/Enter action back here would re-open
+        # Important 1, and ``test_no_window_binding_steals_delete_or_enter`` is the
+        # guard that says so in that case.
+        # Nothing is stored on the window for these three: no attribute is read, and
+        # the ownership tests enumerate the bindings by *sequence*
+        # (``test_shortcuts_are_owned_by_the_main_window``), never by name. The object
+        # names these actions used to carry are gone with them -- no QSS rule styles
+        # them (this sheet is the only one, ``theme_manager.py``) and no ``findChild``
+        # ever looked them up. ``tests/test_dead_code_removed.py`` forbids naming them
+        # again, including here.
+        self._add_shortcut(self.SHORTCUT_PLAY_PAUSE, self._on_play_pause_shortcut)
+        self._add_shortcut(self.SHORTCUT_PREV, self._on_prev_shortcut)
+        self._add_shortcut(self.SHORTCUT_NEXT, self._on_next_shortcut)
+
+    def _add_shortcut(self, sequence: str, handler) -> QAction:
+        """Build one enabled ``QAction``, attach it to this window, return it.
+
+        Kept as a helper because the three transport bindings differ only in key
+        and slot, and the ``addAction`` line is the one every one of them must not lose.
+        No text: these actions are reachable only by the keyboard (there is no menu bar
+        left to show a label), so giving them copy would mean inventing UI strings nobody
+        renders -- and the plan's locale rule is about user-visible text.
+
+        No ``setShortcutContext`` call either: all three are ``WindowShortcut`` by
+        default, which is what "the whole shell answers the transport keys" means. A
+        binding that should answer only inside the list belongs in
+        :meth:`view.widgets.playlist_view.PlaylistView.keyPressEvent` instead (ruling
+        R11) -- at this window level there is no context value that means "the playlist
+        subtree", and the in-slot focus gate that used to pretend otherwise consumed
+        the key either way.
+        """
+        action = QAction(self)
+        action.setShortcut(QKeySequence(sequence))
+        action.triggered.connect(handler)
+        self.addAction(action)
+        return action
+
+    def _on_play_pause_shortcut(self) -> None:
+        """``Ctrl+Space``: the same request the strip's play button makes.
+
+        Re-emitting ``play_pause_requested`` and nothing more: the presenter owns the
+        play/pause decision, so the keyboard cannot grow a second opinion here.
+        """
+        self.play_pause_requested.emit()
+
+    def _on_prev_shortcut(self) -> None:
+        """``Ctrl+Up``: previous track, exactly like the strip's button."""
+        self.prev_track_requested.emit()
+
+    def _on_next_shortcut(self) -> None:
+        """``Ctrl+Down``: next track, exactly like the strip's button."""
+        self.next_track_requested.emit()
 
     def _setup_ui(self) -> None:
         """Set up the main UI layout: rail | full-width list, control bar below."""
@@ -226,6 +364,27 @@ class MainWindow(QMainWindow):
 
         # Playlist connections
         self._playlist_view.track_double_clicked.connect(self.track_double_clicked.emit)
+
+        # Batch 3 (Task 6): the three batch routes re-exported as the View API. Pure
+        # forwards -- the signal types already match (``pyqtSignal(list)`` to
+        # ``pyqtSignal(list)``, and ``clear_playlist_requested`` carries nothing), so
+        # there is no conversion here and nothing should be added: the indices are
+        # already ascending and deduplicated by ``PlaylistView``, and re-sorting a second
+        # time would be a second place for the two to disagree (spec §4.2 hands the
+        # descending order to the presenter's loop).
+        #
+        # Both entries reach these lines: the right-click menu emits the view's own
+        # signals, and the view's :meth:`~view.widgets.playlist_view.PlaylistView.keyPressEvent`
+        # calls the ``request_*`` helpers that emit the same ones (ruling R11). One
+        # route, so the keyboard and the menu cannot drift apart -- and the reason the
+        # key tests in ``tests/test_playlist_shortcuts.py`` fail when a forward below is
+        # dropped.
+        self._playlist_view.play_requested.connect(self.play_tracks_requested.emit)
+        self._playlist_view.remove_requested.connect(self.remove_tracks_requested.emit)
+        # Ruling R9: this one has had a real emitter since Task 3 and, until this task,
+        # no landing at all. Its consumer is ``MainPresenter._on_clear_playlist``.
+        self._playlist_view.clear_playlist_requested.connect(
+            self.clear_playlist_requested.emit)
 
         # Rail: connect *only* ``action_triggered``. A click on a rail button
         # already routes ``clicked -> action.trigger() -> triggered``, and
@@ -530,7 +689,14 @@ class MainWindow(QMainWindow):
         self._playlist_view.set_entries(entries)
 
     def clear_playlist(self) -> None:
-        """Clear the playlist."""
+        """Clear the visible list. Zero production callers; kept for the matrix.
+
+        The presenter does not use this -- clearing goes through ``QueueService.clear``
+        and comes back down as ``display_changed([])`` -- and no test drives it either.
+        Its one caller in the repo is ``tests/tools/render_matrix.py``, an automated
+        path this batch ships, so the pair (with ``PlaylistView.clear``) stays until
+        that call goes; delete the two together, not one at a time.
+        """
         self._playlist_view.clear()
 
     def clear_now_playing(self) -> None:

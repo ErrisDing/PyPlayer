@@ -487,6 +487,16 @@ class QueueService(QObject):
         """
         Remove entry at display index.
         Returns True if successful.
+
+        Known debt (batch 3, ruling R8): this rebuilds the display list but does
+        **not** maintain ``self._position`` -- unlike :meth:`clear`, which resets
+        it. Measured with a five-row queue playing T2: removing T2, or removing
+        any row above it, leaves ``get_current_track()`` answering **T3**. The
+        only caller so far compensates in the presenter by re-finding the track
+        by path before it removes anything; that compensation is this method's
+        job and batch 5 (queue mutation contract) owns the fix. The pin to update
+        when it lands is ``QueuePositionAfterRemovalCharacterizationTest`` in
+        ``tests/test_playlist_actions.py``.
         """
         if not (0 <= display_idx < len(self._display_entries)):
             return False
