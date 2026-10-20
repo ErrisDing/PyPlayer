@@ -184,8 +184,17 @@ class LibraryMetadataStore:
         """
         return Path(full_path).suffix.lower()
 
-    def is_excluded(self, full_path: str) -> bool:
-        """Whether this format is deliberately never extracted."""
+    def _is_excluded(self, full_path: str) -> bool:
+        """Whether this format is deliberately never extracted.
+
+        Private (ruling B4, finding M2): grep found no consumer outside this
+        class -- not in the queue, the presenter, the view, Tasks 4/7's planned
+        code, the tests, not even the brief -- so the public spelling was a
+        promise nobody had yet asked for. The rule itself stays where it belongs:
+        a later consumer asks the store that decided it rather than re-typing the
+        extension, and raising the visibility then is a one-word change with no
+        behaviour attached to it.
+        """
         return self._extension_of(full_path) in self.excluded_extensions
 
     def validate(self, files: List[MediaFile]) -> List[Tuple[str, int, float]]:
@@ -231,7 +240,7 @@ class LibraryMetadataStore:
             fingerprint = (media.size_bytes, media.modified_time)
             entry = self._entries.get(full_path)
 
-            if self.is_excluded(full_path):
+            if self._is_excluded(full_path):
                 if entry is None or entry.md is None:
                     self.record(full_path, None, *fingerprint)
                 continue
