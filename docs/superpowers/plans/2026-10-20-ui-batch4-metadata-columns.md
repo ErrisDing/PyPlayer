@@ -270,4 +270,4 @@ Run: `QT_QPA_PLATFORM=offscreen /d/PROGRAMMES/miniconda3/envs/dev_313/python.exe
 
 ## 自审记录（writing-plans 第 2 遍）
 
-八处，全部改在正文里：`drirty_count` 拼写；`update_row_metadata` 的 `state: int` 与 Task 3/5 的三态字符串不一致；sweep 的 `generation` 由调用方传入（恒假参数会伪装成"丢弃过期结果"）；`validate` 返路径导致调用方二次 stat 且与判定不同时刻；`_rebuild_display_entries` 会重造条目、元数据只挂条目则"移除一首歌整表退回 pending"是绿的；接线任务原本排在队列/模型之前、引用两个尚未诞生的接口；`display_row_metadata_changed` 无落地站（R9）；spec §8 的"事件循环仍可响应"、§6 的"提取抛异常""缓存写失败""正在播放行被更新不闪标题"四条没有 owning task。Task 1 的 `duration=0.0` 用例与 Task 3 的归一重复，删前者。
+九处，全部改在正文里：`drirty_count` 拼写；`update_row_metadata` 的 `state: int` 与 Task 3/5 的三态字符串不一致；sweep 的 `generation` 由调用方传入（恒假参数会伪装成"丢弃过期结果"）；`validate` 返路径导致调用方二次 stat 且与判定不同时刻；`_rebuild_display_entries` 会重造条目、元数据只挂条目则"移除一首歌整表退回 pending"是绿的；接线任务原本排在队列/模型之前、引用两个尚未诞生的接口；`display_row_metadata_changed` 无落地站（R9）；spec §8 的"事件循环仍可响应"、§6 的"提取抛异常""缓存写失败""正在播放行被更新不闪标题"四条没有 owning task；Task 1 的 `duration=0.0` 用例与 Task 3 的归一重复，删前者。（上一笔提交写作"八处"，是把最后一条并进了正文而没数进去。）
