@@ -212,6 +212,29 @@ class RecordingLibraryService(LibraryService):
         return super().save_cache_metadata(library_path, updates)
 
 
+class WalkedLibraryService(RecordingLibraryService):
+    """``refresh_all_libraries`` over an explicit list, not over the user's settings.
+
+    ``LibraryService.refresh_all_libraries`` reads ``SettingsManager`` -- the real
+    ``~/.pyplayer`` config -- which this harness must never touch, and the presenter's
+    route needs the *walk* rather than the config read. So only the list is handed in:
+    every library still goes through the real :meth:`refresh_library`, which re-scans the
+    real directory and fires ``library_loaded`` once per library, which is exactly the
+    shape the joint plan has to survive.
+    """
+
+    def __init__(self, journal, paths=None):
+        super().__init__(journal)
+        self.paths = list(paths or [])
+
+    def refresh_all_libraries(self):
+        result = {}
+        for path in self.paths:
+            result[path] = self.refresh_library(path)
+        self.all_libraries_loaded.emit()
+        return result
+
+
 class WiringHarness:
     """Real view + real queue + real sweep + real library scan, in one temp tree."""
 
@@ -252,7 +275,7 @@ class WiringHarness:
         self.config.get_playlist_alpha.return_value = 0.5
         self.config.get_controls_alpha.return_value = 0.6
 
-        self.library = RecordingLibraryService(self.journal)
+        self.library = self._make_library_service()
         self.queue = RecordingQueueService(self.journal)
         self.metadata = RecordingMetadataService(self._extract, self.journal)
         self.presenter = MainPresenter(
@@ -273,6 +296,18 @@ class WiringHarness:
             gate.set()
         self.gates.clear()
         self._pump_for(50)
+
+    # === the library service (built before the presenter connects) ===
+
+    def _make_library_service(self):
+        """The library side of the harness, built *before* the presenter.
+
+        A hook rather than a swap after ``setUp``: the presenter connects to
+        ``library_loaded`` in its constructor, so replacing the service afterwards would
+        leave the signal -- the whole route a multi-library scan travels -- wired to the
+        object the test threw away. ``MultiLibraryJointPlanTest`` hands in the walk.
+        """
+        return RecordingLibraryService(self.journal)
 
     # === the fake extractor ===
 
@@ -593,7 +628,7 @@ class MetadataSweepStartTest(WiringHarness, unittest.TestCase):
         os.utime(moved, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000_000))
         self.extract_calls.clear()
         self.library.written.clear()
-        self.presenter._metadata_store = None
+        self.presenter._metadata_stores = {}
 
         self._scan(library)
 
@@ -958,8 +993,7 @@ class MetadataWriteBackTest(WiringHarness, unittest.TestCase):
                           'shape B4-R10 is about and the reason take_dirty answers '
                           'dict | None, so the test fixture and the store must agree')
 
-        self.presenter._metadata_store = invalidated_store()
-        self.presenter._metadata_store_library = str(library)
+        self.presenter._metadata_stores = {str(library): invalidated_store()}
         # The pending row's pair *matches the disk*: the only reason it may not be
         # written is that its store state says pending.
         fresh_pending_stat = os.stat(pending)
@@ -1009,7 +1043,7 @@ class MetadataWriteBackTest(WiringHarness, unittest.TestCase):
                          self._artists())
         self.assertEqual(1, len(self._writes_for(library)),
                          'the failing write-back was retried on every later row')
-        self.assertEqual(0, self.presenter._metadata_since_flush,
+        self.assertEqual(0, sum(self.presenter._metadata_since_flush.values()),
                          'a failed flush left the batch counter armed, so every row '
                          'after it walks the disk again')
         raw = self._raw_cache(library)
@@ -1275,6 +1309,162 @@ class LibrarySwitchTest(WiringHarness, unittest.TestCase):
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class MultiLibraryJointPlanTest(WiringHarness, unittest.TestCase):
+    """I2(b), ruling B4-R21b: one walk of k libraries is **one** plan, k cache files.
+
+    The library-side half of the claim is read from each library's *store*, not from the
+    screen: after a refresh-all the playlist carries only the last library's rows, because
+    ``_on_library_loaded`` rebuilds the queue once per library -- the pre-existing shape
+    this ruling inherits and does not change (and the one
+    ``test_player.TestHierarchicalPlaylist.test_multiple_libraries_display`` is about).
+    What the joint plan is about is that the *other* libraries are no longer left waiting
+    for a plan that was retired before it started.
+    """
+
+    def _make_library_service(self):
+        return WalkedLibraryService(self.journal)
+
+    def _walk(self, *libraries):
+        """Point the refresh-all route at these real directories."""
+        self.library.paths = [str(path) for path in libraries]
+        self.assertEqual([], self.library.written,
+                         'the walk already ran: the harness never emits '
+                         'refresh_all_requested on its own')
+
+    def _store_states(self, library):
+        """``path -> state`` as one library's store answers for its own files."""
+        store = self.presenter._metadata_stores[str(library)]
+        paths = sorted(media.path for media in self.library.get_files(str(library)))
+        return {path: store.state_of(path) for path in paths}
+
+    def test_one_refresh_all_answers_every_library_and_writes_each_file_once(self):
+        rock = self._make_library('rock', count=2)
+        jazz = self._make_library('jazz', count=1, prefix='jazz')
+        (jazz / 'locked.ncm').write_bytes(b'ncm' * 24)
+        rock_paths = self._file_paths(rock)
+        jazz_paths = self._file_paths(jazz)
+        ncm = str(jazz / 'locked.ncm')
+        self._walk(rock, jazz)
+
+        self.view.refresh_all_requested.emit()
+
+        self.assertEqual(1, len(self.metadata.plans),
+                         f'a two-library walk started {len(self.metadata.plans)} sweeps: '
+                         'every start_sweep retires the plan before it, so the columns of '
+                         'every library but the last stay at ⋯ for the whole session (I2b)')
+        _, targets = self.metadata.plans[0]
+        self.assertEqual(sorted(rock_paths + jazz_paths),
+                         sorted(triple[0] for triple in targets),
+                         'the joint plan did not carry every library\'s to-do list')
+        self._await_plan(rock_paths + jazz_paths)
+
+        self.assertEqual({path: STATE_KNOWN for path in rock_paths},
+                         self._store_states(rock),
+                         'the first library of the walk was left with nothing answered: '
+                         'its plan was replaced before its rows came back')
+        self.assertEqual({**{path: STATE_KNOWN for path in jazz_paths},
+                          ncm: STATE_UNKNOWN}, self._store_states(jazz),
+                         'the last library of the walk is the one that used to survive; '
+                         'it must still work, excluded format included')
+        self.assertEqual(
+            {**{path: STATE_KNOWN for path in jazz_paths}, ncm: STATE_UNKNOWN},
+            self._state_by_path(),
+            f'the rows on screen are not answered: {self._state_by_path()}')
+
+        rock_writes, jazz_writes = self._writes_for(rock), self._writes_for(jazz)
+        self.assertEqual(1, len(rock_writes),
+                         f'rock did not get exactly one closing write-back: {rock_writes}')
+        self.assertEqual(1, len(jazz_writes),
+                         f'jazz did not get exactly one closing write-back: {jazz_writes}')
+        self.assertEqual(sorted(rock_paths), sorted(rock_writes[0][1]),
+                         'a write-back carried another library\'s rows')
+        self.assertEqual(sorted(jazz_paths + [ncm]), sorted(jazz_writes[0][1]),
+                         'the joint plan\'s flush did not carry the whole of one library')
+        for library, own in ((rock, rock_paths), (jazz, jazz_paths + [ncm])):
+            entries = self._raw_cache(library)['files']
+            self.assertEqual(sorted(own), sorted(entry['path'] for entry in entries),
+                             f'{library}: a foreign path entered this cache file')
+            for entry in entries:
+                with self.subTest(path=entry['path']):
+                    self.assertIn('md', entry,
+                                  'the answer never reached the file it belongs to')
+                    if entry['path'] == ncm:
+                        self.assertEqual({'artist': None, 'album': None,
+                                          'duration': None}, entry['md'])
+                    else:
+                        self.assertEqual(
+                            f'artist::{Path(entry["path"]).stem}', entry['md']['artist'],
+                            'one library\'s metadata was written into another library\'s '
+                            'cache file (spec §10 risk 1)')
+
+    def test_the_batch_boundary_is_per_library_not_per_plan(self):
+        """Each library flushes on its own count, into its own file.
+
+        ``METADATA_WRITE_BATCH`` is patched to 1 so the boundary fires on every row, and
+        the deliveries of two libraries interleave freely -- what has to hold either way
+        is that a write-back names one library and carries rows of that library alone. A
+        single plan-wide counter would instead flush a library on another library's rows.
+        """
+        rock = self._make_library('rock', count=2)
+        jazz = self._make_library('jazz', count=2, prefix='jazz')
+        rock_paths, jazz_paths = self._file_paths(rock), self._file_paths(jazz)
+        self._walk(rock, jazz)
+
+        with mock.patch.object(presenter_module, 'METADATA_WRITE_BATCH', 1):
+            self.view.refresh_all_requested.emit()
+            self._await_plan(rock_paths + jazz_paths)
+
+        for library, own in ((rock, rock_paths), (jazz, jazz_paths)):
+            writes = self._writes_for(library)
+            self.assertEqual(2, len(writes),
+                             f'{library}: one row per batch means one write per row of '
+                             f'this library: {writes}')
+            for _, updates in writes:
+                self.assertEqual(1, len(updates), str(updates))
+                self.assertTrue(next(iter(updates)).startswith(str(library)),
+                                f'a flush of {library} carried {sorted(updates)}')
+
+    def test_a_path_two_libraries_share_is_answered_in_both_files(self):
+        """Overlapping libraries: one row of the plan per library that asked, and both
+        cache files get the answer.
+
+        ``scan_directory`` walks recursively, so a library and its own subfolder are two
+        libraries over the same absolute files -- the shape spec §10 risk 1 names. The
+        joint plan must not let the second library's copy of a path be answered by the
+        first one's store alone, and must not write a payload into a file that does not
+        list the path.
+        """
+        root = self.root / 'nested'
+        inner = root / 'inner'
+        inner.mkdir(parents=True)
+        outer = root / 'outer.mp3'
+        shared = inner / 'shared.mp3'
+        outer.write_bytes(b'x' * 24)
+        shared.write_bytes(b'y' * 32)
+        root_paths = sorted(str(path) for path in root.rglob('*.mp3'))
+        self._walk(root, inner)
+
+        self.view.refresh_all_requested.emit()
+        self._await_plan(root_paths + [str(shared)])
+
+        _, targets = self.metadata.plans[0]
+        self.assertEqual(sorted(root_paths + [str(shared)]),
+                         sorted(triple[0] for triple in targets),
+                         'a path two libraries share was dropped from the plan, so one '
+                         'of the two stores could never be answered')
+        self.assertEqual({path: STATE_KNOWN for path in root_paths},
+                         self._store_states(root))
+        self.assertEqual({str(shared): STATE_KNOWN}, self._store_states(inner))
+        inner_entries = self._raw_cache(inner)['files']
+        self.assertEqual([str(shared)], [entry['path'] for entry in inner_entries])
+        for entry in inner_entries:
+            self.assertEqual('artist::shared', (entry.get('md') or {}).get('artist'),
+                             'the subfolder library got no answer of its own')
+        self.assertEqual(sorted(root_paths),
+                         sorted(entry['path'] for entry in self._raw_cache(root)['files']))
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
 class CallbackSafetyTest(WiringHarness, unittest.TestCase):
     """Fact 2: nothing may leave ``_on_metadata_row``."""
 
@@ -1305,7 +1495,7 @@ class CallbackSafetyTest(WiringHarness, unittest.TestCase):
                       'delivery that raises takes the process with it')
 
         self.assertEqual(
-            'late', self.presenter._metadata_store.get(path).artist,
+            'late', self.presenter._metadata_stores[str(library)].get(path).artist,
             'the store did not get the row: record must happen before the update '
             'that failed')
         self.assertEqual(1, len(self._writes_for(library)),

@@ -5,6 +5,7 @@ Implements MVP pattern for clean separation of concerns
 """
 
 import os
+from dataclasses import dataclass, field
 from typing import Dict, Optional, List, Tuple
 from PyQt6.QtCore import QObject, QTimer, pyqtSlot
 
@@ -79,6 +80,37 @@ from core.library_manager import Track
 METADATA_WRITE_BATCH = 500
 
 
+@dataclass
+class _MetadataJoin:
+    """One plan being built: the to-do lists of every library collected so far.
+
+    A multi-library scan fires ``library_loaded`` once per library, and each entry used
+    to answer it with its own ``start_sweep`` -- which takes a generation and retires the
+    plan before it (ruling B4-R13). So k libraries meant k launches and **one** live
+    plan: the first k-1 libraries kept their columns at ``⋯`` for the whole session and
+    paid for their extraction twice over. Collecting first and launching once is what
+    ruling B4-R21b asks for, and this is the accumulator for the window between the
+    first ``_metadata_collect`` and the single ``_end_metadata_join``.
+
+    Nothing here is policy: ``validate`` still decides which rows need work, the store
+    still owns the answer, and each library still gets its own cache file at the flush.
+    The two halves that cannot be one dict are spelled out separately because they
+    genuinely differ -- ``targets`` is per library (whose to-do list), ``owners`` is per
+    path (which libraries asked for that file), and a path two libraries overlap on is
+    asked for once by each of them and answered into both stores.
+    """
+
+    #: library path -> the triples ``validate`` handed back for it.
+    targets: Dict[str, List[Tuple[str, int, float]]] = field(default_factory=dict)
+    #: full path -> the libraries whose plan asked for it, in collection order.
+    owners: Dict[str, List[str]] = field(default_factory=dict)
+    #: full path -> ``(size, mtime)`` as *that* library's scan measured it.
+    fingerprints: Dict[str, Tuple[int, float]] = field(default_factory=dict)
+    #: full path -> the answer the cache already holds, for the columns of every
+    #: library collected so far: ``set_metadata`` replaces, so it is fed the union.
+    mapping: Dict[str, Optional[RowMetadata]] = field(default_factory=dict)
+
+
 class MainPresenter(QObject):
     """
     Main presenter coordinating all UI and business logic.
@@ -119,28 +151,40 @@ class MainPresenter(QObject):
 
         # === batch 4: the metadata sweep ===
         #
-        # The store belongs to one library and outlives a re-scan of *that* library, so
-        # a row an earlier plan answered but never got as far as writing stays answered
-        # (and a row invalidated between two scans keeps the shape that proves it was
-        # invalidated -- see ``_flush_metadata_cache``). A switch replaces it, because
-        # rows of the library being left must never reach this one's cache file
-        # (spec §10 risk 1).
-        self._metadata_store: Optional[LibraryMetadataStore] = None
-        self._metadata_store_library: str = ""
-        # The library the *next* ``_start_metadata_sweep`` belongs to. The scan entries
-        # set it rather than deriving it from ``_current_library_path``, because
+        # One store per library, kept across a re-scan *of that library*, so a row an
+        # earlier plan answered but never got as far as writing stays answered (and a row
+        # invalidated between two scans keeps the shape that proves it was invalidated --
+        # see :meth:`_flush_metadata_cache`). A library switch drops the whole table,
+        # because rows of the library being left must never reach this one's cache file
+        # (spec §10 risk 1). They are keyed by library rather than held in one slot
+        # because a multi-library scan now shares **one** plan (ruling B4-R21b): every
+        # ``start_sweep`` takes a generation and retires the previous plan, so k launches
+        # would leave only the last library's rows filled.
+        self._metadata_stores: Dict[str, LibraryMetadataStore] = {}
+        # The library the *next* single-library plan belongs to. The scan entries set it
+        # rather than deriving it from ``_current_library_path``, because
         # ``library_loaded`` fires for every library a refresh-all walks and only the
         # first of them is current.
         self._metadata_library_path: str = ""
+        # The live plan, seen from the row side: which libraries asked for this path.
+        # Usually one, and a tuple when two libraries overlap on the same absolute file
+        # -- the answer then belongs to *both* cache files, and the row is repainted once
+        # because both stores were handed the identical payload.
+        self._metadata_owners: Dict[str, Tuple[str, ...]] = {}
+        # The window a multi-library scan opens while it collects (see ``_MetadataJoin``),
+        # ``None`` when no joint plan is being built.
+        self._metadata_join: Optional[_MetadataJoin] = None
         # The live plan's bookkeeping, per ``task-4-report.md`` §5.1's five conditions:
         # the count that decides completion is *this* generation's deliveries against
         # *this* generation's ``len(targets)``. ``_metadata_generation`` of -1 means no
-        # plan is live, which is what makes a refusal (see ``_start_metadata_sweep``)
+        # plan is live, which is what makes a refusal (see :meth:`_end_metadata_join`)
         # unable to leave a retired plan looking alive.
         self._metadata_generation: int = -1
         self._metadata_expected: int = 0
         self._metadata_delivered: int = 0
-        self._metadata_since_flush: int = 0
+        # Rows answered since *that library's* last write-back: a joint plan flushes each
+        # library into its own file, so the batch boundary is per file, not per plan.
+        self._metadata_since_flush: Dict[str, int] = {}
         # ``(size, mtime)`` per path as this scan measured it -- the pair each stored
         # ``md`` claims to describe, and the one the write-back re-checks against the
         # disk. The store holds the same pair privately; a row missing from this map is
@@ -518,12 +562,24 @@ class MainPresenter(QObject):
         The count report replaces a hardcoded English sentence;
         ``status.refreshed_files`` is the key, and both numbers are passed as
         parameters rather than formatted here (spec §5: 文案改为走 i18n 并带参数).
+
+        The metadata window is the other half of this method. ``refresh_all_libraries``
+        fires ``library_loaded`` once per library, and every one of those entries used to
+        answer with its own ``start_sweep`` -- each of which retires the plan before it
+        (ruling B4-R13), so a four-library refresh left three libraries showing ``⋯``
+        until the user opened them one by one, and had already paid their extraction
+        twice (ruling B4-R21b). Collecting inside a window and launching once at the end
+        is what makes every library's columns fill from one click. The window is closed
+        in ``finally`` for the same reason the rail's running state is: a scan that raises
+        must not leave the presenter collecting into a plan nobody will ever start.
         """
         self._view.set_action_progress(ACTION_REFRESH_ALL, True)
+        self._begin_metadata_join()
         try:
             results = self._library.refresh_all_libraries()
         finally:
             self._view.set_action_progress(ACTION_REFRESH_ALL, False)
+            self._end_metadata_join()
 
         total_files = sum(len(files) for files in results.values())
         self._view.show_toast(
@@ -837,17 +893,20 @@ class MainPresenter(QObject):
 
     # === Metadata sweep wiring (batch 4, Task 7) ===
     #
-    # The chain these eight methods form, in the order it runs:
+    # The chain these methods form, in the order it runs:
     #
-    #   scan -> ``_start_metadata_sweep`` -> ``_metadata_store_for`` (warm load)
-    #        -> ``_metadata_plan`` (``validate`` + the ``(str, int, float)`` triples)
-    #        -> ``QueueService.set_metadata`` (the columns as far as the cache knows them)
-    #        -> ``MetadataService.start_sweep`` (background extraction)
-    #        -> ``_on_metadata_row`` per answered row -> ``record`` -> ``apply_metadata``
-    #        -> ``MainWindow.update_row_metadata`` -> ``_flush_metadata_cache`` by batch
-    #        and once more when the plan's own deliveries reach its own ``len(targets)``.
+    #   scan -> ``_metadata_collect`` per library (``_metadata_store_for`` warm load,
+    #        ``_metadata_plan``, ``QueueService.set_metadata`` with the union so far)
+    #        -> ``_end_metadata_join``: one ``MetadataService.start_sweep`` for every
+    #        library the scan walked
+    #        -> ``_on_metadata_row`` per answered row -> ``record`` into each owning
+    #        store -> ``apply_metadata`` -> ``MainWindow.update_row_metadata``
+    #        -> ``_flush_metadata_cache`` per library at the batch boundary, and every
+    #        library once more when the plan's own deliveries reach its own
+    #        ``len(targets)``.
     #
-    # ``_cancel_metadata_sweep`` is the other way in, and the only one allowed to reorder
+    # ``_start_metadata_sweep`` is the one-library shape of the same chain, and
+    # ``_cancel_metadata_sweep`` is the other way in -- the only one allowed to reorder
     # the two halves it calls (B4-R18).
 
     def _metadata_store_for(self, library_path: str) -> LibraryMetadataStore:
@@ -861,16 +920,17 @@ class MainPresenter(QObject):
         invalidated by a later ``validate``), and that shape is what
         :meth:`_flush_metadata_cache` refuses to write (ruling B4-R10).
 
-        A *different* library gets a fresh store: rows of the library being left must not
-        be writable into this one's cache file (spec §10 risk 1).
+        A *different* library gets a fresh store, and each store stays keyed to the
+        library whose cache file it may write: rows of the library being left must not be
+        writable into this one's file (spec §10 risk 1). A joint plan therefore holds one
+        store per library rather than one store in total.
         """
-        store = self._metadata_store
-        if store is not None and self._metadata_store_library == library_path:
+        store = self._metadata_stores.get(library_path)
+        if store is not None:
             return store
         store = LibraryMetadataStore()
         store.load_cache_entries(self._library.get_cache_entries(library_path))
-        self._metadata_store = store
-        self._metadata_store_library = library_path
+        self._metadata_stores[library_path] = store
         return store
 
     @staticmethod
@@ -923,19 +983,80 @@ class MainPresenter(QObject):
         return targets, fingerprints
 
     def _start_metadata_sweep(self, files: list) -> int:
-        """Fill the rows from the cache, then schedule what the cache does not know.
+        """The one-library route: open a window, collect this library, launch.
 
         Returns the generation this plan runs under, or -1 when nothing was started. The
         value is the caller's to compare with ``current_generation()`` later (the brief's
         interface), and -1 is what makes "there is no live plan" distinguishable from the
         first real generation, which is 1.
 
+        A scan of a single library is the degenerate joint plan -- one library in the
+        window -- so that both routes share one shape and one ``start_sweep``. The
+        multi-library route (``_on_refresh_all``) opens the window itself and lets every
+        ``library_loaded`` inside it collect; see :meth:`_end_metadata_join`.
+        """
+        self._begin_metadata_join()
+        self._metadata_collect(self._metadata_library_path, files)
+        return self._end_metadata_join()
+
+    def _begin_metadata_join(self) -> None:
+        """Open the window in which the libraries a scan walks share one plan.
+
+        Idempotent: entering it while a window is already open keeps collecting into the
+        same plan instead of silently starting a second one that would retire the first.
+        """
+        if self._metadata_join is None:
+            self._metadata_join = _MetadataJoin()
+
+    def _metadata_collect(self, library_path: str, files: list) -> None:
+        """One library's half of the plan: ask the cache, fill the rows, gather targets.
+
+        ``validate`` is the only thing that decides what needs extracting, and it has to
+        be asked before the columns are pushed, because the record it makes *is* the
+        answer (see :meth:`_metadata_plan`). The fill goes through
+        ``QueueService.set_metadata`` with the **union of every library collected so far**
+        -- it replaces rather than merges, so a second call carrying only the second
+        library's paths would blank the first library's rows (spec §10 risk 1 seen from
+        the other side).
+
+        The whole method is guarded because every caller of it is a Qt slot: on this host
+        an exception escaping one is ``qFatal``, not a traceback, and a library whose
+        cache cannot be read is a library whose columns stay ``⋯`` -- never a dead
+        player. A failure here costs that one library's contribution: what the window has
+        already collected stays collected, and the launch that follows plans exactly the
+        union that survived.
+        """
+        join = self._metadata_join
+        if join is None:
+            return
+        try:
+            store = self._metadata_store_for(library_path)
+            targets, fingerprints = self._metadata_plan(store, files)
+            mapping = {media.path: store.get(media.path) for media in files}
+            owners = {full_path: library_path for full_path, _, _ in targets}
+        except Exception as exc:
+            print(f'PyPlayer: metadata for {library_path} was not collected: {exc}')
+            return
+        # Merged last, from locals, so the half-failed library above leaves the
+        # accumulator exactly as it was: the plan the launch builds has to be the plan
+        # whose targets, owners and fingerprints agree row for row.
+        join.targets[library_path] = targets
+        join.fingerprints.update(fingerprints)
+        join.mapping.update(mapping)
+        for full_path, owner in owners.items():
+            asked = join.owners.setdefault(full_path, [])
+            if owner not in asked:
+                asked.append(owner)
+        # Before anything is pushed: rebuilding the display is the only place the queue's
+        # table reaches the rows, and at an unchanged row count a re-push repaints
+        # nothing (``tests/test_metadata_wiring.py`` pins both halves).
+        self._queue.set_metadata(join.mapping)
+
+    def _end_metadata_join(self) -> int:
+        """Close the window and hand every library collected in it **one** plan.
+
         Three things about the order, all measured rather than assumed:
 
-        * ``set_metadata`` before anything is pushed. A rebuild is where the queue's
-          table reaches the rows, and a re-push at an unchanged row count repaints
-          nothing (``tests/test_metadata_wiring.py`` pins both halves), so a later fill
-          would be readable and invisible.
         * the counters are installed *before* ``start_sweep``, never after a callback:
           one of the five completion conditions is that a delivery can arrive as soon as
           the plan exists.
@@ -944,40 +1065,50 @@ class MainPresenter(QObject):
           condition). ``start_sweep`` itself validates the whole list before queuing
           anything (ruling B4-R14) and *raises* in this thread when it refuses -- which
           is why the call sits inside the guard below rather than beside it.
-        * an empty plan is flushed *here*, because it is the one plan that can never be
-          flushed by ``_on_metadata_row``: with no targets there is no delivery, and the
-          closing write-back is keyed to "every target came back". Spec §4.1's invariant
-          is ``md`` missing ⟺ something is waiting to fetch it, so a library whose rows
-          were all answered on the spot -- an all-``.ncm`` library, where ``validate``
-          records "tried, nothing" itself -- would otherwise re-record the same answer on
-          every start and never persist it. An *already warm* library is not a write: the
-          rows ``validate`` left alone are not dirty, so ``take_dirty`` answers empty and
-          :meth:`_flush_metadata_cache` saves nothing (criterion 6).
+        * a plan with no target is flushed here, because it is the one plan that can
+          never be flushed by ``_on_metadata_row``: with no deliveries there is no
+          "every target came back" to hang the closing write-back on. Spec §4.1's
+          invariant is ``md`` missing ⟺ something is waiting to fetch it, and a library
+          whose rows ``validate`` answered on the spot -- all ``.ncm``, or a library the
+          sweep already filled -- has nothing waiting, so its answer has to be persisted
+          now or it is re-made on every start. An *already clean* library is not a write:
+          nothing is dirty, ``take_dirty`` answers empty and no document is rewritten
+          (criterion 6).
+        * a window in which **nothing** was collected starts nothing: without a new file
+          table there is no plan to own, and taking a generation anyway would retire the
+          in-flight rows of the library the user is looking at for a scan that turned up
+          no files.
 
-        A failure here is a library whose columns stay ``⋯``, so the except is not a
-        courtesy: ``_on_library_loaded`` is a slot, and an exception leaving one on this
-        host is ``qFatal``, not a traceback. Everything the failure touches is put back
-        the way ``_cancel_metadata_sweep`` wants it found -- nothing live, nothing stale.
+        The targets of all libraries are one list because they are one plan: the rows of
+        every library get answered, and each answer still goes to its own store and its
+        own cache file (ruling B4-R21b). A path two libraries share appears once per
+        library that asked for it -- the plan counts one delivery per *target* (report
+        §5.1's third condition) and an answer recorded for it lands in every asking store
+        -- rather than a cross-library dedup, which would move that rule behind a special
+        case for a shape the scan produces legitimately (a library inside a library).
         """
-        library_path = self._metadata_library_path
+        join = self._metadata_join
+        self._metadata_join = None
+        if join is None or not join.targets:
+            return -1
+        targets = [triple for library_targets in join.targets.values()
+                   for triple in library_targets]
+        self._metadata_owners = {full_path: tuple(asked)
+                                 for full_path, asked in join.owners.items()}
+        self._metadata_fingerprints = join.fingerprints
+        self._metadata_since_flush = {library_path: 0 for library_path in join.targets}
+        self._metadata_expected = len(targets)
+        self._metadata_delivered = 0
         try:
-            store = self._metadata_store_for(library_path)
-            targets, fingerprints = self._metadata_plan(store, files)
-            mapping = {media.path: store.get(media.path) for media in files}
-            self._queue.set_metadata(mapping)
-            self._metadata_fingerprints = fingerprints
-            self._metadata_expected = len(targets)
-            self._metadata_delivered = 0
-            self._metadata_since_flush = 0
             generation = self._metadata.start_sweep(targets, self._on_metadata_row)
             self._metadata_generation = generation
-            if not targets:
-                self._flush_metadata_cache()
-            return generation
         except Exception as exc:
-            print(f'PyPlayer: metadata for {library_path} was not scheduled: {exc}')
+            print(f'PyPlayer: the metadata sweep was not started: {exc}')
             self._cancel_metadata_sweep()
             return -1
+        if not targets:
+            self._flush_metadata_cache()
+        return generation
 
     def _cancel_metadata_sweep(self) -> None:
         """Retire the live plan, then wipe the rows -- in that order (B4-R18).
@@ -990,23 +1121,30 @@ class MainPresenter(QObject):
         is the only thing that empties it -- and a library switch that shows an empty file
         list never rebuilds the queue at all, which is why this half is unconditional.
 
+        Every store of the plan goes with it, and so does a collection window that was
+        still open: a window whose stores had been dropped would otherwise launch a plan
+        whose rows belong to nobody. The trade-off is the one the batch accepted -- rows
+        answered since the last flush are re-extracted after a restart, and they are
+        pending, never stale (the store, not the file, is what loses them).
+
         The counters go with the plan they counted: a retired plan delivers nothing, not
         "the rest of its rows", and a count carried over would let the next plan declare
         itself finished before its own work landed.
         """
         self._metadata.cancel_sweep()
         self._queue.set_metadata({})
-        self._metadata_store = None
-        self._metadata_store_library = ''
+        self._metadata_join = None
+        self._metadata_stores = {}
+        self._metadata_owners = {}
         self._metadata_generation = -1
         self._metadata_expected = 0
         self._metadata_delivered = 0
-        self._metadata_since_flush = 0
+        self._metadata_since_flush = {}
         self._metadata_fingerprints = {}
 
     def _on_metadata_row(self, full_path: str, md: Optional[RowMetadata],
                          size: int, mtime: float) -> None:
-        """One answered row: record it, repaint it, and flush when a batch is full.
+        """One answered row: record it in every store that asked, repaint, then batch.
 
         Called by ``MetadataService._deliver_sweep_row`` -- on the GUI thread, once per
         target of the live plan, with that target's own fingerprint.
@@ -1023,25 +1161,43 @@ class MainPresenter(QObject):
         the rows would put ``0.0`` on screen as ``0:00`` and disagree with the state word
         the same row carries.
 
+        A joint plan can ask for one path more than once: two libraries may overlap on the
+        same absolute file (``scan_directory`` walks recursively, so a library can contain
+        another). ``record`` therefore runs on **every** store that asked, and the repaint
+        on the first of them -- the payload is the same values in both, so no row can read
+        one library's answer and another's state word -- and each store then flushes that
+        answer with its own fingerprint into its own cache file.
+
         The trailing counter/flush block is *outside* the ``try`` on purpose: the write
         back must happen for a row whose repaint failed (the answer is real whether or not
         a widget was listening), and neither the arithmetic nor ``_flush_metadata_cache``
-        can raise.
+        can raise. Each library keeps its own count because each has its own file to
+        flush; the plan's own count is what decides the closing flush.
         """
-        store = self._metadata_store
-        if store is None:
-            return
         if self._metadata_generation != self._metadata.current_generation():
             # The service already refused this row; the question asked here is about the
             # *counters*, which are this file's invention: a delivery of a retired plan
             # must not be added to the live plan's total (report §5.1's second condition)
             # and must not be recorded into the store of the library the user switched to.
             return
+        owners = self._metadata_owners.get(full_path)
+        if owners is None:
+            # Not a row this plan asked for; counting it would make the plan finish --
+            # and flush -- on work that is not its own.
+            return
+        answered: List[LibraryMetadataStore] = []
         try:
-            store.record(full_path, md, size, mtime)
+            for library_path in owners:
+                store = self._metadata_stores.get(library_path)
+                if store is None:
+                    continue
+                store.record(full_path, md, size, mtime)
+                answered.append(store)
             self._metadata_fingerprints[full_path] = (size, mtime)
-            row = store.get(full_path)
-            state = store.state_of(full_path)
+            if not answered:
+                return
+            row = answered[0].get(full_path)
+            state = answered[0].state_of(full_path)
             # ``apply_metadata`` returns the rows it wrote, and only they get repainted:
             # the model shares the entry objects with the queue, so re-pushing the whole
             # table would let the new values be read and never drawn (fact 1 in the report).
@@ -1051,9 +1207,14 @@ class MainPresenter(QObject):
             print(f'PyPlayer: metadata row {full_path} was not applied: {exc}')
 
         self._metadata_delivered += 1
-        self._metadata_since_flush += 1
-        if (self._metadata_since_flush >= METADATA_WRITE_BATCH
-                or self._metadata_delivered >= self._metadata_expected):
+        for library_path in owners:
+            since = self._metadata_since_flush.get(library_path, 0) + 1
+            if since >= METADATA_WRITE_BATCH:
+                self._metadata_since_flush[library_path] = 0
+                self._flush_metadata_cache(library_path)
+            else:
+                self._metadata_since_flush[library_path] = since
+        if self._metadata_delivered >= self._metadata_expected:
             self._flush_metadata_cache()
 
     def _fingerprint_still_current(self, full_path: str,
@@ -1072,8 +1233,13 @@ class MainPresenter(QObject):
             return False
         return (stat.st_size, stat.st_mtime) == pair
 
-    def _flush_metadata_cache(self) -> None:
-        """Write the rows answered since the last flush, in one save -- or in no save.
+    def _flush_metadata_cache(self, library_path: Optional[str] = None) -> None:
+        """Write the rows answered since the last flush -- one library, or all of them.
+
+        With no library it walks every store this presenter holds, which is what a
+        closing flush of a joint plan owes: each library's rows go into **its own** cache
+        file, one save per file, and never into another's (spec §10 risk 1). A store with
+        nothing dirty costs no write, so walking wider than the plan is free.
 
         Three rules, all about the file rather than the rows:
 
@@ -1088,7 +1254,9 @@ class MainPresenter(QObject):
           ``_metadata_fingerprints`` is the instant the scan measured; a row the file has
           moved past is skipped, and so is a row this plan has no pair for (a leftover of
           a retired plan, which the store still holds an answer for). Skipping costs a
-          re-extraction after a restart and nothing else.
+          re-extraction after a restart and nothing else. This walk is the second of the
+          three costs behind ``METADATA_WRITE_BATCH``: one ``os.stat`` per row the batch
+          is carrying, so it grows with the batch and not with the library.
         * **Never a row the cache file does not list.** The writer stamps paths it finds
           and invents none, so an answer for a file outside this library's table cannot
           become a row of it.
@@ -1099,10 +1267,14 @@ class MainPresenter(QObject):
         spec §6's third item, with no new error channel -- and costs that batch's
         persistence, which is exactly the work the next start does again.
         """
-        store = self._metadata_store
-        library_path = self._metadata_store_library
-        self._metadata_since_flush = 0
-        if store is None or not library_path:
+        if library_path is None:
+            for held in sorted(self._metadata_stores):
+                self._flush_metadata_cache(held)
+            return
+
+        store = self._metadata_stores.get(library_path)
+        self._metadata_since_flush[library_path] = 0
+        if store is None:
             return
 
         updates: Dict[str, Tuple[dict, int, float]] = {}
@@ -1173,8 +1345,13 @@ class MainPresenter(QObject):
         # display is the only place the queue's row table reaches the rows (spec §4.9),
         # and at an unchanged row count the model compares only display text and the
         # playing flag, so a fill that came after the push would be readable and unpainted.
+        # Inside a multi-library window this call only *collects*: the launch happens once
+        # the walk is over, in ``_on_refresh_all`` (ruling B4-R21b).
         self._metadata_library_path = library_path
-        self._start_metadata_sweep(files)
+        if self._metadata_join is None:
+            self._start_metadata_sweep(files)
+        else:
+            self._metadata_collect(library_path, files)
         # Build queue from tracks
         self._queue.build_from_tracks(tracks)
 
