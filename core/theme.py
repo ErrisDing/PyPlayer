@@ -207,6 +207,19 @@ ROW_HEIGHT = 28
 TRANSPORT_SIZE = 40
 PLAY_SIZE = 50
 
+# Batch 4 Task 8: the playlist's three metadata columns, in the same geometry
+# block as ``ROW_HEIGHT`` because the delegate and the header both read them and
+# neither may invent a width. The two numbers are measurements, not preferences
+# (probe: ``QFontMetrics`` on the playlist's own font, ``Sans Serif`` 9pt):
+# ``3:25`` advances to 48px and one glyph -- CJK or Latin -- to 12px, so 56 holds
+# a ``MM:SS`` with 8px of slack and 120 holds ten CJK glyphs. A ``HH:MM:SS``
+# value measures 84px and is therefore elided by the delegate; widening
+# ``COLUMN_DURATION_WIDTH`` past 84 is what would end that, and
+# ``tests/test_playlist_columns.py::ColumnTokenTest`` fails on both sides of the
+# two claims made here so the numbers cannot drift silently.
+COLUMN_DURATION_WIDTH = 56
+COLUMN_TEXT_WIDTH = 120
+
 # Batch 2 (icon rail + full-width list + floating library panel) retired
 # ``ART_SIZE``: the 200 px cover box belonged to the left panel, and the left
 # panel is gone. The three replacements are sized for the shells that do exist.

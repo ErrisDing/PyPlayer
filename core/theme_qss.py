@@ -80,7 +80,6 @@ the five rules that scoped them.
 from core.theme import (
     AlphaSettings,
     ThemeTokens,
-    FONT_SIZE_LG,
     FONT_SIZE_MD,
     FONT_SIZE_SM,
     PLAY_SIZE,
@@ -113,13 +112,19 @@ from core.theme import (
 #   carry is inert, not wrong -- but it is also unreadable, because a reader
 #   cannot tell dead paint from live, and the sheet is the one place the whole
 #   widget contract is written down. The strip's four names replaced them.
-#   ``#playlistHeader``/``#playlistView`` stay: the playlist never left.
+#   ``#playlistView`` stayed: the playlist never left. Its ``#playlistHeader``
+#   label became batch 4's column row -- the name left the tree, the rule left the
+#   sheet, and the band's paint moved to ``#playlistHeaderRow``.
 #   Re-emitting one of the five now fails the sheet -> tree guard rather than
 #   waiting for a human to notice it in the render matrix.
 # ``#playlistContainer`` is deliberately absent from both sides: layout host
 # only (ledger R2).
 REQUIRED_OBJECT_NAMES: tuple[str, ...] = (
-    'playlistHeader',
+    # Batch 4, Task 8: ``playlistHeader`` is gone from both sides -- the single
+    # "Playlist" label it named became the column row below, and its rule left the
+    # sheet with it. See the 播放列表 section for the pair's own note.
+    'playlistHeaderRow',
+    'colName', 'colDuration', 'colArtist', 'colAlbum',
     'playlistView',
     'bottomPanel',
     'progressSlider',
@@ -203,6 +208,17 @@ KNOWN_DEAD_SELECTORS: tuple[str, ...] = (
     'QPushButton[chip="true"][selected="true"]',
     'QPushButton[chip="true"]:disabled',
     'QPushButton[chip="true"]:focus',
+)
+
+
+#: The four column words of the playlist's header row (batch 4, Task 8), in the
+#: order they paint: the name takes what is left and the three data columns are
+#: fixed to ``COLUMN_DURATION_WIDTH`` / ``COLUMN_TEXT_WIDTH`` by
+#: ``view.widgets.playlist_view.PlaylistView``, which is the same arithmetic the
+#: delegate uses (``view.delegates.playlist_delegate.column_rects``). One rule for
+#: all four, so no column can be styled into looking like a different widget.
+HEADER_COLUMN_SELECTORS: tuple[str, ...] = tuple(
+    f'#{name}' for name in ('colName', 'colDuration', 'colArtist', 'colAlbum')
 )
 
 
@@ -377,13 +393,31 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
     ]))
 
     # -- 播放列表 / playlist -------------------------------------------------
-    # surface_header replaces the old hardcoded dark-grey header band (A3).
-    emit(_rule('#playlistHeader', [
+    # Batch 4, Task 8: the one ``#playlistHeader`` QLabel that used to say
+    # "Playlist" is now the column header -- ``#playlistHeaderRow`` carrying the
+    # band, and four ``QLabel``s carrying the words. The old name left the tree
+    # with the label, so its rule left the sheet with it: nothing here is
+    # unregistered, and nothing joined ``KNOWN_DEAD_SELECTORS`` (that list is the
+    # chip family alone, pinned by ``tests/test_theme_qss.py``).
+    #
+    # ``surface_header`` replaces the old hardcoded dark-grey header band (A3).
+    # No ``padding`` here on purpose: the row lays its labels out with
+    # ``QHBoxLayout`` margins of ``SPACE_2``, which is the same inset the delegate
+    # paints its columns inside -- a QSS padding would be a second, competing
+    # source of that number, and the two would drift by the border's pixel.
+    emit(_rule('#playlistHeaderRow', [
         ('background-color', t.surface_header),
+        ('border-bottom', f'1px solid {t.border}'),
+    ]))
+    # The four column words share one rule set, so a column that reads heavier
+    # than the list is a sheet edit and not an accident. ``FONT_SIZE_MD`` rather
+    # than the old ``FONT_SIZE_LG``: the header is now a grid of four short words
+    # above rows of body text, and a 15px heading made the widest of them look
+    # like a section title rather than a column name.
+    emit(_rule(HEADER_COLUMN_SELECTORS, [
         ('color', t.text_primary),
-        ('font-size', _px(FONT_SIZE_LG)),
+        ('font-size', _px(FONT_SIZE_MD)),
         ('font-weight', '600'),
-        ('padding', f'{_px(SPACE_2)} {_px(SPACE_3)}'),
     ]))
     emit(_rule('#playlistView', [
         ('background-color', playlist_bg),
@@ -595,9 +629,11 @@ def build_qss(tokens: ThemeTokens, alphas: AlphaSettings) -> str:
         ('border-radius', _px(RADIUS_MD)),
         ('padding', f'{_px(SPACE_2)} {_px(SPACE_3)}'),
     ]))
-    # The panel's heading is a small-cap label, not a second ``#playlistHeader``:
+    # The panel's heading is a small-cap label, not a second playlist heading:
     # two 15px/600 headings in one window is what made the old left column look
-    # like a second app.
+    # like a second app. (``#playlistHeader`` is the name that used to sit in this
+    # sentence; batch 4 replaced it with ``#playlistHeaderRow``'s 12px column
+    # words, which are a grid, not a heading.)
     emit(_rule('#sidebarTitle', [
         ('color', t.text_secondary),
         ('font-size', _px(FONT_SIZE_SM)),

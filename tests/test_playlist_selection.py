@@ -41,7 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
-    from PyQt6.QtWidgets import QAbstractItemView, QLabel
+    from PyQt6.QtWidgets import QAbstractItemView, QWidget
     from PyQt6.QtCore import PYQT_VERSION_STR, QEvent, QPoint, Qt
     from PyQt6.QtTest import QTest
     QT_AVAILABLE = True
@@ -437,7 +437,9 @@ class SelectionTest(unittest.TestCase):
         # mapping it lands on row 0 and pops the menu for a row the user did not
         # click. ``header.geometry()`` is already in this widget's space -- the
         # header is a child of ``self.view`` -- so the centre needs no conversion.
-        header = self.view.findChild(QLabel, 'playlistHeader')
+        # Batch 4 Task 8 replaced the single ``#playlistHeader`` label with the
+        # ``#playlistHeaderRow`` column band; the probe is the same strip.
+        header = self.view.findChild(QWidget, 'playlistHeaderRow')
         header_point = header.geometry().center()
         self.assertTrue(header.geometry().contains(header_point),
                         'the probe point must sit in the header strip')
@@ -689,7 +691,7 @@ class ContextMenuTargetTest(unittest.TestCase):
         """The header is blank space too (spec §4.3), in the outer widget's space.
 
         Three claims, and the first is what makes the other two mean anything. The
-        event is aimed at the header ``QLabel``, so it only reaches
+        event is aimed at the header row, so it only reaches
         :meth:`PlaylistView.contextMenuEvent` if Qt propagates it upstairs -- and
         ``shown == 0`` / ``emitted == []`` hold **identically** when the event never
         arrives at all. The wrapper below therefore counts the handler entries and
@@ -698,11 +700,12 @@ class ContextMenuTargetTest(unittest.TestCase):
         """
         from unittest import mock
 
-        from PyQt6.QtWidgets import QLabel
+        from PyQt6.QtWidgets import QWidget
 
         from view.widgets.playlist_view import PlaylistView
 
-        header = self.view.findChild(QLabel, 'playlistHeader')
+        # The header band, not the old single label -- batch 4 Task 8.
+        header = self.view.findChild(QWidget, 'playlistHeaderRow')
         point = header.geometry().center()
         self.assertTrue(header.geometry().contains(point),
                         'the probe point must sit in the header strip')

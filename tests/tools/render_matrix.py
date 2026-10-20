@@ -620,7 +620,7 @@ def parts(window) -> dict:
     (``ActionRail.button_for``, ``LibraryRow.path``, ``LibraryRow.full_name``) are
     subclass methods that would be gone.
     """
-    from PyQt6.QtWidgets import QLabel, QListView, QWidget
+    from PyQt6.QtWidgets import QListView, QWidget
     from view.widgets import ActionRail, LibrarySidebar, PlaylistView, Toast
 
     rail = window.findChild(ActionRail)
@@ -643,7 +643,9 @@ def parts(window) -> dict:
         'rail': rail, 'panel': panel, 'toast': toast, 'view': view,
         'playlist': playlist,
         'container': container, 'bottom': bottom, 'strip': strip,
-        'header': window.findChild(QLabel, 'playlistHeader'),
+        # Batch 4 Task 8: the old single ``#playlistHeader`` label became the
+        # column band, and geometry is all this harness reads from it.
+        'header': window.findChild(QWidget, 'playlistHeaderRow'),
     }
 
 
