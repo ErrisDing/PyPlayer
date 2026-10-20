@@ -23,7 +23,7 @@
 - **不得为行状态新增 QSS 规则**：`PlaylistItemDelegate` 覆写 `paint()` 且不咨询 style，`::item` 规则在本仓从不渲染（批次 2、3 各踩过一次）。列与状态一律 delegate 绘制。表头是**普通控件**，它的样式走 `core/theme_qss.py` 既有生成路径，且必须同时过 objectName↔QSS 双向守卫。
 - 全仓 `setStyleSheet` 保持**恰好一处**：`view/theme_manager.py`。
 - 新文案同时写 `locales/interface/main.{zh_CN,en_US}.properties`，**必须按字节改**：工作区 CRLF、index LF（`* text=auto`），`read_text()`/`write_text()` 会重写全文件行尾并把新块变成 `\r\r\n`。安全做法：`git show HEAD:<path>` 取 blob → `.replace(b'\n', b'\r\n')` → 拼新块 → `write_bytes`；提交前 `git diff --numstat` 必须只有新增行。
-- 新键用**按控件命名前缀**（`ctx.*`/`rail.*`/`sidebar.*` 同款），本批用 `col.*`；**不要**并入退役中的 `menu.*` 块（裁定 R5）。
+- 新键用**按控件命名前缀**（`ctx.*`/`rail.*`/`sidebar.*` 同款），本批用 `col.*`（表头四个列名）与 `meta.*`（`meta.pending`/`meta.unknown` 两个状态记号 —— 它们描述的是单元格的状态，不是某个控件的标签）；**不要**并入退役中的 `menu.*` 块（裁定 R5）。
 - patch 自身模块只能用 `f'{__name__}.attr'` 或 `mock.patch.object`（AST 守卫 `SelfReferentialPatchTest`）。`QAction.ActionEvent` 只能惰性两段探测；PyQt6 6.11 上 `Qt.Context.*` 与 `QAction.setShortcutWidget` **不存在**。
 - 三态的权威定义（spec §4.1）：缓存条目里 `md` 键**缺失** = 有东西等着取；`md` **存在**（哪怕三项全 `null`）= 已试过。被排除的格式（NCM）归"已试过"，不得伪装成"未取到"。
 - `duration <= 0` 一律归一为 `null`（spec §4.2）：提取器今天把"读不到"塌成 `0.0`，缓存里不允许出现 `0.0`。归一只允许出现在一处（Task 3 的 `record`），多处各归一次就有多种"没有"。
