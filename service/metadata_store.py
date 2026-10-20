@@ -17,7 +17,10 @@ contract; this class is the behaviour:
 * **Per-file expiry** (spec 4.6). Every entry remembers the ``(size, mtime)``
   fingerprint its ``md`` was extracted against; a mismatch invalidates it. The
   coarse root-directory check that guards the *file table* is not reused here --
-  it cannot see a tag edited in place.
+  it cannot see a tag edited in place. Invalidating clears the values and keeps
+  that fingerprint, so a file whose extraction never came back is stale on the
+  next scan too and gets asked for again; a fingerprint only moves under
+  ``record``, onto the version its payload describes.
 * **Excluded formats are answered immediately** (spec 2). ``.ncm`` is never
   swept (decrypting one writes a proxy file), so ``validate`` records it as
   "tried, nothing" on the spot. Left pending it would advertise a loading state
@@ -193,13 +196,26 @@ class LibraryMetadataStore:
         * **pending** (no entry, or an entry with no ``md``) -- requested, and
           *not* recorded: pending is a question, and writing ``md`` for it would
           put "no metadata" on disk before the sweep had any chance to answer.
-        * **fingerprint changed** -- the stored ``md`` is stale, so it is
-          invalidated with ``record(md=None)`` first and then requested. A row
-          that shows the pre-edit tags is a lie, and if the app dies before the
-          sweep finishes the invalidation must already be on its way to disk.
+        * **fingerprint changed** -- the stored values describe a file version
+          that no longer exists, so they are cleared back to pending and the
+          file is requested. Clearing is the *only* thing this branch does: it
+          neither records ``md=None`` nor advances the stored fingerprint,
+          because those two together are precisely the claim "this version was
+          extracted and has no tags" -- a claim the sweep has not made yet, and
+          one criterion 6 then shields from every later scan. An extraction
+          interrupted once would leave the row ``unknown`` forever, and persisted
+          that way. Keeping the old fingerprint means an unfilled invalidation is
+          still stale, so the next scan asks for the file again; that is the
+          whole difference between "we lost the answer" and "there is no answer".
+          Only ``record`` moves a fingerprint, and it moves it to the version its
+          payload describes.
         * **excluded format not yet tried** -- recorded as ``md=None`` on the
           spot and *never* returned. It is answered by the decision itself, not
-          by extraction, so it must land in ``unknown`` and stay there. An
+          by extraction, so it must land in ``unknown`` and stay there. This is
+          the one place ``validate`` records, and recording there is correct:
+          the file will never be extracted, so "tried, nothing" is the final
+          answer rather than a guess about a pending one -- and its fingerprint
+          cannot go stale in the meantime, because nothing is waiting for it. An
           already-tried excluded file is left alone rather than re-recorded,
           because re-marking the whole NCM set dirty on every scan would buy
           write-backs for no state change.
@@ -223,7 +239,7 @@ class LibraryMetadataStore:
             if entry is None or entry.md is None:
                 targets.append((full_path, fingerprint[0], fingerprint[1]))
             elif entry.fingerprint != fingerprint:
-                self.record(full_path, None, *fingerprint)
+                entry.md = None
                 targets.append((full_path, fingerprint[0], fingerprint[1]))
         return targets
 
@@ -237,6 +253,12 @@ class LibraryMetadataStore:
         nothing" and is stored as an all-``None`` row, which is what makes an
         extraction failure or an excluded format survive a restart instead of
         being retried on every launch (spec 4.1, criterion 6).
+
+        This is also the only place a fingerprint moves, and it moves to the
+        ``(size_bytes, modified_time)`` the payload was read from -- which is why
+        ``validate``'s invalidation clears the values in place instead of coming
+        through here with ``None``: that branch has no payload, so it has no
+        version to attach one to.
 
         ``duration`` passes through ``normalize_duration`` here -- the only place
         batch 4 applies that rule (ruling B4-R7) -- so a non-positive length can

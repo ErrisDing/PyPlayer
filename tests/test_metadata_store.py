@@ -18,6 +18,11 @@ in the spec's failure-matrix corner cases:
   (spec §2), so ``validate`` records it as "no metadata" immediately; leaving it
   pending would make a format nobody will ever fetch look like it is still
   loading (criterion 2 versus criterion 3).
+* **An invalidation is a question, never an answer** (spec §4.6, criterion 5). A
+  fingerprint mismatch clears the values back to pending *and keeps the stored
+  fingerprint*, so a file whose extraction was interrupted is still a target on
+  the next scan. Only ``record`` advances a fingerprint, and only onto the
+  version its payload describes.
 * **Fingerprints are handed out, not re-stat'd.** ``validate`` returns
   ``(full_path, size, mtime)`` taken from the *same* scan it was called with, so
   the sweep (Task 4) and the pre-write re-check (Task 7) compare one instant
@@ -283,24 +288,65 @@ class ValidateTargetsTest(unittest.TestCase):
                          store.validate([_media(MP3_PATH)]))
 
     def test_stale_fingerprint_invalidates_the_old_values(self):
-        """A changed file must not keep showing the pre-change tags."""
+        """A changed file must not keep showing the pre-change tags.
+
+        Invalidating is expressed as *pending*, never as ``unknown``: clearing
+        the values answers nothing, while ``record(md=None)`` would answer "this
+        version has no tags" on the sweep's behalf.
+        """
         store = LibraryMetadataStore()
         store.record(MP3_PATH, KNOWN_MD, 1000, 100.0)
         store.take_dirty()
         store.validate([_media(MP3_PATH, size=2000, mtime=100.0)])
-        self.assertEqual(STATE_UNKNOWN, store.state_of(MP3_PATH))
-        self.assertEqual(EMPTY_MD, store.get(MP3_PATH))
-        self.assertEqual(1, store.dirty_count(),
-                         'the invalidation itself has to reach the cache')
+        self.assertEqual(STATE_PENDING, store.state_of(MP3_PATH))
+        self.assertIsNone(store.get(MP3_PATH))
+        self.assertEqual(0, store.dirty_count(),
+                         'a question owes no write-back; only the answer does')
+        self.assertEqual([], store.take_dirty())
 
-    def test_invalidation_stores_the_fingerprint_it_just_compared(self):
-        """The next scan of the same file must not look stale again."""
+    def test_invalidation_does_not_store_the_fingerprint_it_just_compared(self):
+        """Clearing must not adopt the fingerprint of the version it invalidated.
+
+        The old version of this test asserted the opposite -- that a second scan
+        of the same changed file stops looking stale -- and that was the defect
+        (spec 4.6, criterion 5): adopting the new fingerprint is what makes the
+        file look answered before anything was extracted. The stored fingerprint
+        has no public getter, so this reads the entry it belongs to.
+        """
         store = LibraryMetadataStore()
         store.record(MP3_PATH, KNOWN_MD, 1000, 100.0)
-        store.validate([_media(MP3_PATH, size=2048, mtime=777.0)])
         store.take_dirty()
-        self.assertEqual([], store.validate([_media(MP3_PATH, 2048, 777.0)]))
+        store.validate([_media(MP3_PATH, size=2048, mtime=777.0)])
+        self.assertEqual((1000, 100.0), store._entries[MP3_PATH].fingerprint,
+                         'the stored fingerprint must stay the one the cleared '
+                         'values were taken at, not the one just compared')
         self.assertEqual(0, store.dirty_count())
+
+    def test_stale_and_unfilled_is_listed_again_by_next_validate(self):
+        """The falsifiable half of criterion 5: an interrupted extraction retries.
+
+        Two scans with nothing in between stand in for a sweep that was killed,
+        crashed or simply has not answered yet.
+        """
+        store = LibraryMetadataStore()
+        store.record(MP3_PATH, KNOWN_MD, 1000, 100.0)
+        store.take_dirty()
+        self.assertEqual([(MP3_PATH, 2000, 150.0)],
+                         store.validate([_media(MP3_PATH, size=2000, mtime=150.0)]))
+        self.assertEqual(
+            [(MP3_PATH, 2000, 150.0)],
+            store.validate([_media(MP3_PATH, size=2000, mtime=150.0)]),
+            'an invalidation nobody filled in is still work to do')
+        self.assertEqual(STATE_PENDING, store.state_of(MP3_PATH))
+
+    def test_answer_after_invalidation_closes_it_and_advances_the_fingerprint(self):
+        """``record`` is the only thing that ends the re-requesting."""
+        store = LibraryMetadataStore()
+        store.record(MP3_PATH, KNOWN_MD, 1000, 100.0)
+        store.validate([_media(MP3_PATH, size=2000, mtime=150.0)])
+        store.record(MP3_PATH, EMPTY_MD, 2000, 150.0)
+        self.assertEqual([], store.validate([_media(MP3_PATH, 2000, 150.0)]))
+        self.assertEqual(STATE_UNKNOWN, store.state_of(MP3_PATH))
 
     def test_mixed_library_requests_only_the_files_that_need_it(self):
         store = LibraryMetadataStore()
