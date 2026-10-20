@@ -8,20 +8,96 @@ import os
 import json
 import hashlib
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 
+#: Format stamped on every cache file this build writes (spec 4.3). 2.0 is the
+#: first version whose entries may carry the ``md`` key.
+CACHE_VERSION = "2.0"
+
+#: The pre-batch-4 format: same file table, no ``md`` key on any entry.
+LEGACY_CACHE_VERSION = "1.0"
+
+#: Versions the read side accepts. 1.0 stays readable on purpose -- rejecting it
+#: would invalidate every existing library's *file table* on the day 2.0 ships
+#: and force a full re-scan (spec criterion 7). Kept as a set rather than a
+#: second "if version ==" so the window has exactly one spelling.
+SUPPORTED_CACHE_VERSIONS: frozenset[str] = frozenset(
+    {LEGACY_CACHE_VERSION, CACHE_VERSION})
+
+#: The canonical key set of an entry's ``md`` dict (ruling B4-R1). Every later
+#: batch-4 task consumes these three names verbatim.
+MD_KEYS = ("artist", "album", "duration")
+
+
 @dataclass
 class CachedFile:
-    """Represents a cached media file entry."""
+    """Represents a cached media file entry.
+
+    ``md`` carries the metadata tri-state (spec 4.1) as
+    ``{"artist": Optional[str], "album": Optional[str], "duration": Optional[float]}``:
+
+    * ``None`` -- the JSON has **no** ``md`` key: nothing was ever extracted,
+      the entry is pending and a background sweep still has to fill it;
+    * a dict whose values are all ``None`` -- extraction was tried and the tag
+      had nothing (or the format is excluded, e.g. NCM): the entry must not be
+      retried, and the view shows "no metadata" rather than "not fetched yet";
+    * a dict with values -- known metadata.
+
+    The two first states differ by key *presence*, never by value, which is why
+    ``to_dict`` drops the key entirely instead of writing ``"md": null``.
+    """
     path: str
     title: str
     file_type: str      # 'audio' or 'video'
     extension: str
     size_bytes: int = 0
     modified_time: float = 0.0
+    md: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the entry, omitting ``md`` when it is ``None``."""
+        data: Dict[str, Any] = {
+            "path": self.path,
+            "title": self.title,
+            "file_type": self.file_type,
+            "extension": self.extension,
+            "size_bytes": self.size_bytes,
+            "modified_time": self.modified_time,
+        }
+        if self.md is not None:
+            data["md"] = dict(self.md)
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'CachedFile':
+        """Build an entry from its JSON object (see :meth:`to_dict`)."""
+        return cls(
+            path=data["path"],
+            title=data["title"],
+            file_type=data["file_type"],
+            extension=data["extension"],
+            size_bytes=data.get("size_bytes", 0),
+            modified_time=data.get("modified_time", 0.0),
+            md=_read_md(data),
+        )
+
+
+def _read_md(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Map an entry's ``md`` key to the tri-state value ``CachedFile`` stores.
+
+    Absent key -> ``None`` (pending). Key present with a ``null`` value -> the
+    all-``None`` dict: the key existing is already the claim that extraction was
+    tried, so a null payload cannot mean "not tried".
+    """
+    if "md" not in entry:
+        return None
+    value = entry["md"]
+    if value is None:
+        return {key: None for key in MD_KEYS}
+    return dict(value)
 
 
 @dataclass
@@ -36,28 +112,39 @@ class LibraryCache:
         scan_timestamp: Unix timestamp when the scan was performed
         files: List of cached file entries
     """
-    version: str = "1.0"
+    version: str = CACHE_VERSION
     library_path: str = ""
     library_name: str = ""
     scan_timestamp: float = 0.0
     files: List[CachedFile] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to JSON-serializable dictionary."""
+        """Convert to JSON-serializable dictionary.
+
+        Entries go through ``CachedFile.to_dict``, not ``dataclasses.asdict``:
+        ``asdict`` always emits ``"md"`` -- as ``null`` for pending entries --
+        and that single key would collapse the two states spec 4.1 separates.
+        """
         return {
             "version": self.version,
             "library_path": self.library_path,
             "library_name": self.library_name,
             "scan_timestamp": self.scan_timestamp,
-            "files": [asdict(f) for f in self.files]
+            "files": [f.to_dict() for f in self.files]
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'LibraryCache':
-        """Create from dictionary."""
-        files = [CachedFile(**f) for f in data.get("files", [])]
+        """Create from dictionary.
+
+        ``version`` is reported as the file states it, even when the reader then
+        accepts it: ``LibraryCacheManager.load_cache`` needs the raw value to
+        decide compatibility, and a silent normalization here would make every
+        version look current.
+        """
+        files = [CachedFile.from_dict(f) for f in data.get("files", [])]
         return cls(
-            version=data.get("version", "1.0"),
+            version=data.get("version", LEGACY_CACHE_VERSION),
             library_path=data.get("library_path", ""),
             library_name=data.get("library_name", ""),
             scan_timestamp=data.get("scan_timestamp", 0.0),
@@ -71,9 +158,15 @@ class LibraryCacheManager:
 
     Cache files are stored in ~/.pyplayer/cache/libraries/
     Each library gets a cache file named by hashing its path.
+
+    ``CACHE_VERSION``/``SUPPORTED_CACHE_VERSIONS`` are aliased from the module
+    constants so both spellings stay valid: the module names are the contract
+    later code imports, the class attributes keep ``self.CACHE_VERSION`` and
+    ``LibraryCacheManager.CACHE_VERSION`` readers working.
     """
 
-    CACHE_VERSION = "1.0"
+    CACHE_VERSION = CACHE_VERSION
+    SUPPORTED_CACHE_VERSIONS = SUPPORTED_CACHE_VERSIONS
     CACHE_DIR_NAME = "cache"
     LIBRARIES_DIR_NAME = "libraries"
 
@@ -136,6 +229,11 @@ class LibraryCacheManager:
         """
         Load library cache from JSON file.
 
+        A 1.0 file loads as-is: its entries have no ``md`` key, so they come back
+        pending, and the version stamped on the returned object is the current
+        one -- that in-place upgrade is what makes the next ``save_cache`` write
+        2.0 without a re-scan (spec 4.3).
+
         Args:
             library_path: Path to the media library
 
@@ -153,11 +251,16 @@ class LibraryCacheManager:
 
             cache = LibraryCache.from_dict(data)
 
-            # Verify version compatibility
-            if cache.version != self.CACHE_VERSION:
+            # Verify version compatibility against the accepted window, not
+            # against CACHE_VERSION alone -- that would reject 1.0 and throw
+            # away the file table of every library scanned before this shipped.
+            # Any other version has no defined meaning for `md`, so it stays
+            # unusable rather than being guessed at.
+            if cache.version not in self.SUPPORTED_CACHE_VERSIONS:
                 print(f"Cache version mismatch for {library_path}: {cache.version}")
                 return None
 
+            cache.version = self.CACHE_VERSION
             return cache
 
         except (OSError, IOError, json.JSONDecodeError) as e:
