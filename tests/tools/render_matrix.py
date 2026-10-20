@@ -28,11 +28,20 @@ matrix loop walks:
   rect cannot -- that the panel's fill starts exactly where the rail's ends.
   Dark is still the theme to look at, but for the opposite reason from the one
   this bullet used to give: the rail is painted ``surface_alt`` (``#2d2d30`` in
-  DARK), which is also the alternating tint of every odd playlist row, so a
-  leftover stripe there is *the rail's own colour* and no colour boundary marks
-  it -- only the panel's left edge does. (In LIGHT the pair is ``#f5f5f5`` rail
-  against a ``#ffffff`` even row and an identical ``#f5f5f5`` odd row, so half
-  the stripe was invisible by construction either way.)
+  DARK), which is *also* what these frames measure as the ground of every odd
+  playlist row, so on those rows a leftover stripe really is the rail's own
+  colour and no colour boundary marks it. On the even rows there **is** a
+  boundary, and the sentence that used to claim otherwise was wrong: the frames
+  measure the even ground as ``#242424``, 3.6 luma points under the rail's
+  ``#2d2d30`` (the scale of :func:`luminance` below: BT.709 luma computed on
+  gamma-encoded channels). Exactly half the stripe is a colour edge and half is
+  not, which is why this frame is read against the panel's left edge rather than
+  against a hoped-for boundary. LIGHT behaves the same way with the signs
+  flipped: ``#f5f5f5`` rail, an identical ``#f5f5f5`` odd row, and an even row
+  these frames measure ``#fefefe`` -- **not** the ``#ffffff`` of the ``surface``
+  token, because the sheet paints the list background translucent, the same
+  reason the contrast numbers below name their ground as measured -- again about
+  3.5 luma points of boundary on the even rows only.
 * ``--toast``: a live toast over the populated list, dark, 820x520 -- the narrow,
   low-contrast corner of checklist item 6. Its copy is ``status.refreshed_files``
   read through ``i18n``, so the frame photographs the real string with real
@@ -43,13 +52,33 @@ matrix loop walks:
   human uses to decide whether the result is *visible*, which no test here can
   assert (a pixel equal to a token is not a pixel readable by an eye). Both
   themes, on purpose, because the alternating row tint is the ground that is hard
-  and it is a different colour per theme -- measured off these very frames:
-  ``hover_bg`` sits **0.3 luminance points below** ``surface_alt`` in DARK (a
-  rounding-error darkening on an odd row) and 1.96 below it in LIGHT, while the
-  same fills against the plain ground are +3.31 and -5.49; ``selection_bg`` is
-  +2.42 over the alternating tint in DARK and -2.55 in LIGHT. One theme's
-  "obviously visible" therefore says nothing about the other, and the numbers
-  beside each frame are the ones an eye is asked to judge.
+  and it is a different colour per theme.
+
+  **Name the scale first.** Every figure here and every ``step``/``lum`` printed
+  beside a frame comes from :func:`luminance`, which is
+  ``100 * (0.2126R + 0.7152G + 0.0722B)`` over the **gamma-encoded** sRGB channel
+  values -- ITU-R BT.709 *luma* Y', with no linearisation step. It is not the
+  WCAG/ITU-R **relative luminance**, which sRGB-linearises each channel before
+  the same weighted sum. Both are correct arithmetic, on two scales, and they do
+  not agree: this batch's reviews computed the DARK hover/``surface_alt`` pair as
+  **-0.08** and the LIGHT one as **-4.17** on the linearised scale, while the
+  frames say **-0.30** and **-1.96**. So a number from here may only be compared
+  with a number that says it is luma.
+  **Name the source second.** The alternating-ground pairs are pure token
+  arithmetic and reproduce from ``core/theme.py`` exactly, because the odd rows
+  are measured as ``surface_alt`` verbatim (``#2d2d30`` DARK, ``#f5f5f5`` LIGHT):
+  ``hover_bg`` sits **0.30 luma points below** it in DARK (a rounding-error
+  darkening on an odd row) and **1.96** below it in LIGHT, and ``selection_bg``
+  sits **+2.42** over it in DARK and **-2.55** in LIGHT. The plain-ground pairs
+  are *not* token values: they are computed against pixels sampled from each
+  frame's own unhovered baseline, where the even rows measure ``#242424`` /
+  ``#fefefe`` instead of the ``surface`` tokens ``#252526`` / ``#ffffff`` (the
+  sheet paints the list background translucent -- the same caveat the
+  multi-select frame prints about its own grounds). Against those measured plains
+  ``hover_bg`` is **+3.31** (DARK) and **-5.49** (LIGHT); the token-only
+  arithmetic would give +2.89 and -5.88, which is why this paragraph says which
+  is which. One theme's "obviously visible" therefore says nothing about the
+  other, and the numbers beside each frame are the ones an eye is asked to judge.
   * ``hover``: row 7, hovered by ``QTest.mouseMove`` -- the route a user takes,
     and the only one that works (measured: the viewport must carry ``WA_Hover``,
     which is why ``PlaylistView`` sets it). The guard demands
@@ -65,7 +94,10 @@ matrix loop walks:
     is a range. Row 3 is the playing row, so one picture carries batch 3's
     priority chain: the two plain rows (one even, one odd) take ``selection_bg``,
     row 3 keeps ``playing_bg``, and row 4 sits between them untouched.
-  * ``context-menu``: a genuine ``QContextMenuEvent`` aimed at the inner list
+  * ``context-menu-grab-composite`` (the state's old name was ``context-menu``;
+    the file name now says what the frame is, because the two artefacts a human
+    circulates -- the PNG and its crop -- were silent about it): a genuine
+    ``QContextMenuEvent`` aimed at the inner list
     viewport -- the route Task 3 measured necessary, because
     ``QTest.mouseClick(..., RightButton)`` delivers two mouse events and **no**
     context-menu event under ``offscreen``. The click lands *inside* the
@@ -85,6 +117,17 @@ matrix loop walks:
     Missing from any such composite: the popup's own native frame and shadow,
     Qt's edge-flipping, and pointer response -- so ``--capture window`` photographs
     the real *window* honestly and the *menu* still as a ``grab()``.
+    **What the frame therefore proves, and what it does not**: it proves the
+    *routing and the builder* -- a real ``QContextMenuEvent`` reached
+    ``PlaylistView.contextMenuEvent``, the target rule ran and kept the batch, and
+    the ids, the separator and the counted copy are the ones the real
+    ``build_playlist_menu`` made. It does **not** prove the *interaction*: the body
+    of production's ``_popup_menu`` (``return menu.exec(global_pos)``,
+    ``view/widgets/playlist_view.py``) is never executed by any automated path at
+    all, because every test that opens a menu and this harness both replace that
+    seam. Whether the menu opens modally at the cursor, tracks the pointer and
+    acts on a click is only observable in a real run -- see the README's
+    requires-a-human checklist.
 
 ``thirty-libraries`` frames are rendered with the panel **open**: the floating
 panel is the only surface in the shipped UI where a library count is visible at
@@ -154,7 +197,12 @@ What neither capture can show, and no reading of the PNGs makes verified:
 * **A live popup.** See ``--interaction`` above: the menu half of that frame is a
   ``QMenu.grab()`` composited over the window in *both* capture modes, so nothing
   about the popup's native frame, its shadow, its edge-flipping or its pointer
-  response is photographed here.
+  response is photographed here. Sharper: the frame proves **routing and the
+  builder**, not the interaction. Production's ``_popup_menu`` body --
+  ``return menu.exec(global_pos)``, ``view/widgets/playlist_view.py`` -- runs in
+  **no** automated path, because this harness and every menu test replace that
+  seam; the menu opening modally at the cursor and acting on a click is a real-run
+  judgement and is on the README requires-a-human checklist.
 * **macOS chrome.** Whether Qt still synthesises an application menu once the
   ``QMenuBar`` is empty cannot be answered from a Windows host; see the batch
   report's "could not verify" section.
@@ -201,8 +249,11 @@ TOAST_FRAME = ('dark', 820, 520)
 
 #: The batch-3 states ``--interaction`` photographs, each in **both** themes: the
 #: fills are pale against different grounds per theme, so one theme cannot settle
-#: "is hover visible" for the other (see the module docstring).
-INTERACTION_STATES = ('hover', 'multi-selected', 'context-menu')
+#: "is hover visible" for the other (see the module docstring). The third name is
+#: long on purpose: it is the frame's own file name, and the frame is a composited
+#: ``QMenu.grab()``, not a photographed popup.
+INTERACTION_STATES = ('hover', 'multi-selected',
+                      'context-menu-grab-composite')
 INTERACTION_SIZE = (1100, 720)
 
 #: The hovered row: odd (so the alternating tint is the ground under it), a plain
@@ -217,8 +268,9 @@ HOVER_ROW = 7
 #: ``playing_bg``, which a frame of three identical rows could not show. They are
 #: deliberately **not** a contiguous range and deliberately one even row, the
 #: playing row and one odd row: the odd row is the case a screenshot has to settle
-#: (in DARK ``selection_bg`` ``#2f343a`` sits only ~2.4 luminance points over the
-#: alternating tint ``#2d2d30``), and a row *between* two selected rows is where a
+#: (in DARK ``selection_bg`` ``#2f343a`` sits only ~2.4 luma points over the
+#: alternating tint ``#2d2d30`` -- :func:`luminance`'s scale, BT.709 luma on
+#: gamma-encoded channels), and a row *between* two selected rows is where a
 #: fill that ran past its own row would first be visible.
 BATCH_ROWS = (2, 3, 5)
 
@@ -966,7 +1018,20 @@ def select_batch(playlist, app, rows) -> None:
 
 
 def luminance(colour: str) -> float:
-    """ITU-R BT.709 relative luminance of a ``#rrggbb`` string, 0..100.
+    """BT.709 **luma** (Y') of a ``#rrggbb`` string, 0..100 -- not relative luminance.
+
+    The weights (0.2126, 0.7152, 0.0722) are ITU-R BT.709's, but each channel is
+    used as the **gamma-encoded** sRGB value it is: there is no linearisation
+    step, so what comes out is luma Y', a display-driver quantity. The WCAG /
+    ITU-R *relative luminance* (Y) applies
+    ``((c + 0.055) / 1.055) ** 2.4`` to each channel first, and the two scales
+    disagree by more than the effect being judged here -- this batch's reviews
+    read the same DARK hover/``surface_alt`` pair as **-0.08** on the linearised
+    scale and **-0.30** on this one, and the LIGHT pair as **-4.17** against
+    **-1.96**. Nothing here is wrong arithmetic; a number is only comparable with
+    numbers that say they are on the same scale, which is why every print that
+    uses this function names luma. The function name is the legacy shorthand for
+    both quantities and stays for that reason; the docstring is the correction.
 
     The interaction frames' whole subject is a few points of contrast, so the
     print next to the PNG has to carry a number, not "it looks subtle".
@@ -1105,14 +1170,20 @@ def drive_hover(window, app, tokens) -> dict:
         f'hover cursor row={HOVER_ROW} ({parity(HOVER_ROW)} ground) '
         f'hovered_rows={hovered} underMouse=yes baseline_band={before}',
         f'hover contrast, measured off this frame\'s own baseline: the alternating '
-        f'ground {ground} (lum {luminance(ground)}) -> hover_bg {tokens.hover_bg} '
-        f'(lum {luminance(tokens.hover_bg)}) step='
-        f'{round(luminance(tokens.hover_bg) - luminance(ground), 2)}',
+        f'ground {ground} (luma {luminance(ground)}) -> hover_bg {tokens.hover_bg} '
+        f'(luma {luminance(tokens.hover_bg)}) step='
+        f'{round(luminance(tokens.hover_bg) - luminance(ground), 2)} '
+        f'[scale: BT.709 luma Y\' on gamma-encoded channels, no sRGB linearisation '
+        '-- NOT the WCAG relative luminance; this odd ground reads as the '
+        'surface_alt token, so this pair is token arithmetic]',
         f'hover contrast on the plain ground for comparison: {plain} '
-        f'(lum {luminance(plain)}) -> {tokens.hover_bg} step='
+        f'(luma {luminance(plain)}) -> {tokens.hover_bg} step='
         f'{round(luminance(tokens.hover_bg) - luminance(plain), 2)} '
         '(a NEGATIVE step means hovering reads as a DARKENING, which is the shape '
-        'of hover_bg in both themes on an odd row; judge it, do not assume it)',
+        'of hover_bg in both themes on an odd row; judge it, do not assume it) '
+        f'[scale: same BT.709 luma; and this plain ground is a pixel sampled from '
+        f'this frame, not the surface token {tokens.surface}, because the sheet '
+        'paints the list background translucent]',
         'hover is delegate-painted, not QSS: no #playlistView::item rule exists, and '
         'tests/test_playlist_hover.py::test_no_item_qss_rule_was_added pins that',
     ]
@@ -1124,14 +1195,23 @@ def drive_hover(window, app, tokens) -> dict:
         require(after != before,
                 f'hovering row {HOVER_ROW} changed no pixel in the frame '
                 f'(before={before} after={after}); the fill is invisible, not subtle')
-        neighbours = [
-            f'hover neighbours row{HOVER_ROW - 1}='
-            f'{band_pixels(pixmap, row_rect(window, HOVER_ROW - 1), dpr)} '
-            f'row{HOVER_ROW + 1}='
-            f'{band_pixels(pixmap, row_rect(window, HOVER_ROW + 1), dpr)} '
-            'neither carries hover_bg (hover is one row, not the view)',
-            f'hover frame band={after} against the unhovered baseline {before}',
-        ]
+        neighbours = []
+        # Asserted, not just printed, exactly the way the multi-select frame
+        # asserts its own untouched neighbours. The line used to be a print: the
+        # file's output writes ``MATCH`` for things it checked, and an unasserted
+        # claim that reads as verified is the one defect class this file exists
+        # to keep out -- a hover that bled to the whole view would otherwise have
+        # been photographed, printed and passed.
+        for row in (HOVER_ROW - 1, HOVER_ROW + 1):
+            band = band_pixels(pixmap, row_rect(window, row), dpr)
+            require(tokens.hover_bg.lower() not in band,
+                    f'row {row} is not the hovered row but its band contains '
+                    f'hover_bg {tokens.hover_bg} ({band}): hover is one row, not '
+                    'the view')
+            neighbours.append(f'hover neighbour row {row} ({parity(row)}) '
+                              f'band={band} no hover_bg MATCH')
+        neighbours.append(
+            f'hover frame band={after} against the unhovered baseline {before}')
         return lines + neighbours
 
     return {'lines': lines, 'expect': expect,
@@ -1210,12 +1290,46 @@ def drive_multi_selected(window, app, tokens) -> dict:
                 f'selection step over the measured '
                 f'{"odd/alternating" if odd else "even/plain"} ground {ground}: '
                 f'{round(luminance(tokens.selection_bg) - luminance(ground), 2)} '
-                '(luminance points; NEGATIVE = the fill is a DARKENING on that row)')
+                '[scale: BT.709 luma Y\' on gamma-encoded channels, not the WCAG '
+                'relative luminance] [source: the ground is a pixel sampled from '
+                'this frame; on the odd rows it equals the surface_alt token, so '
+                'that step is token arithmetic, on the plain rows it is not] '
+                '(NEGATIVE = the fill is a DARKENING on that row)')
         return out
 
     return {'lines': lines, 'expect': expect,
             'crops': {'rows': rows_crop(window, min(BATCH_ROWS) - 1,
                                          max(BATCH_ROWS) + 1)}}
+
+
+def grab_text_spots(image, colour: str, limit: int = 2) -> list:
+    """Up to ``limit`` pixels of ``image`` painted exactly in ``colour``, in the
+    order a reader meets them: the first and the last in reading order.
+
+    Used by the menu frame's composite check, which used to sample three pixels
+    and got the popup's own background colour on all three. That catches a
+    composite that never ran or landed somewhere else, and nothing else: a blank
+    plate of the right size and colour matches on every background pixel. Ink
+    spots are the content claim -- and they are found by *colour identity*
+    (``tokens.text_primary``, the colour the sheet gives ``QMenu { color }``), not
+    by "any non-background pixel", because a QMenu grab always carries at least a
+    1 px border and a separator, so "not the background" would be satisfiable by
+    a plate that painted no labels at all.
+    """
+    width, height = image.width(), image.height()
+    wanted = colour.lower()
+    first = last = None
+    for y in range(height):
+        for x in range(width):
+            if image.pixelColor(x, y).name().lower() == wanted:
+                if first is None:
+                    first = (x, y)
+                last = (x, y)
+    spots = []
+    for spot in (first, last):
+        if spot is not None and spot not in spots:
+            spots.append(spot)
+    return spots[:limit]
 
 
 def drive_context_menu(window, app, tokens) -> dict:
@@ -1345,9 +1459,18 @@ def drive_context_menu(window, app, tokens) -> dict:
         f'menu route real QContextMenuEvent -> PlaylistView.contextMenuEvent; '
         f'_popup_menu seam replaced, menu painted by QMenu.grab() INSIDE the seam '
         f'(no exec(), no nested loop) and composited at {at.x()},{at.y()}',
+        'menu what this frame proves: ROUTING AND THE BUILDER only -- the event '
+        'reached the real handler, the Explorer target rule ran, and the ids / '
+        'separator / counted copy are the ones the real build_playlist_menu made. '
+        'It does NOT prove the INTERACTION: the body of production _popup_menu '
+        '(return menu.exec(global_pos), view/widgets/playlist_view.py) runs in no '
+        'automated path at all, because this harness and every menu test replace '
+        'that seam -- so modal popup, cursor placement, pointer tracking and a '
+        'clicked entry are unverified here and are on the README requires-a-human '
+        'checklist',
         f'menu targets={seen["targets"]} (right-click inside the batch keeps it) '
         f'selection_after={playlist.selected_display_indices()} shown={seen["shown"]} '
-        f'context_menu_requested={received}',
+        f'context_menu_requested={received} (targets[0] = the batch minimum)',
         f'menu ids={list(seen["ids"])} separators={seen["separators"]} '
         f'parent={"PlaylistView" if seen["parent"] is playlist else seen["parent"]}',
         f'menu copy [{active}, photographed] '
@@ -1386,6 +1509,16 @@ def drive_context_menu(window, app, tokens) -> dict:
         the mapping holds whatever the two device pixel ratios turned out to be --
         the claim being checked is "this picture contains that grab", and it has to
         be checked against the drawing, not against a second arithmetic of it.
+
+        Two kinds of sample, because they catch different lies. The plate samples
+        are the popup's background colour: they prove a composite happened where
+        the frame says it did. The ink samples are pixels the grab painted in
+        ``tokens.text_primary`` -- the colour the sheet gives ``QMenu { color }``,
+        so they exist only if the labels were really drawn -- and they are what
+        catches the failure the plate samples cannot: a correctly sized, correctly
+        positioned **blank plate** matches on every background pixel and shows
+        nothing. (Measured: the grab is ~4% text and ~8% non-background ink, so
+        three background samples were never a content check.)
         """
         from PyQt6.QtGui import QImage
 
@@ -1394,10 +1527,16 @@ def drive_context_menu(window, app, tokens) -> dict:
         source = menu_pixmap.toImage().convertToFormat(QImage.Format.Format_RGB32)
         sx_ratio = width / max(1, menu_pixmap.width())
         sy_ratio = height / max(1, menu_pixmap.height())
-        spots = [(2, 2), (menu_pixmap.width() // 2, 6),
+        plate = [(2, 2), (menu_pixmap.width() // 2, 6),
                  (menu_pixmap.width() // 2, menu_pixmap.height() - 8)]
+        ink = grab_text_spots(source, tokens.text_primary.lower())
+        require(len(ink) >= 2,
+                f'the menu grab holds no two pixels of its own text colour '
+                f'{tokens.text_primary} (found {ink}): without ink samples the '
+                'composite check below only proves that a plate of background '
+                'colour was pasted, which a blank menu also passes')
         out = []
-        for sx, sy in spots:
+        for sx, sy in plate:
             got = image.pixelColor(int(x + sx * sx_ratio),
                                    int(y + sy * sy_ratio)).name().lower()
             want = source.pixelColor(sx, sy).name().lower()
@@ -1405,17 +1544,34 @@ def drive_context_menu(window, app, tokens) -> dict:
                     f'the composited menu pixel at {sx},{sy} reads {got} in the '
                     f'frame but {want} in the grab: the composite landed somewhere '
                     'else than it claims')
-            out.append(f'menu composite pixel {sx},{sy} frame={got} grab={want} MATCH')
+            out.append(f'menu composite plate pixel {sx},{sy} frame={got} grab={want} '
+                       "MATCH (the popup's background: proves placement)")
+        for sx, sy in ink:
+            got = image.pixelColor(int(x + sx * sx_ratio),
+                                   int(y + sy * sy_ratio)).name().lower()
+            want = source.pixelColor(sx, sy).name().lower()
+            require(got == want,
+                    f'the composited menu INK pixel at {sx},{sy} reads {got} in the '
+                    f'frame but {want} in the grab: the plate landed but its content '
+                    'did not')
+            require(want == tokens.text_primary.lower(),
+                    f'the ink sample at {sx},{sy} reads {want}, not the theme text '
+                    f'colour {tokens.text_primary}')
+            out.append(f'menu composite ink pixel {sx},{sy} frame={got} grab={want} '
+                       f'MATCH ({tokens.text_primary} = the menu label text, not the '
+                       'plate colour: proves the grab content landed)')
         return out
 
     menu_dpr = seen['pixmap'].devicePixelRatio() or 1.0
     return {'lines': lines, 'expect': expect, 'verify_composite': verify_composite,
             'menu': seen['pixmap'], 'menu_at': (at.x(), at.y()),
             # Window-logical rects, because that is what :func:`write_crops` scales.
+            # The crop key is the crop's file name, so it says what the crop is: a
+            # ``grab()`` composited into the frame, not a photographed popup.
             'crops': {
-                'menu': (at.x(), at.y(),
-                         seen['pixmap'].width() / menu_dpr,
-                         seen['pixmap'].height() / menu_dpr),
+                'menu-grab-composite': (at.x(), at.y(),
+                                        seen['pixmap'].width() / menu_dpr,
+                                        seen['pixmap'].height() / menu_dpr),
                 'rows': rows_crop(window, min(BATCH_ROWS) - 1,
                                   max(BATCH_ROWS) + 1)}}
 
@@ -1464,11 +1620,13 @@ def composite_menu(pixmap, menu_pixmap, at, dpr: float) -> tuple:
     return (x, y, width, height)
 
 
-#: Which driver builds which interaction frame.
+#: Which driver builds which interaction frame. The third key is also the third
+#: frame's file name, and it says ``grab-composite`` because that is what the
+#: picture is.
 DRIVERS = {
     'hover': drive_hover,
     'multi-selected': drive_multi_selected,
-    'context-menu': drive_context_menu,
+    'context-menu-grab-composite': drive_context_menu,
 }
 
 
@@ -1507,8 +1665,10 @@ def render_interaction_frame(app, window, manager, theme: str, kind: str,
         rect = composite_menu(pixmap, facts['menu'], facts['menu_at'], dpr)
         frame_lines += facts['verify_composite'](pixmap, dpr, facts['menu'], rect)
         frame_lines.append(
-            f'menu composited physical rect={rect} (dpr {dpr:.2f}); the popup has no '
-            'native frame, shadow or edge-flip in this composite')
+            f'menu composited physical rect={rect} (dpr {dpr:.2f}); this is a '
+            'QMenu.grab() composite, not a photographed popup -- no native frame, '
+            'no shadow, no edge-flip, no pointer response, and production '
+            '_popup_menu/menu.exec() never ran')
 
     name = f'{theme}_{kind}_{size[0]}x{size[1]}.png'
     path = out_dir / name
@@ -1754,14 +1914,18 @@ def main(argv=None) -> int:
                              'populated list (dark, 820x520).')
     parser.add_argument('--interaction', action='store_true',
                         help='Add the six batch-3 interaction frames: hover, '
-                             'multi-selected and context-menu, each in light and '
-                             'dark at 1100x720. Every one of them checks its own '
-                             'precondition first and stops the run if the state is '
-                             'not live (see the module docstring).')
+                             'multi-selected and context-menu-grab-composite, each '
+                             'in light and dark at 1100x720. Every one of them '
+                             'checks its own precondition first and stops the run if '
+                             'the state is not live (see the module docstring). The '
+                             'third frame is a QMenu.grab() composited over the '
+                             'window -- production menu.exec() runs in no automated '
+                             'path -- and its file name says so.')
     parser.add_argument('--crops', action='store_true',
                         help='Also write 2x crops (rail, panel, strip, toast, '
                              'bottom bar, and on the interaction frames the affected '
-                             'rows and the menu) of every frame into <out>/crops/.')
+                             'rows and the menu-grab-composite) of every frame into '
+                             '<out>/crops/.')
     parser.add_argument('--quiet', action='store_true',
                         help='Do not print each rendered file and its measures.')
     args = parser.parse_args(argv)
