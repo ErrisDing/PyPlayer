@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from service.queue_service import DisplayEntry
+from service.metadata_store import RowMetadata
 
 
 class PlaylistModel(QAbstractListModel):
@@ -42,6 +43,15 @@ class PlaylistModel(QAbstractListModel):
     SubIndexRole = Qt.ItemDataRole.UserRole + 4
     FullPathRole = Qt.ItemDataRole.UserRole + 5
     RelativePositionRole = Qt.ItemDataRole.UserRole + 6
+    # Batch 4's three columns plus the state word that decides which mark a cell
+    # shows. They continue the block above (nothing here may renumber a role the
+    # delegate already reads), and ``MetadataStateRole`` answers one of the three
+    # ``service.metadata_store`` strings as a ``str`` -- no enum, no int (ruling
+    # B4-R5), so the delegate and the store cannot drift into two spellings.
+    DurationRole = Qt.ItemDataRole.UserRole + 7
+    ArtistRole = Qt.ItemDataRole.UserRole + 8
+    AlbumRole = Qt.ItemDataRole.UserRole + 9
+    MetadataStateRole = Qt.ItemDataRole.UserRole + 10
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -85,6 +95,18 @@ class PlaylistModel(QAbstractListModel):
 
         elif role == self.RelativePositionRole:
             return entry.relative_position
+
+        elif role == self.DurationRole:
+            return entry.duration
+
+        elif role == self.ArtistRole:
+            return entry.artist
+
+        elif role == self.AlbumRole:
+            return entry.album
+
+        elif role == self.MetadataStateRole:
+            return entry.metadata_state
 
         return QVariant()
 
@@ -214,6 +236,45 @@ class PlaylistModel(QAbstractListModel):
                 self.index(display_idx),
                 [self.IsPlayingRole]
             )
+
+    def update_row_metadata(self, row: int, md: Optional[RowMetadata],
+                            state: str) -> None:
+        """Refresh **one** row's three columns and its state word, in place.
+
+        This is the view-side half of Task 5's targeted update: ``QueueService.
+        apply_metadata`` hands back the row numbers it wrote, and the presenter
+        calls this for each of them. Two rules make it worth a method of its own:
+
+        * **No reset, ever.** ``beginResetModel`` would be one line shorter and
+          would drop the selection, the current index and the scroll position on
+          every row the background sweep fills -- spec §6's "no flicker" criterion
+          read at the model boundary. The only emission here is one ``dataChanged``
+          over ``[row, row]`` carrying exactly the four metadata roles, so a view
+          that is not showing those columns does not repaint either.
+        * **An out-of-range row is a no-op.** A late sweep result landing after the
+          queue got shorter is the normal case, not an error: there is nothing to
+          update, and raising would take the presenter (and on this platform the
+          process) down with it.
+
+        ``md is None`` clears the columns, and ``state`` is stored as handed -- the
+        store owns the tri-state, this class only carries the word to the delegate
+        (ruling B4-R5, and Task 5's ``apply_metadata`` for the same reasoning).
+        """
+        if not (0 <= row < len(self._entries)):
+            return
+
+        entry = self._entries[row]
+        entry.duration = md.duration if md is not None else None
+        entry.artist = md.artist if md is not None else None
+        entry.album = md.album if md is not None else None
+        entry.metadata_state = state
+
+        self.dataChanged.emit(
+            self.index(row),
+            self.index(row),
+            [self.DurationRole, self.ArtistRole,
+             self.AlbumRole, self.MetadataStateRole]
+        )
 
     def get_entry(self, row: int) -> Optional[DisplayEntry]:
         """Get entry at row."""

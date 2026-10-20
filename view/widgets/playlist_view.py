@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from core import i18n
+from service.metadata_store import RowMetadata
 from view.models.playlist_model import PlaylistModel
 from view.delegates.playlist_delegate import PlaylistItemDelegate
 from view.widgets.playlist_context_menu import (
@@ -185,6 +186,19 @@ class PlaylistView(QWidget):
         if display_idx >= 0:
             index = self._model.index(display_idx)
             self._list_view.scrollTo(index, QListView.ScrollHint.EnsureVisible)
+
+    def update_row_metadata(self, row: int, md: Optional[RowMetadata],
+                            state: str) -> None:
+        """Refresh one row's three metadata columns -- no rebuild, no selection loss.
+
+        A forward to the model, in the same shape as :meth:`set_entries` and
+        :meth:`set_current_playing`: the presenter addresses this widget and never
+        reaches for ``self._model``. It exists for batch 4's background sweep, which
+        fills rows one at a time -- ``PlaylistModel.update_row_metadata`` carries the
+        rules (out-of-range rows are a no-op, and the only emission is one
+        ``dataChanged`` over the four metadata roles).
+        """
+        self._model.update_row_metadata(row, md, state)
 
     def selected_display_indices(self) -> list:
         """Every selected row, ascending and without duplicates.
