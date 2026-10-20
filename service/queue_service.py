@@ -18,29 +18,9 @@ from core.library_manager import (
 )
 from service.metadata_store import (
     RowMetadata,
-    STATE_KNOWN,
     STATE_PENDING,
-    STATE_UNKNOWN,
+    state_for_values,
 )
-
-
-def _state_for_payload(md: Optional[RowMetadata]) -> str:
-    """Name the state of a values-only payload (rulings B4-R5 and B4-R8).
-
-    ``set_metadata`` receives ``path -> RowMetadata`` and nothing else, so the
-    three-state word has to come from the payload itself. The rules are the
-    store's, in the store's order: ``md is None`` -- never ``if md``, which would
-    collapse an all-``None`` "tried, got nothing" row back into "not fetched yet"
-    -- then "any field present" is known, and only then unknown.
-    ``QueueStateMatchesStoreStateTest`` in ``tests/test_queue_metadata.py`` reads
-    ``LibraryMetadataStore.state_of`` as the reference for exactly this function,
-    so the two copies cannot drift apart silently.
-    """
-    if md is None:
-        return STATE_PENDING
-    if md.artist is not None or md.album is not None or md.duration is not None:
-        return STATE_KNOWN
-    return STATE_UNKNOWN
 
 
 def _write_metadata(entry: 'DisplayEntry', md: Optional[RowMetadata],
@@ -85,12 +65,15 @@ class DisplayEntry:
     # are the same number, and a delegate reading it cannot tell them apart.
     # ``None`` is the only spelling of "no value" at this layer (ruling B4-R8).
     #
-    # ``metadata_state`` is one of the three strings imported from
-    # ``service.metadata_store`` (ruling B4-R5); it is *not* derived at paint
-    # time. The values and the state are written by the queue's path-keyed table
-    # when the table is *built*, so a rebuild cannot lose them (see
-    # ``_rebuild_display_entries``). A folder header row owns no columns and stays
-    # ``STATE_PENDING`` forever -- Task 8's grid is what keeps it out of sight.
+    # ``metadata_state`` is one of the three strings owned by
+    # ``service.metadata_store`` (ruling B4-R5); this layer only ever produces
+    # ``STATE_PENDING`` itself (the default below), so it imports that one word
+    # plus ``state_for_values`` rather than re-typing any of them. The word is
+    # *not* derived at paint time: the values and the state are written by the
+    # queue's path-keyed table when the table is *built*, so a rebuild cannot
+    # lose them (see ``_rebuild_display_entries``). A folder header row owns no
+    # columns and stays ``STATE_PENDING`` forever -- Task 8's grid is what keeps
+    # it out of sight.
     artist: Optional[str] = None
     album: Optional[str] = None
     duration: Optional[float] = None
@@ -143,10 +126,15 @@ class QueueService(QObject):
         # playlist falls back to ``⋯``" -- green tests, broken UI.
         #
         # The value is a pair rather than a bare ``RowMetadata`` so the state word
-        # survives the same rebuild: ``apply_metadata`` is handed the store's word
-        # and must not have to re-derive it, while ``set_metadata`` receives values
-        # only and names the state through ``_state_for_payload``. A single dict
-        # keeps the two from ever disagreeing about one path.
+        # survives the same rebuild (ruling B4-R17): ``md=None`` stands for both
+        # "never tried" and "tried, got nothing", so one value cannot express the
+        # two states spec §4.1 asks a cell to distinguish, and a rebuild that
+        # re-derived the word from the values alone would silently turn an
+        # extraction failure back into "still loading". ``apply_metadata`` is
+        # therefore stored verbatim, while ``set_metadata`` -- which receives values
+        # only -- names the word through the store's single ``state_for_values``
+        # rather than a second copy of the rule. A single dict keeps the two from
+        # ever disagreeing about one path.
         self._row_metadata: Dict[str, Tuple[Optional[RowMetadata], str]] = {}
 
     # === Queue Building ===
@@ -343,9 +331,12 @@ class QueueService(QObject):
         It is a **replacement**, not a merge: a path missing from ``mapping`` is
         pending again, because keeping the previous library's values under paths
         that happen to exist in both would be exactly the cross-library leak
-        spec §10 risk 1 names. The state word is derived from the payload here
-        (``_state_for_payload``) because the mapping carries values only; the sweep
-        path hands the store's own word through :meth:`apply_metadata`.
+        spec §10 risk 1 names. The state word is named from the payload here by
+        :func:`service.metadata_store.state_for_values` -- the one author of the
+        tri-state rule, shared with ``LibraryMetadataStore.state_of`` so the two
+        sides can never hold two copies of it (batch 4 review finding I1). The
+        sweep path instead hands the store's own word through
+        :meth:`apply_metadata`, and that word is stored verbatim.
 
         No signal is emitted: the caller already holds the list it would send, and
         :class:`~view.models.playlist_model.PlaylistModel` is refreshed by the
@@ -353,7 +344,7 @@ class QueueService(QObject):
         rows, by :meth:`apply_metadata`'s return value (batch 3 ruling R9).
         """
         self._row_metadata = {
-            full_path: (md, _state_for_payload(md))
+            full_path: (md, state_for_values(md))
             for full_path, md in mapping.items()
         }
         self._fill_display_metadata()

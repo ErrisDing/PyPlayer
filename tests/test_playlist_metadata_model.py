@@ -20,7 +20,9 @@ Task 5 把元数据送到了 ``DisplayEntry`` 上，Task 7 会把 sweep 的迟�
 MainWindow。越界行号一律 no-op：sweep 的迟到结果撞上"表已经变短"是正常路况，不是错误。
 
 ``MetadataStateRole`` 返回的是 ``str``，取值就是 ``service.metadata_store`` 导出的那三个
-常量（裁定 B4-R5）：不另造枚举、不用 int，视图层与仓库侧共用同一份拼写。
+常量（裁定 B4-R5）：不另造枚举、不用 int，视图层与仓库侧共用同一份拼写。搬运的三个状态
+都必须有形状，包括 ``(md=None, state='unknown')`` —— "sweep 答不上来"那一格到视图层就是
+它，与 ``(None, 'pending')`` 的"还没试过"共用一份空值（裁定 B4-R17）。
 
 Run:
     QT_QPA_PLATFORM=offscreen python -m unittest tests.test_playlist_metadata_model -v
@@ -235,6 +237,30 @@ class UpdateRowMetadataTest(unittest.TestCase):
         self.assertIsNone(self.model.data(row, PlaylistModel.AlbumRole))
         self.assertEqual(STATE_PENDING,
                          self.model.data(row, PlaylistModel.MetadataStateRole))
+
+    def test_a_none_payload_with_the_unknown_word_stays_unknown(self):
+        """M2: ``(md=None, state='unknown')`` 是"sweep 答不上来"那一格的形状。
+
+        上面那条只覆盖 ``(None, 'pending')``，于是"值全空 + 状态词在场"这一形状在模型
+        边界上没有任何用例。它必须是 ``unknown`` 而**不是** ``pending``：裁定 B4-R17 的
+        理由在这里同样成立 —— 一格"没有值"可以有两种来历，delegate（Task 8）靠这个词决定
+        画加载记号还是画"取不到"的记号。若哪天有人让 ``update_row_metadata`` 从值反推词
+        （``state = state_for_values(md)``），这条会红而上面那条不会。
+        """
+        self.model.update_row_metadata(0, None, STATE_UNKNOWN)
+
+        row = self.model.index(0)
+        self.assertIsNone(self.model.data(row, PlaylistModel.DurationRole))
+        self.assertIsNone(self.model.data(row, PlaylistModel.ArtistRole))
+        self.assertIsNone(self.model.data(row, PlaylistModel.AlbumRole))
+        state = self.model.data(row, PlaylistModel.MetadataStateRole)
+        self.assertIsInstance(state, str)
+        self.assertEqual(STATE_UNKNOWN, state)
+        self.assertNotEqual(STATE_PENDING, state,
+                            'the word was re-derived from the empty values')
+        self.assertEqual([(0, 0, _four_roles())],
+                         [(t, b, set(r)) for t, b, r in self.signals.data_changed],
+                         'the unknown shape must still announce exactly one row')
 
     def test_other_rows_keep_their_own_columns_and_states(self):
         self.model.update_row_metadata(1, KNOWN, STATE_KNOWN)

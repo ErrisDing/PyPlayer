@@ -5,11 +5,16 @@ The cache (Task 1) only says whether an entry carries an ``md`` key. This module
 is where that key *means* something, and the rules it exists to enforce are all
 in the spec's failure-matrix corner cases:
 
-* **Three states, one spelling.** ``state_of`` answers ``'pending'`` /
+* **Three states, one author.** ``state_of`` answers ``'pending'`` /
   ``'unknown'`` / ``'known'`` and nothing else; the three strings live in this
   module as ``STATE_PENDING``/``STATE_UNKNOWN``/``STATE_KNOWN`` so Tasks 5/6/8
   import them instead of re-typing them (ruling B4-R5). No enum, no IntFlag --
-  the strings are the class's only outward expression of the state.
+  the strings are the class's only outward expression of the state. The rule
+  itself is the module function ``state_for_values``, which ``state_of`` and
+  ``QueueService.set_metadata`` both call: batch 4's review found the queue
+  holding a second copy of the same three branches (finding I1), so
+  ``SharedTriStateRuleTest`` is where that shared rule -- and only it -- is
+  falsifiable for every consumer.
 * **"Tried" is key presence, never truthiness** (ruling B4-R8): an entry whose
   three values are all ``None`` was tried and found empty, so it must never be
   re-requested (spec §8's fourth class, criterion 6). Pending therefore means
@@ -50,12 +55,14 @@ sys.path.insert(0, str(ROOT))
 
 from core.cache_manager import MD_KEYS, CachedFile
 from core.library_manager import MediaFile
+from service import metadata_store
 from service.metadata_store import (
     LibraryMetadataStore,
     RowMetadata,
     STATE_KNOWN,
     STATE_PENDING,
     STATE_UNKNOWN,
+    state_for_values,
 )
 
 STORE_SOURCE = 'service/metadata_store.py'
@@ -89,6 +96,11 @@ def _cached(path: str, md=None, size: int = 1000,
 def _null_dict() -> dict:
     """Task 1's canonical "tried, nothing" payload."""
     return dict.fromkeys(MD_KEYS)
+
+
+def _dict_of(md: RowMetadata) -> dict:
+    """The same payload as the cache would have stored it (no ``record`` gate)."""
+    return {key: getattr(md, key) for key in MD_KEYS}
 
 
 class StateConstantsTest(unittest.TestCase):
@@ -169,6 +181,86 @@ class TriStateMatrixTest(unittest.TestCase):
         store.validate([_media(NCM_PATH)])
         seen.add(store.state_of(NCM_PATH))                # excluded
         self.assertEqual({STATE_PENDING, STATE_KNOWN, STATE_UNKNOWN}, seen)
+
+
+class SharedTriStateRuleTest(unittest.TestCase):
+    """Finding I1: the three branches have **one** author, ``state_for_values``.
+
+    Task 5's queue layer used to carry its own copy of them, and the reconciliation
+    test that was supposed to keep the two honest stayed green when that copy was
+    rewritten as a truthiness test (review probe A) -- the payload table held no
+    sample able to tell the two rules apart. Falsy-but-present values
+    (``duration=0.0``: an extractor that answered "no length"; ``artist=''``: an
+    empty tag) are those samples, so they are pinned here, where the rule now
+    lives, and every consumer is pinned to *calling* it.
+    """
+
+    def test_none_payload_is_pending(self):
+        self.assertEqual(STATE_PENDING, state_for_values(None))
+
+    def test_all_none_payload_is_unknown_not_pending(self):
+        """B4-R8's first half: a *present* row of three ``None`` values was tried."""
+        self.assertEqual(STATE_UNKNOWN, state_for_values(EMPTY_MD))
+
+    def test_falsy_but_present_values_are_known(self):
+        """The sample set probe A could not pass without.
+
+        ``if md.artist or md.album or md.duration`` agrees with the rule on every
+        payload this file used to hold and answers ``unknown`` here -- which would
+        put a file the sweep already tried back onto the to-do list (criterion 6).
+        """
+        for md in (RowMetadata(duration=0.0), RowMetadata(artist=''),
+                   RowMetadata(album=''),
+                   RowMetadata(artist='', album='', duration=0.0)):
+            with self.subTest(md=md):
+                self.assertEqual(STATE_KNOWN, state_for_values(md))
+
+    def test_state_of_delegates_instead_of_keeping_a_copy(self):
+        """``state_of`` resolves the shared rule **at call time**.
+
+        The sentinel goes onto the module attribute, so a ``state_of`` that had
+        grown its own three branches stops seeing it and fails here -- including
+        for a path the store does not know at all, which is the ``md is None``
+        branch of the same rule.
+        """
+        store = LibraryMetadataStore()
+        store.load_cache_entries([
+            _cached(MP3_PATH, md=dict(KNOWN_DICT)),
+            _cached(FLAC_PATH, md=_null_dict()),
+        ])
+        sentinel = 'sentinel-state'
+        calls: list = []
+        original = metadata_store.state_for_values
+        try:
+            def spy(md):
+                calls.append(md)
+                return sentinel
+
+            metadata_store.state_for_values = spy
+            self.assertEqual(sentinel, store.state_of(MP3_PATH))
+            self.assertEqual(sentinel, store.state_of(FLAC_PATH))
+            self.assertEqual(sentinel, store.state_of(NCM_PATH))
+        finally:
+            metadata_store.state_for_values = original
+        self.assertEqual([KNOWN_MD, EMPTY_MD, None], calls,
+                         'state_of did not hand its payload to the shared rule')
+
+    def test_state_of_and_the_rule_agree_on_every_stored_shape(self):
+        """The behavioural half of the same claim: one payload in, one word out.
+
+        Loaded through ``load_cache_entries`` rather than ``record`` because
+        ``record`` rewrites a non-positive duration to ``None`` (ruling B4-R7),
+        which would make the two sides describe two different payloads here.
+        """
+        for md in (None, EMPTY_MD, KNOWN_MD, PARTIAL_MD,
+                   RowMetadata(duration=0.0), RowMetadata(artist='')):
+            with self.subTest(md=md):
+                store = LibraryMetadataStore()
+                cached = (_cached(MP3_PATH) if md is None
+                          else _cached(MP3_PATH, md=_dict_of(md)))
+                store.load_cache_entries([cached])
+                self.assertEqual(state_for_values(store.get(MP3_PATH)),
+                                 store.state_of(MP3_PATH))
 
 
 class LoadCacheEntriesTest(unittest.TestCase):

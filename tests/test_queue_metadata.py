@@ -18,7 +18,9 @@
 * **"有没有元数据"只许 ``is None``**（裁定 B4-R8）：三键全 ``None`` 的 ``RowMetadata``
   是**在场的载荷**（"取过了，啥也没有"→ ``unknown``），真值判断会把它塌回 ``pending``，
   正好把判据 6 要保护的"已试过"状态弄丢。``test_empty_row_is_unknown_not_pending`` 是
-  这条的钉子。
+  这条的钉子；"假值**但在场**"（``duration=0.0``、``artist=''``）那半边的样本落在
+  ``tests/test_metadata_store.py`` 的 ``SharedTriStateRuleTest`` —— 判据既然只有一个作者，
+  钉子也只需要一处。
 * **``Track`` 不改**（spec §4.9）：``Track.duration`` 的 ``0.0`` 与"未知"同源，不能当
   显示依据。``test_track_columns_are_not_the_display_source`` 把这条钉住——载荷给的是
   一个 ``duration=0.0`` 的 ``Track``，行上显示的仍是"未知"。
@@ -28,10 +30,24 @@
 Task 7 拿行号逐行走 Task 6 的视图入口。``SignalCensusTest`` 把这个裁定钉成一条断言，
 免得后来人"顺手补一个信号"。
 
-同一份载荷在两个任务里的判断必须一致，所以 ``store`` 在这里是被**读**的（裁定 B4-R6：
-队列测试可以读 store，``service/metadata_store.py`` 永不 import 队列）——
-``QueueStateMatchesStoreStateTest`` 拿 store 当参照系，防止队列侧那份"整表换"的推导和
-``state_of`` 静默分家。
+三态判据**只有一个作者**：``service.metadata_store.state_for_values``。审查发现 I1 打的
+是队列曾经抄过一份（``_state_for_payload``），而"两边对账"的用例挡不住那份抄本被改成真值
+判断（探针 A：23 条全绿）。所以 ``set_metadata`` 现在**调用** store 的那个纯函数，
+``QueueCallsTheSharedRuleTest`` 把"必须同源"这件事本身钉成可红的两条：同一个函数对象 + 哨兵
+替换后队列侧读出哨兵。裁定 B4-R6 只禁止 ``service/metadata_store.py`` import 队列，
+反方向本来就有（本文件早就 import 该模块的常量与 ``RowMetadata``）。
+
+那份表存的是 ``(值, 状态词)`` **一对**而不是 brief 字面的单个值（裁定 B4-R17）：
+``md=None`` 同时是"没试过"和"试过、啥也没有"，单值表达不了 spec §4.1 要区分的两态。
+``PairIsTheWholePointTest`` 钉的就是这件事：定向更新过的那一行**重建之后**仍拿着当时的
+状态词，而 ``set_metadata({})``（切库）又把它收回 ``pending``。按 brief 字面"简化"回单值
+表（探针 B）在 ``test_a_none_payload_carrying_the_unknown_word_stays_unknown`` 上必须红
+—— 本轮变异 V5 实测正是这一条。
+
+``store`` 在这里是被**读**的（裁定 B4-R6 允许的方向）：``QueueStateMatchesStoreStateTest``
+拿 store 当参照系核对"整表换"的结果，``WarmReopenAsksForNothingTest`` 则把 store 与队列搭
+成一份联合场景 —— 单看 ``store.validate()`` 永远不会因队列而红（审查发现 M4），所以那条
+判据 5 的钉子改成"两侧的待办清单必须同时为空 / 同时非空"。
 
 Run:
     QT_QPA_PLATFORM=offscreen python -m unittest tests.test_queue_metadata -v
@@ -52,6 +68,7 @@ except ImportError:  # pragma: no cover - environment without PyQt6
 
 from core.cache_manager import MD_KEYS, CachedFile
 from core.library_manager import MediaFile, Track
+from service import metadata_store, queue_service
 from service.metadata_store import (
     LibraryMetadataStore,
     RowMetadata,
@@ -279,9 +296,29 @@ class ApplyMetadataTest(unittest.TestCase):
         queue = _flat(0)
         queue.apply_metadata(_path(0), KNOWN, STATE_KNOWN)
         self.assertEqual([0], queue.apply_metadata(_path(0), None, STATE_PENDING))
-        entry = queue.get_display_entries()[0]
+        entry = _file_rows(queue)[0]
         self.assertEqual(STATE_PENDING, entry.metadata_state)
         self.assertIsNone(entry.duration)
+
+    def test_no_rows_no_work_and_nothing_remembered(self):
+        """M6: the empty queue is the ``rows == []`` branch, in the open.
+
+        A sweep result can legitimately arrive after the playlist was emptied but
+        before ``set_metadata`` re-filled it. ``[]`` is then the whole answer -- and
+        the values must not be quietly parked in the table either, or a file that
+        no row ever asked about comes back filled when the queue is rebuilt (the
+        same leak ``test_rebuild_for_a_path_the_table_never_saw_stays_pending``
+        pins for a path that exists elsewhere in the table).
+        """
+        queue = QueueService()
+        self.assertEqual([], queue.get_display_entries())
+        self.assertEqual([], queue.apply_metadata(_path(0), KNOWN, STATE_KNOWN))
+
+        queue.build_from_tracks([_track(0)])
+        entry = _file_rows(queue)[0]
+        self.assertEqual(STATE_PENDING, entry.metadata_state)
+        self.assertIsNone(entry.duration)
+        self.assertIsNone(entry.artist)
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
@@ -372,17 +409,138 @@ class MetadataSurvivesRebuildTest(unittest.TestCase):
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
-class QueueStateMatchesStoreStateTest(unittest.TestCase):
-    """The queue's whole-table derivation is the store's, not a fourth opinion.
+class PairIsTheWholePointTest(unittest.TestCase):
+    """裁定 B4-R17：那张表的值是 ``(RowMetadata, 状态词)`` **一对**，不是单个值。
 
-    ``set_metadata`` receives values only, so it has to name the state itself; the
-    store owns that rule (``state_of``). This test reads the store as the reference
-    (ruling B4-R6 allows exactly this direction) so the two cannot drift: a change
-    to either side alone goes red here.
+    这一对不是审美选择。``md=None`` 同时是"没试过"（``pending``）与"试过、啥也没有"
+    （``unknown``），单值表表达不了 spec §4.1 要区分的这两态，而生产默认就产出这个组合：
+    提取抛异常时 ``metadata_service`` 交回 ``md=None``，store 那边落成一行的
+    ``RowMetadata()``，``state_of`` 因此答 ``unknown``。表里若只存值，重建时按值重推，
+    这一格就在**下一次结构变化之后**塌回 ``pending`` —— 审查者按 brief 字面模拟单值表
+    （探针 B）时 23 条全绿、谁也没看见，症状是那一格永远显示"取到了吗？"。
+
+    所以本类的三条都是**重建之后**才成立的断言：调用当场的值单值表也写对，差别只在重建。
+    """
+
+    def test_the_unknown_word_survives_a_rebuild(self):
+        """三键全 ``None`` 的载荷（"试过、啥也没有"）经过重建仍是 ``unknown``。"""
+        queue = _flat(0, 1, 2)
+        queue.apply_metadata(_path(1), RowMetadata(), STATE_UNKNOWN)
+        self.assertEqual(STATE_UNKNOWN,
+                         _file_rows(queue)[1].metadata_state,
+                         'fixture: the word is right before the rebuild')
+
+        self.assertTrue(queue.remove_at_display_index(0))
+        target = [e for e in _file_rows(queue) if e.full_path == _path(1)][0]
+        self.assertEqual(STATE_UNKNOWN, target.metadata_state,
+                         'a tried-but-empty row collapsed back to pending on rebuild')
+        self.assertNotEqual(STATE_PENDING, target.metadata_state)
+        self.assertIsNone(target.duration)
+        self.assertIsNone(target.artist)
+        self.assertIsNone(target.album)
+
+    def test_a_none_payload_carrying_the_unknown_word_stays_unknown(self):
+        """``(None, 'unknown')``：单值形状下 ``None`` 只能读成 ``pending``，所以塌了。
+
+        This is the cell the single-value table cannot express at all: no values,
+        and still "already tried". If a later change drops the pair, this is the
+        assertion that goes red first.
+        """
+        queue = _flat(0, 1, 2)
+        queue.apply_metadata(_path(1), None, STATE_UNKNOWN)
+
+        self.assertTrue(queue.remove_at_display_index(0))
+        target = [e for e in _file_rows(queue) if e.full_path == _path(1)][0]
+        self.assertEqual(STATE_UNKNOWN, target.metadata_state,
+                         'the pair was reduced to its value and the word was lost')
+        self.assertIsNone(target.duration)
+
+    def test_the_wipe_puts_the_same_path_back_to_pending(self):
+        """反向：``set_metadata({})``（切库）之后同一路径必须是 ``pending``。
+
+        The pair is not a ratchet -- the wipe has to overwrite the word, not merely
+        the values, or the library being left would keep answering ``unknown`` for
+        files the new library never fetched.
+        """
+        queue = _flat(0, 1, 2)
+        queue.apply_metadata(_path(1), None, STATE_UNKNOWN)
+        queue.apply_metadata(_path(2), RowMetadata(), STATE_UNKNOWN)
+
+        queue.set_metadata({})
+
+        by_path = {e.full_path: e for e in _file_rows(queue)}
+        for path in (_path(1), _path(2)):
+            self.assertEqual(STATE_PENDING, by_path[path].metadata_state,
+                             f'{path} kept a tried-and-empty word across the wipe')
+            self.assertIsNone(by_path[path].duration)
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class QueueCallsTheSharedRuleTest(unittest.TestCase):
+    """发现 I1：三态判据在仓库里**只许有一份**，而"只有一份"本身必须可红。
+
+    修之前这里是两个作者（``queue_service._state_for_payload`` 与
+    ``LibraryMetadataStore.state_of`` 的三段 ``if``），审查者把其中一份改成真值判断后
+    全量 23 条仍绿（探针 A）——"事后对账"的用法挡不住抄本变质，因为两份实现对同一批
+    样本可以永远同意。规则现在上移为 ``metadata_store.state_for_values``：``state_of``
+    委托它（钉子见 ``tests/test_metadata_store.py`` 的 ``SharedTriStateRuleTest``），
+    队列 import 它。本类钉的是"队列这份调用确实是同一个函数对象"这件事，
+    把队列侧换回**任何**本地重复实现都必须在这里红。
+    """
+
+    def test_the_queue_holds_the_stores_function_object_itself(self):
+        """同名也不行：必须是同一个对象，不是"看起来一样"的第二份实现。"""
+        self.assertIs(metadata_store.state_for_values,
+                      queue_service.state_for_values,
+                      'queue_service re-authored the tri-state rule locally; '
+                      'the store is its only author')
+
+    def test_set_metadata_names_the_state_through_the_shared_rule(self):
+        """行为半边：把共享规则换成哨兵，``set_metadata`` 的结果必须跟着变。
+
+        两个名字都换：``queue_service`` 里 import 进来的那个绑定，和
+        ``metadata_store`` 模块属性（以防调用写成 ``metadata_store.state_for_values``）。
+        本地抄本用自己的名字或自己的代码，看不见哨兵，于是这里红。
+        """
+        sentinel = 'sentinel-from-the-shared-rule'
+        seen: list = []
+        queue_binding = queue_service.state_for_values
+        store_binding = metadata_store.state_for_values
+        try:
+            def spy(md):
+                seen.append(md)
+                return sentinel
+
+            queue_service.state_for_values = spy
+            metadata_store.state_for_values = spy
+            queue = _flat(0)
+            queue.set_metadata({_path(0): KNOWN})
+            entry = _file_rows(queue)[0]
+            self.assertEqual(sentinel, entry.metadata_state,
+                             'set_metadata named the state somewhere other than the '
+                             'shared rule, so a second copy of it still exists')
+        finally:
+            queue_service.state_for_values = queue_binding
+            metadata_store.state_for_values = store_binding
+        self.assertIn(KNOWN, seen,
+                      'the shared rule was never handed this payload')
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class QueueStateMatchesStoreStateTest(unittest.TestCase):
+    """``set_metadata`` 的结果等于 store 对同一条载荷的结论 —— 因为那是同一条规则。
+
+    本类的定位自审查发现 I1 起改写：它**不是**"防两份实现分家"的钉子（分家已被
+    ``QueueCallsTheSharedRuleTest`` 从源头堵掉，判据也只剩一个作者），而是把两处调用
+    同一条规则的结果核对一遍，顺带覆盖 ``apply_metadata`` 把手递的那个词原样落地。
+    载荷表里加了"假值但在场"的 ``artist=''``，但要说清楚：真值判断那种变质**不会**红在
+    这里 —— 两边共用一个函数，输入一样输出自然一样（变异 V3 实测：本类全绿）。红的是
+    ``tests/test_metadata_store.py`` 里判据自己的钉子，那才是"一个作者、一处钉子"的意思。
     """
 
     def test_queue_state_equals_store_state_for_the_same_payload(self):
-        payloads = [KNOWN, EMPTY, RowMetadata(duration=4.0), None]
+        payloads = [KNOWN, EMPTY, RowMetadata(duration=4.0),
+                    RowMetadata(artist=''), None]
         queue = _flat(0)
         path = _path(0)
 
@@ -407,12 +565,18 @@ class QueueStateMatchesStoreStateTest(unittest.TestCase):
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
-class WarmBuildNeedsNoExtractionTest(unittest.TestCase):
-    """Review Focus 5: a fully known library reopens with **zero** extraction.
+class WarmReopenAsksForNothingTest(unittest.TestCase):
+    """判据 4 / Review Focus 5：全知库第二次打开**零提取** —— 两侧的待办必须同时为空。
 
-    The queue-side half of criterion 5: after the scan built the table, one
-    ``set_metadata`` carries the cache's answers, and ``validate`` still has
-    nothing to ask for -- neither before nor after a rebuild.
+    修之前这里只有一句 ``assertEqual([], store.validate(files))``，而它结构上不可能红
+    （审查发现 M4）：队列根本不持 store 的引用，Task 5 的任何实现都无法让 ``validate``
+    变长，那句断言测的是 Task 3 早已钉过的 store 契约。单独把它搬去 Task 7 的接线测试
+    也不完整 —— "暖启动"是一个**联合**主张：store 认为无事可做 **且** 队列一行都不显示
+    pending，缺任何一半，用户看到的都是一排永远转不完的省略号。
+
+    所以本类把两半一起取，并断言两份清单相等；冷库作为对照保证这不是恒真 —— 同一条
+    联合断言在冷库上必须是三行对三行。删掉 ``set_metadata`` 的表写入（M4 要求的那个变异）
+    时，暖库那份的队列半边立刻非空，红在这里。
     """
 
     @staticmethod
@@ -420,8 +584,18 @@ class WarmBuildNeedsNoExtractionTest(unittest.TestCase):
         return MediaFile(path=_path(n), title=f'Track {n}', file_type='audio',
                          extension='.mp3', size_bytes=1000, modified_time=100.0)
 
-    def test_full_known_library_needs_no_extraction_after_set_metadata(self):
-        numbers = (0, 1, 2)
+    @staticmethod
+    def _todo(queue: QueueService, store: LibraryMetadataStore,
+              files: list) -> tuple:
+        """两份待办：队列里读出 ``pending`` 的行，和 store 认为该提取的路径。"""
+        rows = sorted(e.full_path for e in _file_rows(queue)
+                      if e.metadata_state == STATE_PENDING)
+        targets = sorted(full_path for full_path, _size, _mtime
+                         in store.validate(files))
+        return rows, targets
+
+    def _warm(self, numbers):
+        """Store loaded from a cache that answered every row, queue filled from it."""
         files = [self._media(n) for n in numbers]
         store = LibraryMetadataStore()
         store.load_cache_entries([
@@ -430,21 +604,91 @@ class WarmBuildNeedsNoExtractionTest(unittest.TestCase):
                        md={key: getattr(KNOWN, key) for key in MD_KEYS})
             for n in numbers
         ])
-
         queue = _flat(*numbers)
         queue.set_metadata({f.path: store.get(f.path) for f in files})
+        return queue, store, files
 
-        self.assertEqual([], store.validate(files),
+    def test_full_known_library_needs_no_extraction_after_set_metadata(self):
+        numbers = (0, 1, 2)
+        queue, store, files = self._warm(numbers)
+
+        rows, targets = self._todo(queue, store, files)
+        self.assertEqual([], targets,
                          'a warm table still asked the sweep for work')
+        self.assertEqual([], rows,
+                         'the store is done but the rows still say pending')
+        self.assertEqual(rows, targets)
         for entry in _file_rows(queue):
             self.assertEqual(STATE_KNOWN, entry.metadata_state)
             self.assertEqual(227.0, entry.duration)
 
         # And the structure change that must not lose anything keeps it warm.
         queue.remove_at_display_index(0)
-        self.assertEqual([], store.validate(files))
+        rows, targets = self._todo(queue, store, files)
+        self.assertEqual(([], []), (rows, targets),
+                         'a rebuild re-opened work the cache had already answered')
         for entry in _file_rows(queue):
             self.assertEqual(STATE_KNOWN, entry.metadata_state)
+
+    def test_cold_library_asks_for_every_row_the_store_still_wants(self):
+        """对照组：同一条联合断言在冷库上是 ``3 == 3``，所以上一条不是恒真。"""
+        numbers = (0, 1, 2)
+        files = [self._media(n) for n in numbers]
+        store = LibraryMetadataStore()
+        store.load_cache_entries([
+            CachedFile(path=_path(n), title=f'Track {n}', file_type='audio',
+                       extension='.mp3', size_bytes=1000, modified_time=100.0)
+            for n in numbers
+        ])
+        queue = _flat(*numbers)
+        queue.set_metadata({f.path: store.get(f.path) for f in files})
+
+        rows, targets = self._todo(queue, store, files)
+        self.assertEqual([_path(n) for n in numbers], rows)
+        self.assertEqual(rows, targets)
+        self.assertEqual(3, len(targets),
+                         'a cold library must still hand the sweep its whole row set')
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class ClearKeepsTheMetadataTableTest(unittest.TestCase):
+    """裁定 B4-R18：``clear()`` **不清**那张表 —— 这是特征用例，不是许可。
+
+    生产里 ``clear()`` 只服务"清空播放列表"（``presenter/main_presenter.py`` 的两个调用
+    点），切库走的是 ``set_current_library`` → ``build_from_tracks``，**不经过**它；清空
+    由 Task 7 的 ``set_metadata({})`` 负责。路径是绝对路径，值属于文件而不属于"这一份
+    播放列表"，所以用户清空后又把同一批文件加回来时 spec §5 末句的"下次打开同库就是满的"
+    应当同样成立 —— 顺手在 ``clear()`` 里加一句 ``self._row_metadata.clear()`` 看着无害，
+    实际是把已提取的答案丢掉、把整库重新排一遍队。那条改动必须在这里红。
+    """
+
+    def test_the_answers_survive_an_emptied_playlist(self):
+        queue = _flat(0, 1, 2)
+        queue.set_metadata({_path(0): KNOWN, _path(1): RowMetadata(),
+                            _path(2): None})
+
+        queue.clear()
+
+        self.assertEqual([], queue.get_display_entries())
+        queue.build_from_tracks([_track(0), _track(1), _track(2)])
+        by_path = {e.full_path: e for e in _file_rows(queue)}
+        self.assertEqual(STATE_KNOWN, by_path[_path(0)].metadata_state)
+        self.assertEqual(227.0, by_path[_path(0)].duration)
+        self.assertEqual(STATE_UNKNOWN, by_path[_path(1)].metadata_state)
+        self.assertEqual(STATE_PENDING, by_path[_path(2)].metadata_state,
+                         'a row the table never held came back as something else')
+
+    def test_the_wipe_is_still_the_way_to_lose_the_answers(self):
+        """与 ``clear()`` 相反的那一半：``set_metadata({})``（切库）才该清掉它。"""
+        queue = _flat(0)
+        queue.set_metadata({_path(0): KNOWN})
+        queue.clear()
+        queue.set_metadata({})
+        queue.build_from_tracks([_track(0)])
+
+        entry = _file_rows(queue)[0]
+        self.assertEqual(STATE_PENDING, entry.metadata_state)
+        self.assertIsNone(entry.duration)
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')

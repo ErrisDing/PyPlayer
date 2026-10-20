@@ -13,7 +13,10 @@ contract; this class is the behaviour:
   Pending is decided by ``md is None``, never by truthiness: a row of three
   ``None`` values is a *present* payload and would otherwise collapse back into
   "not fetched yet" (ruling B4-R8), which is precisely what spec criterion 6
-  forbids.
+  forbids. The rule itself is authored once, in the module-level pure function
+  ``state_for_values``: ``state_of`` is a lookup plus that call, and the queue's
+  whole-table fill calls it too -- a second copy of the three branches is what
+  batch 4's review found (finding I1), and what its tests now make impossible.
 * **Per-file expiry** (spec 4.6). Every entry remembers the ``(size, mtime)``
   fingerprint its ``md`` was extracted against; a mismatch invalidates it. The
   coarse root-directory check that guards the *file table* is not reused here --
@@ -88,6 +91,36 @@ class _Entry:
     dirty: bool = False
 
 
+def state_for_values(md: Optional[RowMetadata]) -> str:
+    """**The one author** of the tri-state rule for a values-only payload.
+
+    Three branches, in this order (rulings B4-R5 and B4-R8): ``md is None`` is
+    pending -- never ``if md``, which would collapse a row that was tried and
+    found empty back into "not fetched yet"; then "any field is present" is
+    known; only then unknown.
+
+    "Present" is therefore ``is not None`` per field, and the distinction is
+    visible on values that are *falsy but there*: ``duration=0.0`` and
+    ``artist=''`` are answers the extractor gave, so a truthiness test would
+    re-queue a file the sweep already tried (spec §8's fourth class, criterion 6).
+
+    ``LibraryMetadataStore.state_of`` delegates here, and so does the queue's
+    whole-table fill: :meth:`QueueService.set_metadata` receives
+    ``path -> RowMetadata`` and nothing else, so the state word has to be named
+    from the payload. Reading this function from the queue layer creates **no new
+    coupling direction** -- the queue already imports this module for the three
+    state words and for ``RowMetadata``, and ruling B4-R6 only forbids this
+    module to import the queue. A second copy of these three branches is what the
+    batch forbids (logic-block duplication); ``tests/test_queue_metadata.py``
+    pins that the queue calls *this* function instead of re-authoring it.
+    """
+    if md is None:
+        return STATE_PENDING
+    if md.artist is not None or md.album is not None or md.duration is not None:
+        return STATE_KNOWN
+    return STATE_UNKNOWN
+
+
 def _row_from_md(md: Optional[dict]) -> Optional[RowMetadata]:
     """Read Task 1's ``CachedFile.md`` into a ``RowMetadata``.
 
@@ -159,19 +192,14 @@ class LibraryMetadataStore:
     def state_of(self, full_path: str) -> str:
         """``'pending' | 'unknown' | 'known'`` for one path (ruling B4-R8).
 
-        Absent entry *or* an entry whose ``md`` is ``None`` is pending. An entry
-        with values is known; one whose three values are all ``None`` is
-        unknown. The check is ``is None`` on purpose -- ``if entry.md:`` would
-        read an all-``None`` row as pending and re-queue a file that was already
-        tried.
+        Absent entry *or* an entry whose ``md`` is ``None`` is pending; a row with
+        values is known; one whose three values are all ``None`` is unknown. This
+        is a lookup plus :func:`state_for_values` and nothing else -- the rule has
+        exactly one author, so the store, the queue's whole-table fill and this
+        method cannot disagree about the same payload.
         """
         entry = self._entries.get(full_path)
-        if entry is None or entry.md is None:
-            return STATE_PENDING
-        if (entry.md.artist is not None or entry.md.album is not None
-                or entry.md.duration is not None):
-            return STATE_KNOWN
-        return STATE_UNKNOWN
+        return state_for_values(entry.md if entry is not None else None)
 
     # -- expiry ----------------------------------------------------------------
 
