@@ -390,9 +390,9 @@ class PlaylistItemDelegate(QStyledItemDelegate):
         # elided, so a long name gets an ellipsis instead of painting under the
         # muted text -- the old overlay behaviour, and the reason the reservation
         # is the first thing here. :func:`name_room` is that subtraction, and
-        # :func:`position_budget` how much the footnote may take, capping it so a
-        # 50-segment library path elides on its own text rather than deleting the
-        # title); the shape of dropping the reservation is what
+        # :func:`position_budget` is how much the footnote may take -- capping it
+        # so a 50-segment library path elides on its own text rather than deleting
+        # the title. The shape of dropping the reservation is what
         # ``tests/test_playlist_columns.py::OverlongRowTest`` flips on the test
         # side and measures.
         metrics = QFontMetrics(font)
