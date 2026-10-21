@@ -134,6 +134,25 @@ matrix loop walks:
     acts on a click is only observable in a real run -- see the README's
     requires-a-human checklist.
 
+* ``--metadata``: the five batch-4 list states, **each in both themes**, at
+  1200x720 -- ten frames, one per theme x state. Batch 4 shipped three playlist
+  columns (duration / artist / album) and two marks (``⋯`` = never tried, ``—`` =
+  tried and empty), and every one of those nine tasks was reviewed as code. These
+  frames are where a human decides whether the result is *legible*, and they carry
+  the two shapes no unit test can settle: the header band over a grid whose rows
+  are narrowed by a vertical scrollbar that is really there (Task 8 measured
+  **+11px** = 10px scrollbar + 1px frame when the margins did not follow it, and
+  the real shell at this size with forty rows always scrolls), and an old
+  ``version: "1.0"`` cache file read through ``load_cache`` in place of a re-scan.
+  The data goes in through the production path -- cache JSON on disk, store,
+  ``QueueService``, ``MainWindow`` -- and the harness replaces three seams it may
+  not reach in a screenshot run: ``MetadataService``'s thread pool, mutagen
+  extraction, and the write-back. See ``METADATA_STATES`` for the per-frame claims,
+  and the ink-run census those frames print: on this host ``⋯`` and ``—`` (like
+  ``M``, ``x`` and ``…``) rasterise to the same hollow 12px box, so **shape**
+  distinguishability is not photographable offscreen and is a README real-desktop
+  item (ruling B4-R25). These frames prove ink, strings and contrast.
+
 ``thirty-libraries`` frames are rendered with the panel **open**: the floating
 panel is the only surface in the shipped UI where a library count is visible at
 all, so a closed-panel "30 libraries" frame would be pixel-identical to
@@ -150,6 +169,9 @@ measurement block and the colour census print next to each file, and ``--crops``
 writes 2x crops of the rail, the panel, the strip, the toast, the bottom bar and
 (the interaction frames) the affected rows and the composited menu, which is how
 the icon-weight and text-legibility claims get *looked at* rather than assumed.
+Batch 4's ``--metadata`` frames add two crops of their own: the rows around the
+frame's subject, and the heading band together with the columns under it -- the
+alignment claim needs both grids in one picture to be lookable at all.
 
 What the interaction frames do add is **guards, not judgements**: each one
 insists that the state it is about to photograph is actually live (the cursor
@@ -165,6 +187,7 @@ Run it:
     QT_QPA_PLATFORM=offscreen python tests/tools/render_matrix.py --out /tmp/pyplayer-b2
     python tests/tools/render_matrix.py --out /tmp/pyplayer-b2-win --capture window
     python tests/tools/render_matrix.py --out /tmp/b3 --sidebar-open --toast --interaction --crops
+    python tests/tools/render_matrix.py --out /tmp/b4 --metadata --crops
     python tests/tools/render_matrix.py                        # temp dir, path printed
 
 Two capture primitives, and the difference between them is why both exist:
@@ -1727,6 +1750,1050 @@ def render_interaction_frame(app, window, manager, theme: str, kind: str,
     return path
 
 
+# === metadata frames (batch 4) ==============================================
+
+#: The five batch-4 states ``--metadata`` photographs, **each in both themes** at
+#: 1200x720 -- ten frames. The size is not a taste: 1200x720 with forty rows is
+#: the shell :class:`tests.test_playlist_columns.HeaderGridAlignmentTest` measured
+#: the ``+11px`` header/row misalignment in, so it is the only size at which this
+#: harness photographs a *scrolling* playlist, which is the normal state and not
+#: the edge case. The five names are the five things spec §1 makes a claim about:
+#:
+#: * ``metadata-full`` -- every track row answered from the cache (判据 4's screen:
+#:   the second open of a warm library, three columns of values, no mark anywhere),
+#:   including the three rows that make the other claims visible: a ``1:02:03``
+#:   duration, a CJK artist/album pair, an overlong artist/album pair, and one
+#:   ``known`` row whose *duration* alone is missing.
+#: * ``metadata-pending`` -- one row still unanswered: ``⋯`` in all three cells.
+#: * ``metadata-unknown`` -- one row tried and empty: ``—`` in all three cells.
+#:   The last two put their mark on **the same row**, on purpose: the pair then
+#:   differs only in the glyph it asks the font for, which is the one thing this
+#:   host cannot render differently (see the ink-run line the frames print).
+#: * ``metadata-folder`` -- the folder header's data cells hold *nothing*, the row
+#:   directly above it holds values, and the row directly **below** it holds the
+#:   ``⋯`` mark, all three in the same bands of the same crop. That is the shape
+#:   the delegate must not get back wrong: a folder row's ``metadata_state`` is
+#:   pinned at ``pending`` forever, so a grid keyed on the state instead of on
+#:   ``is_folder`` paints ``⋯`` on every folder in the library. The unanswered row
+#:   below is not decoration -- with every neighbour answered this frame came out a
+#:   **byte-for-byte copy of ``metadata-full``**, so the blank cells were only ever
+#:   assertable against a state word and never against the mark one row away, which
+#:   is the one comparison a reader of the frame can actually perform.
+#: * ``metadata-legacy-cache`` -- a real ``version: "1.0"`` cache file on disk, read
+#:   through ``LibraryCacheManager.load_cache``: the file table survives (no
+#:   re-scan), the rows come up pending, and the sweep's answers land row by row.
+#:   The frame is photographed with three rows still in flight, which is the
+#:   目视面 判据 7 asks for -- a screen that is *not* full of ``⋯``.
+#:
+#: What these frames drive, and what they stand in for. Read through production:
+#: ``LibraryCache``/``CachedFile.to_dict`` (write side), ``load_cache`` with its
+#: accepted-version window and ``_read_md`` (read side), ``LibraryMetadataStore``
+#: (``load_cache_entries``/``get``/``state_of``/``record``), ``QueueService``
+#: (``build_from_folders`` → ``set_metadata`` → the display table),
+#: ``MainWindow.set_playlist_entries``/``highlight_current_track``/
+#: ``update_row_metadata``, and ``metadata_cells``/``column_rects`` in the
+#: delegate. Replaced by the harness, and the printed lines say so: ``MetadataService``'s
+#: thread pool and its generation counters, the mutagen extraction itself, and
+#: ``LibraryCacheManager.save_cache`` write-back. ``record`` is called with the
+#: values the harness names, exactly as ``MainPresenter._on_metadata_row`` calls it
+#: when a sweep answer arrives -- so the frame proves the *rows and the pixels*,
+#: not that a real tag file can be read (Tasks 1-4 and 7 own that, in the suite).
+METADATA_STATES = ('metadata-full', 'metadata-pending', 'metadata-unknown',
+                   'metadata-folder', 'metadata-legacy-cache')
+METADATA_SIZE = (1200, 720)
+
+#: The fixture library. Paths are fake on purpose (the whole harness is fake
+#: paths -- see :data:`LIBRARIES`); nothing here stats a file, so nothing here
+#: can be slowed down or changed by what is on disk.
+METADATA_ROOT = 'D:/fake/metadata'
+METADATA_FOLDERS = (('Rock', 12), ('Electronic', 13), ('Jazz', 12))
+METADATA_TRACKS = sum(count for _name, count in METADATA_FOLDERS)
+METADATA_ROWS = METADATA_TRACKS + len(METADATA_FOLDERS)
+
+#: The playing row: a track row, visible, and not one of the rows a mark lands
+#: on -- ``playing_bg``/``playing_text`` would otherwise be the ground and the ink
+#: this frame is asked to judge.
+METADATA_PLAYING_ROW = 2
+
+#: The row the pending and the unknown frame both mark. Odd (the alternating
+#: ``surface_alt`` ground, the harder one of the two), a track inside the first
+#: folder, not the playing row, and far from both folder headers.
+MARK_ROW = 5
+
+#: ``Electronic``'s folder header: a known track row above it, which is what makes
+#: "empty cells" a comparison rather than an absence of evidence.
+FOLDER_ROW = 13
+
+#: The first track *under* that header, which only this frame leaves unanswered.
+#: Its purpose is stated on :data:`METADATA_STATES`' folder bullet: row 13 paints
+#: nothing and row 14 paints the loading mark in the same three bands, so the
+#: folder frame shows the distinction the delegate is being asked to make instead
+#: of re-photographing ``metadata-full``.
+FOLDER_SUBJECT_ROW = FOLDER_ROW + 1
+
+#: Rows the legacy frame has not answered at capture time -- the in-flight tail of
+#: a first sweep over a library upgraded from 1.0.
+LEGACY_UNANSWERED = (MARK_ROW, 18, 31)
+
+#: The four inks a row can carry. "No ink at all" is measured against this closed
+#: set, never against "any colour that is not the ground", because the ``divider``
+#: and the alternating tint are both non-ground colours a blank band contains.
+_ROW_INKS = ('text_primary', 'text_secondary', 'text_muted', 'playing_text')
+
+#: Ink runs already photographed, keyed ``(theme, kind)``. Only the pending /
+#: unknown pair uses it: the two frames have to be compared with each other, and
+#: neither one can see the other's pixels on its own.
+METADATA_RUNS: dict = {}
+
+
+def relative_luminance(colour: str) -> float:
+    """WCAG 2.1 **relative luminance** of ``#rrggbb`` -- sRGB-linearised.
+
+    The other scale in this file is :func:`luminance` (BT.709 luma on
+    gamma-encoded channels, no linearisation), and the two disagree, which is why
+    the function that names one never prints the other's number. This one exists
+    because the batch-4 text claim is a WCAG AA claim (4.5:1), and AA is defined
+    on the linearised quantity -- the same arithmetic
+    ``tests/test_theme.py::ThemeContrastTest.contrast`` uses, reimplemented here
+    rather than imported because that helper is a static method of a TestCase.
+    """
+    from PyQt6.QtGui import QColor
+
+    channels = []
+    for value in QColor(colour).getRgb()[:3]:
+        c = value / 255.0
+        channels.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def wcag_contrast(foreground: str, background: str) -> float:
+    """WCAG 2.1 contrast ratio (1..21) between two ``#rrggbb`` colours."""
+    one, two = relative_luminance(foreground), relative_luminance(background)
+    lighter, darker = max(one, two), min(one, two)
+    return round((lighter + 0.05) / (darker + 0.05), 2)
+
+
+def as_ascii(value) -> str:
+    """``value`` spelled so this host's console can print it.
+
+    The batch-4 marks are U+22EF and U+2014, and this machine's console code page
+    is GBK, which holds the second and not the first -- so a plain ``repr`` of a
+    cell tuple raises ``UnicodeEncodeError`` halfway through a frame's output, and
+    a frame nobody could read is the failure mode this harness exists to avoid.
+    ``ascii()`` is ``repr`` with that escape rule built in, which is why
+    ``tests/test_playlist_columns.py`` types the two marks as escapes rather than
+    as glyphs.
+    """
+    return ascii(value)
+
+
+def metadata_tracks() -> list:
+    """The fixture's tracks in display order: path, title, and the row's payload.
+
+    Four rows carry a deliberate shape instead of filler, and they are the reason
+    the frame is worth looking at rather than only measuring:
+
+    * row 1: ``3723.0`` s, i.e. ``1:02:03`` -- the >= 1-hour length
+      ``COLUMN_DURATION_WIDTH`` 56 cannot hold with a real font (ruling B4-R24).
+      The string the frame *should* paint is printed beside the run census, so a
+      real-desktop reader can tell "fits" from "elided, and the ellipsis ate the
+      minutes" from "clipped".
+    * row 2 (the playing row): a CJK artist and album -- boxes offscreen, real
+      glyphs under ``--capture window``, next to ``playing_text``.
+    * row 3: artist and album longer than their bands -- the elision claim.
+    * row 4: a ``known`` row whose **duration alone** is missing, i.e. one
+      ``—`` between two values. The per-field rule, on pixels.
+
+    Every path sits in a subdirectory of its folder node every fourth row, so the
+    ``[relative_position]`` footnote has both shapes (``Rock`` and ``Rock/Live``)
+    in the same frame and the name block's reservation is exercised next to a
+    narrow duration band.
+    """
+    rows = []
+    next_row = 0
+    for folder, count in METADATA_FOLDERS:
+        next_row += 1                      # the folder header takes a row too
+        for sub in range(count):
+            display = next_row             # this track's display row
+            next_row += 1
+            title = f'{folder} Track {sub + 1:02d}'
+            artist, album, duration = (f'Artist {display:02d}',
+                                       f'Album {display:02d}', 180.0 + display * 13)
+            if display == 1:
+                duration = 3723.0
+            elif display == 2:
+                artist, album = '坂本龍一 東京 Blue Note 四重奏', '音楽 精选 2001-2024'
+            elif display == 3:
+                artist = 'ArtistNameThatGoesOnAndOnForeverAndOn'
+                album = 'AlbumNameThatKeepsGoingAndNeverStopsAtAll'
+            elif display == 4:
+                duration = None
+            branch = folder if display % 4 else f'{folder}/Live'
+            rows.append({
+                'row': display, 'folder': folder, 'sub': sub, 'title': title,
+                'path': f'{METADATA_ROOT}/{branch}/{title}.mp3',
+                'artist': artist, 'album': album, 'duration': duration,
+                'size_bytes': 1_000_000 + display,
+                'modified_time': 1_700_000_000.0 + display,
+            })
+    return rows
+
+
+def build_metadata_state(window, app, kind: str) -> dict:
+    """Drive cache -> store -> queue -> window to one named metadata state.
+
+    Returns the facts the guards read: the cache object that was loaded, the
+    store, the queue, the track rows, and -- for the legacy frame -- the raw text
+    of the file that was read, so "1.0" is a claim about bytes on disk and not
+    about an argument this function was handed.
+    """
+    import json
+    from core.cache_manager import (
+        CACHE_VERSION, LEGACY_CACHE_VERSION, CachedFile, LibraryCache,
+        LibraryCacheManager, MD_KEYS,
+    )
+    from core.config import LibraryConfig
+    from service.metadata_store import LibraryMetadataStore, RowMetadata
+    from service.queue_service import QueueService, Track
+
+    legacy = kind == 'metadata-legacy-cache'
+    rows = metadata_tracks()
+    by_row = {row['row']: row for row in rows}
+
+    # Which rows the cache answers, per frame. ``metadata-pending`` simply never
+    # wrote the mark row's ``md`` key -- that IS "still in flight" on disk -- and
+    # ``metadata-unknown`` writes it as an all-``None`` payload, which IS "tried,
+    # nothing there". Neither is typed into a display string anywhere. The folder
+    # frame leaves the row under its subject header unanswered for the same reason
+    # in pixels: a blank cell is only evidence next to a mark.
+    pending_rows = ({MARK_ROW} if kind == 'metadata-pending' else
+                    {FOLDER_SUBJECT_ROW} if kind == 'metadata-folder' else set())
+    unknown_rows = {MARK_ROW} if kind == 'metadata-unknown' else set()
+
+    files = []
+    for row in rows:
+        if legacy or row['row'] in pending_rows:
+            md = None
+        elif row['row'] in unknown_rows:
+            md = {key: None for key in MD_KEYS}
+        else:
+            md = {'artist': row['artist'], 'album': row['album'],
+                  'duration': row['duration']}
+        files.append(CachedFile(
+            path=row['path'], title=row['title'], file_type='audio',
+            extension='.mp3', size_bytes=row['size_bytes'],
+            modified_time=row['modified_time'], md=md))
+
+    with tempfile.TemporaryDirectory(prefix='pyplayer-metadata-') as tmp:
+        manager = LibraryCacheManager()
+        # Redirected before anything is written: a harness has no business putting
+        # a library cache into ``~/.pyplayer/cache/libraries``, where the next real
+        # launch would read it. ``__init__`` already made that directory; from
+        # here on every path this manager touches is inside ``tmp``.
+        manager._cache_dir = Path(tmp)
+        cache = LibraryCache(
+            version=LEGACY_CACHE_VERSION if legacy else CACHE_VERSION,
+            library_path=METADATA_ROOT, library_name='Metadata',
+            scan_timestamp=1_700_000_000.0, files=files)
+        require(manager.save_cache(cache),
+                'the fixture cache file could not be written into the harness '
+                'temporary directory -- nothing below can be read back')
+        cache_file = manager._cache_dir / manager._get_cache_filename(METADATA_ROOT)
+        raw = json.loads(cache_file.read_text(encoding='utf-8'))
+        loaded = manager.load_cache(METADATA_ROOT)
+
+    require(loaded is not None,
+            f'load_cache refused the {raw["version"]} cache file: the library '
+            'would be judged "no cache" and re-scanned, which is exactly the '
+            'regression spec 判据 7 forbids -- and no frame below could be built')
+    require(len(loaded.files) == METADATA_TRACKS,
+            f'the loaded file table holds {len(loaded.files)} entries, not the '
+            f'{METADATA_TRACKS} written: rows are missing from the frame')
+    if legacy:
+        require(raw['version'] == '1.0' and
+                all('md' not in entry for entry in raw['files']),
+                f'the file the harness wrote is not a 1.0 cache (version '
+                f'{raw["version"]!r}, md keys '
+                f'{sum("md" in entry for entry in raw["files"])}), so this frame '
+                'is not the upgrade path it is named after')
+        require(all(entry.md is None for entry in loaded.files),
+                'a 1.0 entry came back with an md payload: the upgrade collapsed '
+                '"never tried" into "tried", which is the one reading that makes '
+                'the sweep never fill these rows')
+    require(loaded.version == CACHE_VERSION,
+            f'the read side stamped {loaded.version!r}, not {CACHE_VERSION!r}; '
+            'the in-place upgrade this frame is named after did not happen')
+
+    store = LibraryMetadataStore()
+    warmed = store.load_cache_entries(loaded.files)
+    require(warmed == METADATA_TRACKS,
+            f'the store warm-started {warmed} of {METADATA_TRACKS} rows')
+
+    # ``Track`` carries no artist, no album and a 0.0 duration ON PURPOSE: the
+    # columns must come from the metadata table, never from the queue's own DTO
+    # (``Track.duration`` 0.0 is "no length", ruling B4-R8 -- ruling the other
+    # reading would paint ``0:00`` on an unanswered row).
+    folder_data = {}
+    for folder, count in METADATA_FOLDERS:
+        folder_data[f'{METADATA_ROOT}/{folder}'] = [
+            Track(path=row['path'], title=row['title'])
+            for row in rows if row['folder'] == folder]
+    queue = QueueService()
+    queue.set_current_library(METADATA_ROOT)
+    queue.build_from_folders(folder_data)
+    entries = queue.get_display_entries()
+    require(len(entries) == METADATA_ROWS,
+            f'the queue built {len(entries)} display rows, not the '
+            f'{METADATA_ROWS} the fixture promises')
+    folders = [index for index, entry in enumerate(entries) if entry.is_folder]
+    require(folders == [0, 13, 27],
+            f'the folder headers are at {folders}, not at [0, 13, 27]: the row '
+            'the mark and the blank-cell claims are pinned to is now a different '
+            'row than the fixture names')
+
+    queue.set_metadata({row['path']: store.get(row['path']) for row in rows})
+    window.set_libraries([LibraryConfig(path=METADATA_ROOT, name='Metadata')])
+    window.set_current_library(METADATA_ROOT)
+    window.set_playlist_entries(entries)
+    window.highlight_current_track(METADATA_PLAYING_ROW)
+    playing = entries[METADATA_PLAYING_ROW]
+    window.update_track_info(playing.display_text.strip(),
+                             playing.artist or '', playing.album or '')
+    window.update_album_art(None)
+    window.set_playing_state(True)
+    window.update_progress(125.5, 355.0)
+    window.set_volume(VOLUME)
+    window.set_loop_mode(LOOP_MODE)
+
+    answered = []
+    if legacy:
+        # The sweep's answers, delivered through the same five calls
+        # ``MainPresenter._on_metadata_row`` makes per row -- record in the store,
+        # read the state back *from the store* (it is what normalizes the
+        # duration), ``apply_metadata`` on the queue, then the targeted model
+        # entry point. Three rows stay in flight, which is the point of the frame.
+        for row in rows:
+            if row['row'] in LEGACY_UNANSWERED:
+                continue
+            store.record(row['path'],
+                         RowMetadata(artist=row['artist'], album=row['album'],
+                                     duration=row['duration']),
+                         row['size_bytes'], row['modified_time'])
+            values, state = store.get(row['path']), store.state_of(row['path'])
+            for display_row in queue.apply_metadata(row['path'], values, state):
+                window.update_row_metadata(display_row, values, state)
+                answered.append(display_row)
+
+    return {'store': store, 'queue': queue, 'rows': rows, 'by_row': by_row,
+            'entries': entries, 'folders': folders, 'raw_version': raw['version'],
+            'answered': answered, 'legacy': legacy}
+
+
+def role_census(window) -> dict:
+    """``{state word: [rows]}`` as the **model** answers it, per row.
+
+    Read through ``QModelIndex.data`` with the delegate's own role constants, so
+    the census is what a row would paint, not what the harness thinks it wrote.
+    Folder rows are counted separately: their state word is ``pending`` by
+    construction and their cells are empty anyway, which is the distinction
+    ``metadata_cells`` is built to make (and the one this batch was reviewed on).
+    """
+    from service.metadata_store import STATE_PENDING
+    from view.models.playlist_model import PlaylistModel
+
+    view = parts(window)['view']
+    model = view.model()
+    census: dict = {}
+    for row in range(model.rowCount()):
+        index = model.index(row)
+        if index.data(PlaylistModel.IsFolderRole):
+            state = index.data(PlaylistModel.MetadataStateRole)
+            require(state == STATE_PENDING,
+                    f'folder row {row} answers MetadataStateRole with '
+                    f'{as_ascii(state)} rather than {STATE_PENDING!r}: the '
+                    'blank-cell pin below would then be measuring a folder that '
+                    'happens to be unmarked, not the is_folder branch')
+            census.setdefault('folder', []).append(row)
+            continue
+        state = index.data(PlaylistModel.MetadataStateRole)
+        require(isinstance(state, str),
+                f'row {row} answers MetadataStateRole with {state!r}, not one of '
+                "the store's three strings (ruling B4-R5): the delegate would "
+                'fall back to the unknown mark and say "tried" about a row nobody '
+                'tried')
+        census.setdefault(state, []).append(row)
+        if state == STATE_PENDING:
+            require(index.data(PlaylistModel.DurationRole) is None
+                    and index.data(PlaylistModel.ArtistRole) is None
+                    and index.data(PlaylistModel.AlbumRole) is None,
+                    f'row {row} is pending but still carries values; the frame '
+                    'would show a mark over values the queue never dropped')
+    return census
+
+
+def painted_cells(window) -> dict:
+    """``{row: (viewport rect, cells, option font)}`` for every row the delegate paints.
+
+    The metadata twin of :func:`painted_states`, and it exists for the same
+    reason: a colour can say "a mark landed here", but only the delegate's own
+    arguments can say "this row reached ``metadata_cells`` with this state word".
+    The wrapper runs production ``metadata_cells`` over the four roles the
+    delegate reads for that row, so the strings below are what the paint would
+    hand ``drawText`` -- and a state that never reached the model shows up as a
+    row nobody marked. The rect and the font are the row's own ``option`` values,
+    so a band or an elision measured here is measured against what was painted.
+    """
+    from PyQt6.QtCore import QRect
+    from PyQt6.QtGui import QFont
+    from view.delegates.playlist_delegate import PlaylistItemDelegate, metadata_cells
+    from view.models.playlist_model import PlaylistModel
+
+    view = parts(window)['view']
+    recorded: dict = {}
+    original = PlaylistItemDelegate.paint
+
+    def recording(delegate, painter, option, index):
+        recorded[index.row()] = (
+            QRect(option.rect),
+            metadata_cells(
+                state=index.data(PlaylistModel.MetadataStateRole),
+                duration=index.data(PlaylistModel.DurationRole),
+                artist=index.data(PlaylistModel.ArtistRole),
+                album=index.data(PlaylistModel.AlbumRole),
+                is_folder=bool(index.data(PlaylistModel.IsFolderRole))),
+            # The font the row is painted with, recorded rather than re-derived:
+            # an elision measured against a different font than the one the
+            # delegate used is a measurement of nothing.
+            QFont(option.font))
+        return original(delegate, painter, option, index)
+
+    PlaylistItemDelegate.paint = recording
+    try:
+        view.viewport().grab()
+    finally:
+        PlaylistItemDelegate.paint = original
+    return recorded
+
+
+def grid_bands(rect) -> dict:
+    """The four column bands of one row rect, as ``{name: (left, right)}``."""
+    from view.delegates.playlist_delegate import column_rects
+
+    names = ('name', 'duration', 'artist', 'album')
+    return {name: (band.left(), band.right())
+            for name, band in zip(names, column_rects(rect))}
+
+
+def scrollbar_shape(window) -> dict:
+    """The list's own narrowing: frame, vertical scrollbar, and the row width.
+
+    ``HeaderGridAlignmentTest`` measures the same pair and fails when the case it
+    names is not the case on screen; this is the harness doing the same, because a
+    metadata frame rendered at a size where nothing scrolls would silently be the
+    easy case -- the one the product spends its life *not* in.
+    """
+    from PyQt6.QtCore import QPoint
+    from view.delegates.playlist_delegate import metadata_columns_fit
+
+    shell = parts(window)
+    list_view, playlist = shell['view'], shell['playlist']
+    viewport = list_view.viewport()
+    grid_left = viewport.mapTo(playlist, QPoint(0, 0)).x()
+    return {
+        'list_width': list_view.width(),
+        'viewport_width': viewport.width(),
+        'frame_width': list_view.frameWidth(),
+        'grid_left': grid_left,
+        'scrollbar': (viewport.width() + 2 * list_view.frameWidth()
+                      < list_view.width()),
+        'columns_fit': metadata_columns_fit(viewport.width()),
+        'bar_visible': list_view.verticalScrollBar().isVisible(),
+        'bar_range': list_view.verticalScrollBar().maximum(),
+    }
+
+
+def header_grid_offsets(window) -> list:
+    """Per heading: ``(name, left_delta, right_delta)`` against the delegate's bands.
+
+    Expressed in the ``PlaylistView``'s own space and translated by the viewport's
+    offset, the same convention
+    :class:`tests.test_playlist_columns.HeaderGridAlignmentTest` records as a host
+    trap: ``mapTo``/``mapFrom`` *into* a ``QAbstractScrollArea`` viewport do not
+    measure straight on this Qt. The deltas are compared against zero with **no
+    tolerance at all** (ruling B4-R28): the bug being guarded is a measured
+    ``+11px``, and a ``±1px`` window would swallow a real off-by-one into its
+    error bar.
+    """
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtWidgets import QLabel
+    from view.widgets.playlist_view import HEADER_COLUMNS
+
+    shell = parts(window)
+    playlist, list_view = shell['playlist'], shell['view']
+    header, viewport = shell['header'], list_view.viewport()
+    require(header is not None,
+            '#playlistHeaderRow is not in the shell, so there is no band to '
+            'compare with the row grid')
+    grid_origin = viewport.mapTo(playlist, QPoint(0, 0))
+    header_origin = header.mapTo(playlist, QPoint(0, 0))
+    bands = grid_bands(list_view.visualRect(list_view.model().index(0)))
+    out = []
+    for (label_name, _key, _width, _align), band_name in zip(
+            HEADER_COLUMNS, ('name', 'duration', 'artist', 'album')):
+        label = header.findChild(QLabel, label_name)
+        require(label is not None,
+                f'#{label_name} is missing from #playlistHeaderRow: the alignment '
+                'claim has nothing to measure')
+        geometry = label.geometry()
+        left = header_origin.x() + geometry.left() - grid_origin.x()
+        out.append((f'{label_name}/{band_name}', left - bands[band_name][0],
+                    left + geometry.width() - 1 - bands[band_name][1]))
+    return out
+
+
+def band_ink(pixmap, rect, band, dpr: float, colours) -> list:
+    """The columns of ``band`` that carry ink of exactly ``colours``.
+
+    ``rect`` is the row's window-logical rect, ``band`` its column's logical
+    ``(left, right)``, and the return value is physical columns, so the caller
+    divides by ``dpr`` before printing. The row's bottom pixel is excluded -- that
+    is the ``divider``, and counting it would make every band look full. Same
+    reading as ``ColumnPixelHarness._ink``, which is why a pixel claim here means
+    what a pixel claim there does.
+    """
+    from PyQt6.QtGui import QImage
+
+    image = pixmap.toImage().convertToFormat(QImage.Format.Format_RGB32)
+    wanted = {colour.lower() for colour in colours}
+    x, y, _w, h = rect
+    top = int(round(y * dpr))
+    bottom = int(round((y + h - 1) * dpr))
+    left = int(round(band[0] * dpr))
+    right = int(round(band[1] * dpr))
+    columns = []
+    for column in range(left, right + 1):
+        for row in range(top, bottom):
+            if image.pixelColor(column, row).name().lower() in wanted:
+                columns.append(column)
+                break
+    return columns
+
+
+def band_ground(pixmap, rect, band, dpr: float, tokens) -> str:
+    """The colour one band is painted *on*, measured out of the frame.
+
+    ``surface``/``surface_alt`` are the palette answer; the sheet paints the list
+    background translucent, so the ground a contrast claim may be made against is
+    a pixel, exactly as the batch-3 lines say. Walked down the band's first
+    column, which is inside the band and outside the glyph runs a wider band would
+    put ink in.
+    """
+    from PyQt6.QtGui import QImage
+
+    image = pixmap.toImage().convertToFormat(QImage.Format.Format_RGB32)
+    inks = {getattr(tokens, name).lower() for name in _ROW_INKS}
+    inks.add(tokens.divider.lower())
+    x, y, _w, h = rect
+    column = int(round(band[0] * dpr))
+    for row in range(int(round(y * dpr)), int(round((y + h - 1) * dpr))):
+        colour = image.pixelColor(column, row).name().lower()
+        if colour not in inks:
+            return colour
+    raise SystemExit(f'interaction frame precondition failed: no non-ink, '
+                     f'non-divider pixel in band {band} of row rect {rect}; the '
+                     'ground of that band cannot be named, so no contrast claim '
+                     'about its ink can be printed')
+
+
+def ink_runs(columns) -> list:
+    """Group inked columns into ``[start, length]`` runs -- one glyph, one run."""
+    runs: list = []
+    for column in columns:
+        if runs and column == runs[-1][0] + runs[-1][1]:
+            runs[-1][1] += 1
+        else:
+            runs.append([column, 1])
+    return runs
+
+
+def drive_metadata(window, app, tokens, kind: str, facts: dict) -> dict:
+    """Prove the metadata state is on screen, then hand back the pixel checks."""
+    from core import i18n
+    from core.cache_manager import CACHE_VERSION
+    from core.theme import COLUMN_DURATION_WIDTH
+    from PyQt6.QtGui import QFontMetrics
+    from view.time_format import format_time
+
+    shell = parts(window)
+    playlist = shell['playlist']
+    pending_mark = i18n.get('meta.pending')
+    unknown_mark = i18n.get('meta.unknown')
+    require(pending_mark != unknown_mark,
+            f'the two marks are the same string ({as_ascii(pending_mark)}) in locale '
+            f'{i18n.get_current_locale()!r}: spec 判据 3 asks the eye to tell '
+            '"never tried" from "tried, nothing", and this build cannot')
+    require((ord(pending_mark[0]), ord(unknown_mark[0])) == (0x22EF, 0x2014)
+            and len(pending_mark) == len(unknown_mark) == 1,
+            f'the two marks read back as {as_ascii(pending_mark)} / '
+            f'{as_ascii(unknown_mark)}, not the one-code-point pair U+22EF / '
+            'U+2014 the batch records: the real-desktop font-coverage check '
+            '(ruling B4-R25) is defined on those two characters, so a locale edit '
+            'that swapped them takes this frame\'s claim with it')
+
+    clear_selection(playlist, app)
+
+    shape = scrollbar_shape(window)
+    require(shape['scrollbar'] and shape['bar_visible'],
+            f'no vertical scrollbar at {METADATA_SIZE[0]}x{METADATA_SIZE[1]} with '
+            f'{METADATA_ROWS} rows (list={shape["list_width"]} '
+            f'viewport={shape["viewport_width"]} '
+            f'range={shape["bar_range"]}): the header-vs-grid check below would '
+            'be measuring the case that costs nobody anything -- the real shell '
+            'at this size scrolls, and Task 8 measured the un-margined band +11px '
+            'off (10px scrollbar + 1px frame)')
+    require(shape['columns_fit'],
+            f'the rows hide the three data columns at viewport '
+            f'{shape["viewport_width"]}px, so there is no grid for the headings '
+            'to sit on and no cell to mark')
+    offsets = header_grid_offsets(window)
+    for name, left_delta, right_delta in offsets:
+        require(left_delta == 0 and right_delta == 0,
+                f'#{name} is off its own column band by left={left_delta} '
+                f'right={right_delta}px at zero tolerance (ruling B4-R28 keeps the '
+                'tolerance at zero precisely so a real off-by-one cannot hide in '
+                f'an error bar). list={shape["list_width"]} '
+                f'viewport={shape["viewport_width"]}')
+
+    census = role_census(window)
+    known, pending, unknown = (census.get('known', []), census.get('pending', []),
+                               census.get('unknown', []))
+    if kind == 'metadata-full':
+        require(pending == [] and unknown == [],
+                f'the full-data frame holds unanswered rows {pending} / tried-and-'
+                f'empty rows {unknown}; every track row of a warm library is '
+                'answered from the cache (判据 4)')
+    elif kind == 'metadata-pending':
+        require(pending == [MARK_ROW] and unknown == [],
+                f'row {MARK_ROW} must be the only pending row for this frame, got '
+                f'pending={pending} unknown={unknown}')
+    elif kind == 'metadata-unknown':
+        require(unknown == [MARK_ROW] and pending == [],
+                f'row {MARK_ROW} must be the only unknown row for this frame, got '
+                f'unknown={unknown} pending={pending}')
+    elif kind == 'metadata-folder':
+        require(FOLDER_ROW in census.get('folder', []),
+                f'the folder subject is not at row {FOLDER_ROW} '
+                f'(folders={census.get("folder")}), so the blank-cell claim is '
+                'about a row that is not a folder')
+        require(pending == [FOLDER_SUBJECT_ROW] and unknown == [],
+                f'the folder frame must hold exactly one unanswered file, the row '
+                f'under the subject header {FOLDER_SUBJECT_ROW}, got '
+                f'pending={pending} unknown={unknown}. This is the guard that keeps '
+                'the frame from being a re-photograph of metadata-full: if every '
+                'neighbour is answered, the blank folder cells have nothing to be '
+                'compared against on the screen, and the two PNGs come out '
+                'byte-identical -- which they did before this row was put in '
+                'flight')
+    else:
+        require(sorted(pending) == list(LEGACY_UNANSWERED),
+                f'the 1.0 frame must leave exactly {list(LEGACY_UNANSWERED)} rows '
+                f'in flight, got {sorted(pending)}')
+        require(len(pending) < len(known),
+                f'{len(pending)} rows still carry the loading mark against '
+                f'{len(known)} carrying values: 判据 7 asks this frame for a '
+                'screen that is NOT full of the mark -- a library whose upgrade '
+                'never lands looks exactly like a cold one')
+    require(known, 'no row of this frame carries a value at all, so every ink '
+                   'claim below would be a claim about a mark on an empty list')
+
+    cells = painted_cells(window)
+    subject = (MARK_ROW if kind in ('metadata-pending', 'metadata-unknown') else
+               FOLDER_ROW if kind == 'metadata-folder' else
+               LEGACY_UNANSWERED[0] if kind == 'metadata-legacy-cache' else 1)
+    require(subject in cells,
+            f'row {subject} was never painted, so the frame cannot say what its '
+            'subject looks like -- it is scrolled out of the viewport')
+
+    if kind == 'metadata-folder':
+        from service.metadata_store import STATE_PENDING
+        from view.models.playlist_model import PlaylistModel
+
+        folder_state = (shell['view'].model().index(FOLDER_ROW)
+                        .data(PlaylistModel.MetadataStateRole))
+        require(folder_state == STATE_PENDING,
+                f'the folder row\'s state word is {folder_state!r}, not '
+                f'{STATE_PENDING!r}: the pin below only means something while a '
+                'folder really does carry the pending word')
+        require(cells[FOLDER_ROW][1] == (None, None, None),
+                f'row {FOLDER_ROW} hands the painter '
+                f'{as_ascii(cells[FOLDER_ROW][1])} while '
+                'its state word is pending: the folder is being answered like a '
+                'file, which is the one shape that puts ⋯ on every folder header '
+                'in the library')
+
+    viewport = shell['view'].viewport()
+    top = window_of(window)
+
+    crop_first = max(0, subject - 3)
+    # One crop that holds the heading band *and* the rows under it: the alignment
+    # ruling B4-R28 keeps at zero tolerance is a claim about two grids meeting, and
+    # a crop of either grid alone cannot be read as evidence of it.
+    band = rect_in_window(shell['header'], top)
+    block = rows_crop(window, 0, 8)
+    over_columns = (min(band[0], block[0]), band[1],
+                    max(band[0] + band[2], block[0] + block[2]),
+                    block[1] + block[3] - band[1])
+    lines = [
+        f'metadata fixture rows={METADATA_ROWS} (tracks={METADATA_TRACKS} '
+        f'folders={len(facts["folders"])}) cache_version={facts["raw_version"]} '
+        f'state={kind} known={len(known)} pending={len(pending)} '
+        f'unknown={len(unknown)}',
+        f'metadata scroll list={shape["list_width"]} viewport='
+        f'{shape["viewport_width"]} frame={shape["frame_width"]} '
+        f'grid_left={shape["grid_left"]} vbar={shape["bar_visible"]} '
+        f'range={shape["bar_range"]} -> the header band is narrowed by '
+        f'{shape["list_width"] - shape["viewport_width"]}px of chrome',
+        'metadata header grid offsets, per edge, zero tolerance, in the row '
+        'grid\'s own space: ' + '  '.join(
+            f'{pair}=L{left_delta:+d}/R{right_delta:+d}'
+            for pair, left_delta, right_delta in offsets) + '  ALL ZERO',
+        'metadata driven by: LibraryCacheManager.load_cache -> LibraryMetadataStore'
+        ' (load_cache_entries/get/state_of/record) -> QueueService (build_from_'
+        'folders/set_metadata/apply_metadata) -> MainWindow (set_playlist_entries/'
+        'update_row_metadata) -> metadata_cells/column_rects. NOT driven: '
+        'MetadataService\'s thread pool, the generation counters, mutagen '
+        'extraction, save_cache write-back -- those are the suite\'s, and '
+        'record() here stands in for a sweep answer the way Task 3\'s frames stand '
+        'in for menu.exec()',
+        f'metadata marks pending={as_ascii(pending_mark)} (U+'
+        f'{ord(pending_mark[0]):04X} x {len(pending_mark)}) unknown='
+        f'{as_ascii(unknown_mark)} (U+{ord(unknown_mark[0]):04X} x '
+        f'{len(unknown_mark)}) '
+        '-> different strings, one code point each: OFFSCREEN THE SHAPE CANNOT BE '
+        'SEPARATED (this host rasterises every glyph to the same 12px hollow box, '
+        'M and x included -- see tests/test_playlist_columns.py host fact 1), so '
+        'these frames prove ink + string + contrast and the *distinguishability* '
+        'of the two marks is the README real-desktop item B4-R25',
+        'metadata tokens carry no per-state QSS rule: the marks are delegate pens '
+        '(text_muted) and values (text_secondary) over a measured ground, and '
+        'tests/test_playlist_hover.py::test_no_item_qss_rule_was_added still holds',
+    ]
+
+    def cells_for(row):
+        return cells[row][1]
+
+    def window_rect(row):
+        """Row ``row``'s rect in window coordinates (the pixmap's space)."""
+        from PyQt6.QtCore import QPoint as _QPoint
+
+        rect = cells[row][0]
+        point = viewport.mapTo(top, _QPoint(rect.left(), rect.top()))
+        return (point.x(), point.y(), rect.width(), rect.height())
+
+    def bands_for(row):
+        from PyQt6.QtCore import QRect
+
+        x, y, w, h = window_rect(row)
+        return grid_bands(QRect(x, y, w, h))
+
+    def state_word(row):
+        """The state word row ``row`` answers with, straight from the model."""
+        from view.models.playlist_model import PlaylistModel
+
+        return (shell['view'].model().index(row)
+                .data(PlaylistModel.MetadataStateRole))
+
+    # The string layer, per subject row, printed from production's own output.
+    row_strings = {row: cells_for(row) for row in
+                   (1, 2, 3, 4, subject, FOLDER_ROW, FOLDER_SUBJECT_ROW, MARK_ROW)
+                   if row in cells}
+    long_time = format_time(3723.0)
+    lines.append(
+        f'metadata strings painted (production metadata_cells over the model '
+        f'roles) ' + ' | '.join(f'row {row}={as_ascii(got)}'
+                                for row, got in sorted(row_strings.items())))
+    if facts['legacy']:
+        lines.append(
+            f'metadata 判据 7 (1.0 upgrade, this frame): the file table survived '
+            f'the read ({METADATA_TRACKS} entries, file version '
+            f'{facts["raw_version"]} stamped up to {CACHE_VERSION}), '
+            f'{len(facts["answered"])} rows were answered one at a time and '
+            f'{len(pending)} are still in flight -> the screen holds '
+            f'{len(pending)} loading marks out of {METADATA_ROWS} rows, NOT a '
+            'full screen of them. The re-scan this criterion forbids would have '
+            'shown an empty list here, and a collapsed md payload would have '
+            f'painted {unknown_mark} on all {METADATA_TRACKS} and never retried '
+            'them')
+    # What the **live delegate** hands ``drawText`` for the one shape ruling
+    # B4-R24 is about: a length over an hour inside a 56px duration band, measured
+    # with the font that row was painted with. Read on a real desktop as the
+    # string, not as "is there a dot" -- an ellipsis that ate the minutes looks
+    # tidier than a clip and is worse.
+    delegate = shell['view'].itemDelegate()
+    duration_font = cells[1][2] if 1 in cells else shell['view'].font()
+    painted_duration = delegate._elide_text(long_time, duration_font,
+                                            COLUMN_DURATION_WIDTH)
+    advance = QFontMetrics(duration_font).horizontalAdvance(long_time)
+    lines.append(
+        f'metadata duration row 1: cell {as_ascii(long_time)}, band '
+        f'{COLUMN_DURATION_WIDTH}px, advance {advance}px at the font that row '
+        f'paints with ({as_ascii(duration_font.family())} '
+        f'{duration_font.pointSize()}pt), delegate hands drawText '
+        f'{as_ascii(painted_duration)} via PlaylistItemDelegate._elide_text on the '
+        'live delegate. Offscreen the metrics come from the substituted font (one '
+        '12px hollow box per glyph, about twice a real Segoe/YaHei advance), so '
+        'this line is NOT the answer to "does an over-one-hour length fit" -- read '
+        'the string a real desktop paints (an elided 1:0… is worse than a clean '
+        'clip) and raise COLUMN_DURATION_WIDTH to 72 only if it overflows, then '
+        're-check the English heading word (ruling B4-R24)')
+
+    def expect(pixmap, dpr):
+        out = []
+        # -- 1. every folder row the frame paints: no ink in the three data
+        #      bands, while the track rows above them do. Rows below the
+        #      viewport are not painted and are counted, not guessed at. --
+        painted_folders = [row for row in facts['folders'] if row in cells]
+        require(len(painted_folders) >= 2,
+                f'only {painted_folders} of the {len(facts["folders"])} folder '
+                'rows are inside the viewport, so the blank-cell claim has no '
+                'evidence in this frame')
+        for folder_row in painted_folders:
+            bands = bands_for(folder_row)
+            rect = window_rect(folder_row)
+            for column in ('duration', 'artist', 'album'):
+                inked = band_ink(pixmap, rect, bands[column], dpr,
+                                 [getattr(tokens, name) for name in _ROW_INKS])
+                require(not inked,
+                        f'folder row {folder_row} painted ink {inked[:6]} in its '
+                        f'{column} band: the delegate keyed its cells on the state '
+                        'word instead of on is_folder, and every folder in the '
+                        'library now wears the mark of a file that is loading')
+            out.append(f'metadata folder row {folder_row} '
+                       f'(cells={as_ascii(cells[folder_row][1])} while the row\'s '
+                       f'state word is {as_ascii(state_word(folder_row))}) '
+                       'duration/artist/album bands carry no ink MATCH')
+            if folder_row:
+                above = folder_row - 1
+                inked = band_ink(pixmap, window_rect(above),
+                                 bands_for(above)['artist'], dpr,
+                                 [tokens.text_secondary])
+                require(inked,
+                        f'the neighbour above folder {folder_row} has no '
+                        'text_secondary ink either, so "the folder is blank" is '
+                        'not evidence of anything -- nothing on this row painted')
+                out.append(f'metadata folder neighbour row {above} artist band '
+                           f'has {len(inked)} text_secondary columns MATCH')
+
+        # -- 2. the subject row, per kind. --
+        bands = bands_for(subject)
+        rect = window_rect(subject)
+        marked = pending_mark if kind == 'metadata-pending' else unknown_mark
+        if kind in ('metadata-pending', 'metadata-unknown',
+                    'metadata-legacy-cache'):
+            want = (marked, marked, marked) if kind != 'metadata-legacy-cache' \
+                else (pending_mark, pending_mark, pending_mark)
+            require(cells[subject][1] == want,
+                    f'row {subject} hands the painter {as_ascii(cells[subject][1])}, '
+                    f'not {as_ascii(want)}: the string layer of this frame is '
+                    'wrong whatever the pixels say')
+            for column, value in zip(('duration', 'artist', 'album'), want):
+                inked = band_ink(pixmap, rect, bands[column], dpr,
+                                 [tokens.text_muted])
+                require(inked,
+                        f'row {subject} {column} band painted no text_muted ink at '
+                        f'all, though the cell is {as_ascii(value)}: the mark reached the '
+                        'model and never reached the screen')
+                other = unknown_mark if value == pending_mark else pending_mark
+                require(value != other,
+                        f'the two marks are the same string {as_ascii(value)}')
+                ground = band_ground(pixmap, rect, bands[column], dpr, tokens)
+                require(ground not in (tokens.hover_bg.lower(),
+                                       tokens.selection_bg.lower(),
+                                       tokens.playing_bg.lower()),
+                        f'row {subject} is grounded in {ground}, a state tint: the '
+                        'mark would be judged against a background that only a '
+                        'hovered/selected/playing row has')
+                ratio = wcag_contrast(tokens.text_muted, ground)
+                require(ratio >= 4.5,
+                        f'row {subject} {column}: mark {as_ascii(value)} in '
+                        f'{tokens.text_muted} on the measured ground {ground} is '
+                        f'{ratio}:1, under the 4.5:1 AA bar for text')
+                runs = ink_runs(inked)
+                out.append(
+                    f'metadata row {subject} {column} cell={as_ascii(value)} ink='
+                    f'{len(inked)}px runs={runs} ground={ground} '
+                    f'contrast={ratio}:1 (WCAG relative luminance, the other '
+                    'scale in this file) MATCH')
+            if kind == 'metadata-unknown':
+                twin = (theme_of(tokens), 'metadata-pending')
+                key = (theme_of(tokens), 'metadata-unknown')
+                if twin in METADATA_RUNS:
+                    same = METADATA_RUNS[twin] == runs
+                    verdict = (
+                        'IDENTICAL: offscreen the two marks are provably NOT '
+                        'distinguishable by shape, so 判据 3 rides on the string '
+                        'layer and on the real-desktop U+22EF coverage check '
+                        '(README item, ruling B4-R25)'
+                        if same else
+                        'DIFFERENT, which this host cannot explain (every glyph '
+                        'here rasterises to one 12px box): re-measure before '
+                        'believing it')
+                    out.append(
+                        f'metadata pair census: this unknown frame\'s album-band '
+                        f'runs={runs}; the pending frame of the same row and theme '
+                        f'gave {METADATA_RUNS[twin]} -> {verdict}')
+                METADATA_RUNS[key] = runs
+            if kind == 'metadata-pending':
+                METADATA_RUNS[(theme_of(tokens), kind)] = runs
+        else:
+            for column in ('duration', 'artist', 'album'):
+                inked = band_ink(pixmap, rect, bands[column], dpr,
+                                 [getattr(tokens, name) for name in _ROW_INKS])
+                out.append(f'metadata subject row {subject} {column} band ink '
+                           f'{len(inked)}px')
+            if kind == 'metadata-folder':
+                # The comparison this frame exists to show, on pixels rather than on
+                # a state word: one row apart, the same three bands, nothing against
+                # the loading mark. Without it the frame is metadata-full again.
+                require(FOLDER_SUBJECT_ROW in cells,
+                        f'row {FOLDER_SUBJECT_ROW} was never painted, so the folder '
+                        'frame has no mark to compare its blank cells with')
+                require(cells[FOLDER_SUBJECT_ROW][1] == (pending_mark, pending_mark,
+                                                          pending_mark),
+                        f'row {FOLDER_SUBJECT_ROW} hands the painter '
+                        f'{as_ascii(cells[FOLDER_SUBJECT_ROW][1])}, not three loading '
+                        'marks: the file under the subject header is not in flight, '
+                        'so nothing on this screen contrasts with the blank row above '
+                        'it')
+                bands_below = bands_for(FOLDER_SUBJECT_ROW)
+                rect_below = window_rect(FOLDER_SUBJECT_ROW)
+                for column in ('duration', 'artist', 'album'):
+                    inked = band_ink(pixmap, rect_below, bands_below[column], dpr,
+                                     [tokens.text_muted])
+                    require(inked,
+                            f'row {FOLDER_SUBJECT_ROW} {column} band painted no '
+                            'text_muted ink: then the blank band of the folder row '
+                            'above it is only "nothing painted here", not a mark that '
+                            'was withheld')
+                    other = band_ink(pixmap, rect, bands[column], dpr,
+                                     [tokens.text_muted])
+                    require(not other,
+                            f'row {FOLDER_ROW} {column} band painted text_muted ink at '
+                            f'{other[:6]} next to a marked file row: the folder is '
+                            'wearing the loading mark after all')
+                out.append(
+                    f'metadata folder adjacency: row {FOLDER_ROW} (folder header, '
+                    f'state word {as_ascii(state_word(FOLDER_ROW))}, cells='
+                    f'{as_ascii(cells[FOLDER_ROW][1])}) holds no ink in the three '
+                    f'bands while row {FOLDER_SUBJECT_ROW} (unanswered file) holds '
+                    'text_muted mark ink in those same bands -> a blank cell and a '
+                    'mark are different pixels one row apart MATCH')
+
+        # -- 3. the value rows and the per-field mark: text_secondary everywhere,
+        #      and one cell quieter than the rest on the known row that has no
+        #      duration. --
+        for row in (1, 2, 3, 4, 6, 7):
+            if row not in cells or row == subject:
+                continue
+            bands = bands_for(row)
+            rect = window_rect(row)
+            strings = cells[row][1]
+            for column, value in zip(('duration', 'artist', 'album'), strings):
+                want_muted = value == unknown_mark
+                colour = (tokens.text_muted if want_muted
+                          else tokens.text_secondary)
+                inked = band_ink(pixmap, rect, bands[column], dpr, [colour])
+                require(inked,
+                        f'row {row} {column} cell {as_ascii(value)} painted no ink in '
+                        f'{colour} (muted={want_muted}): the cell is missing from '
+                        'the screen while the model says it has content')
+                if want_muted:
+                    out.append(f'metadata row {row} {column} = {as_ascii(value)} marked in '
+                               f'text_muted over {len(inked)}px MATCH (a known row '
+                               'whose one field is absent still says so)')
+                else:
+                    out.append(f'metadata row {row} {column} = {as_ascii(value)} in '
+                               f'{colour} over {len(inked)}px runs={ink_runs(inked)}')
+            # No name ink inside the data block: the title is elided *against* the
+            # duration band's left edge, so text_primary may not cross it.
+            name_inks = [getattr(tokens, name) for name in
+                         ('text_primary', 'playing_text')]
+            block_left = bands['duration'][0]
+            escaped = [column for column in
+                       band_ink(pixmap, rect, (block_left, bands['album'][1]), dpr,
+                                name_inks)]
+            require(not escaped,
+                    f'row {row}: name-column ink ({name_inks[0]}/{tokens.playing_text}) '
+                    f'appears at {escaped[:6]} inside the data block: the title '
+                    'elides against the wrong width and paints over the columns')
+            out.append(f'metadata row {row} name ink stops left of the duration '
+                       f'band at x={block_left} MATCH')
+
+        # -- 4. the crop subject, printed for the eye. --
+        out.append(
+            f'metadata look here: rows {crop_first}..{subject + 3} of '
+            f'{kind} in {theme_of(tokens)}; the playing row '
+            f'{METADATA_PLAYING_ROW} carries playing_text/playing_bg and is NOT a '
+            'mark row, and rows 1/3/4 are the 1:02:03 / overlong / '
+            'one-field-missing shapes named in the fixture')
+        return out
+
+    crop_first = max(0, subject - 3)
+    return {
+        'lines': lines,
+        'expect': expect,
+        'crops': {
+            'rows': rows_crop(window, crop_first, subject + 3),
+            'header-over-columns': over_columns,
+        },
+        'facts': facts,
+    }
+
+
+def render_metadata_frame(app, window, manager, theme: str, kind: str,
+                          out_dir: Path, mode: str, verbose: bool,
+                          crops: bool = False):
+    """One metadata frame: data through the production path, then the guards.
+
+    Same order as :func:`render_interaction_frame` and for the same reason -- the
+    state is a fact about a laid-out live widget, so it goes on after
+    :func:`present`, and ``expect`` reads its pixels off the captured frame the
+    human is asked to judge.
+    """
+    manager.set_mode(theme)
+    from view.widgets import LibrarySidebar, Toast
+
+    window.findChild(LibrarySidebar).hide_panel()
+    window.findChild(Toast).dismiss()
+    facts = build_metadata_state(window, app, kind)
+    window.resize(*METADATA_SIZE)
+    present(window, app, mode)
+    driver = drive_metadata(window, app, manager.tokens, kind, facts)
+    pump(app, 0.0 if mode == 'grab' else 0.05)
+
+    pixmap = capture(window, mode)
+    dpr = pixmap.width() / max(1, window.width())
+    frame_lines = driver['expect'](pixmap, dpr)
+
+    name = f'{theme}_{kind}_{METADATA_SIZE[0]}x{METADATA_SIZE[1]}.png'
+    path = out_dir / name
+    pixmap.save(str(path))
+    if crops:
+        write_crops(pixmap, window, path, extra=driver.get('crops'))
+
+    if verbose:
+        print(f'\n=== {name}  [{mode}]  {pixmap.width()}x{pixmap.height()} px ===')
+        for line in measure(window):
+            print(f'    {line}')
+        for line in driver['lines'] + frame_lines:
+            print(f'    {line}')
+        print('    census  ' + '  '.join(colour_census(pixmap)))
+        if window.devicePixelRatioF() != 1.0:
+            print(f'    (dpr {window.devicePixelRatioF():.2f}; '
+                  'measures above are logical px)')
+    return path
+
+
 # === capture =================================================================
 
 #: Where the real-QPA run parks the window: fully inside the primary screen, so
@@ -1848,7 +2915,8 @@ def render_frame(app, window, manager, theme: str, state: str, size: tuple,
 
 def render_matrix(out_dir: Path, mode: str = 'grab', verbose: bool = True,
                   sidebar_open: bool = False, with_toast: bool = False,
-                  interaction: bool = False, crops: bool = False):
+                  interaction: bool = False, metadata: bool = False,
+                  crops: bool = False):
     """Write the 12 matrix frames plus the opted-in overlay/interaction frames.
 
     One window and one manager are re-used for the whole matrix, and the theme is
@@ -1863,7 +2931,10 @@ def render_matrix(out_dir: Path, mode: str = 'grab', verbose: bool = True,
     The interaction frames go last on purpose. Each one moves the platform cursor
     and edits the selection, and the twelve matrix frames must not be photographed
     through any of that; running them after the matrix, and hiding the window
-    between every frame, keeps each picture's own state its own.
+    between every frame, keeps each picture's own state its own. The metadata
+    frames come after the interaction ones for the same reason plus a second: they
+    rebuild the playlist from a fresh ``QueueService``, so nothing they print can be
+    a leftover hover or selection.
     """
     from main import build_theme_manager
     from service.config_service import ConfigService
@@ -1927,6 +2998,17 @@ def render_matrix(out_dir: Path, mode: str = 'grab', verbose: bool = True,
                     if path is not None:
                         extras.append(path)
                     window.hide()
+        if metadata:
+            # Kind outer, theme inner: the pending pair must be photographed before
+            # the unknown one, because the ink-run census that says "offscreen the
+            # two marks are the same shape" compares a frame with its already-captured
+            # twin. Swapping the loops would leave the line unprinted half the time.
+            for kind in METADATA_STATES:
+                for theme in THEMES:
+                    extras.append(render_metadata_frame(
+                        app, window, manager, theme, kind, out_dir, mode,
+                        verbose, crops=crops))
+                    window.hide()
         window.close()
     return matrix, extras
 
@@ -1959,11 +3041,27 @@ def main(argv=None) -> int:
                              'third frame is a QMenu.grab() composited over the '
                              'window -- production menu.exec() runs in no automated '
                              'path -- and its file name says so.')
+    parser.add_argument('--metadata', action='store_true',
+                        help='Add the ten batch-4 metadata frames: metadata-full, '
+                             'metadata-pending, metadata-unknown, metadata-folder '
+                             'and metadata-legacy-cache, each in light and dark at '
+                             '1200x720 -- a scrolling playlist, because the header '
+                             'band is only interesting once the vertical scrollbar '
+                             'has narrowed the rows. Each one checks its own '
+                             'preconditions (row census from the model roles, the '
+                             'mark strings from metadata_cells, the four headings '
+                             'edge-for-edge on the delegate\'s own bands at zero '
+                             'tolerance, ink per band, WCAG contrast against the '
+                             'measured ground) and stops the run rather than '
+                             'photographing a list that says something else. See '
+                             'the module docstring for what is driven and what is '
+                             'stood in for.')
     parser.add_argument('--crops', action='store_true',
                         help='Also write 2x crops (rail, panel, strip, toast, '
                              'bottom bar, and on the interaction frames the affected '
-                             'rows and the menu-grab-composite) of every frame into '
-                             '<out>/crops/.')
+                             'rows and the menu-grab-composite, on the metadata '
+                             'frames the marked rows and the heading band over the '
+                             'columns under it) of every frame into <out>/crops/.')
     parser.add_argument('--quiet', action='store_true',
                         help='Do not print each rendered file and its measures.')
     args = parser.parse_args(argv)
@@ -1972,7 +3070,7 @@ def main(argv=None) -> int:
     matrix, extras = render_matrix(
         out_dir, mode=args.capture, verbose=not args.quiet,
         sidebar_open=args.sidebar_open, with_toast=args.toast,
-        interaction=args.interaction, crops=args.crops)
+        interaction=args.interaction, metadata=args.metadata, crops=args.crops)
 
     if len(matrix) != FRAME_COUNT:
         print(f'Expected {FRAME_COUNT} matrix frames, wrote {len(matrix)}',
