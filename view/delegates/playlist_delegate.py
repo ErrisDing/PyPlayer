@@ -58,15 +58,27 @@ MIN_NAME_BLOCK_WIDTH = 96
 #: Without it a pathological library path -- a folder 50 segments deep -- would
 #: take the whole block and leave the title no ink at all, which is the same
 #: defect in the other direction. Three glyph boxes.
+#:
+#: The value is only observable on a block narrower than ``2 * (SPACE_2 +
+#: MIN_TITLE_WIDTH) = 88``: at 88 and above ``block // 2`` is the smaller cap and
+#: this constant is outvoted. It is not a dead one -- below 88 is precisely where
+#: the rows that *hide* the columns live (the narrowest viewport measured on this
+#: host is 62px, so the name block is 46px and the footnote may take 2px, not the
+#: 23px half the ``block // 2`` cap alone would allow) -- but it does mean the
+#: number has to be tested *there*. ``tests/test_playlist_columns.py::
+#: PositionReservationInvariantTest`` measures ``position_budget``/``name_room`` at
+#: a 64px block, where this floor binds, and flips the constant to 0 and to a
+#: nonsense large value to show both mutations change the answer (a value nothing
+#: can observe is a value that gets deleted, not kept).
 MIN_TITLE_WIDTH = SPACE_3 * 3
 
 
 def position_budget(block_width: int, position_advance: int) -> int:
     """How much of the name block the ``[relative_position]`` read-out gets.
 
-    The reservation the name is elided *against*: the title is laid out in
-    ``block_width - position_budget(...) - SPACE_2``, so the two can never put ink
-    in each other's columns. Three cases, all of them the point of this one line:
+    The reservation the name is elided *against* -- see :func:`name_room`, which
+    is the other half of the pair. Three cases, all of them the point of this one
+    line:
 
     * a position that fits takes exactly its own advance, so the title gives it
       room and no more;
@@ -76,12 +88,34 @@ def position_budget(block_width: int, position_advance: int) -> int:
       fifty-segment library path elides on itself instead of leaving the title
       two glyphs (the decision the brief asks to be written down, and the reason
       this is a named function rather than an inline ``min``);
-    * an empty or near-empty block hands back 0, so the arithmetic upstream never
-      sees negative room to elide against.
+    * an empty, near-empty or outright negative block hands back 0. The return
+      value is clamped for that reason: ``block_width // 2`` goes negative for a
+      negative block, and the caller subtracts this from a width, so a negative
+      budget would hand *more* room to the title than the block has. Pinned by
+      ``tests/test_playlist_columns.py::PositionReservationInvariantTest``.
     """
     cap = min(max(0, block_width - SPACE_2 - MIN_TITLE_WIDTH),
               block_width // 2)
-    return min(position_advance, cap)
+    return max(0, min(position_advance, cap))
+
+
+def name_room(block_width: int, position_advance: int) -> int:
+    """How many pixels of the name block the *title* is elided against.
+
+    The one expression of "the block, minus the footnote's reservation, minus the
+    gutter between them", so the reservation cannot be dropped from one of the
+    two places that need it and kept in the other: the title is painted in
+    ``name_room`` pixels and the read-out in :func:`position_budget` pixels, and
+    the pair never needs more than the block (:data:`SPACE_2` of gutter included,
+    which is what the gap between the two inks measures).
+
+    Extracted from :meth:`PlaylistItemDelegate.paint` for the same reason
+    :func:`position_budget` was: inline, the arithmetic could only be observed
+    through a pixel grab, and Step 5's mutation ① ("delete the reservation") has
+    to be a single variable a test can flip.
+    """
+    return max(0, block_width
+               - position_budget(block_width, position_advance) - SPACE_2)
 
 
 def metadata_columns_fit(row_width: int) -> bool:
@@ -355,27 +389,30 @@ class PlaylistItemDelegate(QStyledItemDelegate):
         # The position's width is taken off the block *before* the name is
         # elided, so a long name gets an ellipsis instead of painting under the
         # muted text -- the old overlay behaviour, and the reason the reservation
-        # is the first thing here. :func:`position_budget` owns how much that is
-        # (and caps the footnote itself, so a 50-segment library path elides on its
-        # own text rather than deleting the title); the shape of dropping it is
-        # what ``tests/test_playlist_columns.py::OverlongRowTest`` flips on the test
+        # is the first thing here. :func:`name_room` is that subtraction, and
+        # :func:`position_budget` how much the footnote may take, capping it so a
+        # 50-segment library path elides on its own text rather than deleting the
+        # title); the shape of dropping the reservation is what
+        # ``tests/test_playlist_columns.py::OverlongRowTest`` flips on the test
         # side and measures.
         metrics = QFontMetrics(font)
         position_text = f"[{relative_position}]"
-        budget = position_budget(name_rect.width(),
-                                 metrics.horizontalAdvance(position_text))
-        available = max(0, name_rect.width() - budget - SPACE_2)
+        position_advance = metrics.horizontalAdvance(position_text)
+        available = name_room(name_rect.width(), position_advance)
+        budget = position_budget(name_rect.width(), position_advance)
         painter.setPen(QColor(text_colour))
         painter.drawText(name_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                          self._elide_text(display_text, font, available))
 
         # ``text_muted`` replaces the old ``QColor(136,136,136,160)``: the
         # token is the one the 4.5:1 text guard in tests/test_theme.py
-        # measured against playing_bg/selection_bg, and it is opaque.
+        # measured against playing_bg/selection_bg, and it is opaque. Painted in
+        # the *same* rectangle as the title, right-aligned instead of left --
+        # ``name_room`` already took the footnote's ground off the block, so the
+        # two cannot meet (an earlier shape shrank this rectangle first, which
+        # was a no-op that read like geometry work).
         painter.setPen(QColor(tokens.text_muted))
-        position_rect = QRect(name_rect)
-        position_rect.setLeft(name_rect.left())
-        painter.drawText(position_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+        painter.drawText(name_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                          metrics.elidedText(position_text,
                                            Qt.TextElideMode.ElideRight,
                                            budget))
@@ -383,8 +420,7 @@ class PlaylistItemDelegate(QStyledItemDelegate):
         # Restore painter state
         painter.restore()
 
-    @staticmethod
-    def _paint_cells(painter: QPainter, font: QFont, columns: tuple,
+    def _paint_cells(self, painter: QPainter, font: QFont, columns: tuple,
                      cells: tuple, tokens) -> None:
         """Draw the three data cells of one row inside their bands.
 
@@ -396,9 +432,14 @@ class PlaylistItemDelegate(QStyledItemDelegate):
 
         Duration is right-aligned so the digits line up column-wise (a list of
         three- and four-character times is unreadable left-aligned); the two text
-        columns are left-aligned, which is how names are scanned. Every cell is
-        elided to its own band, so a long artist stops at the album column
-        instead of painting over it.
+        columns are left-aligned, which is how names are scanned. Every cell goes
+        through :meth:`_elide_text` against its own band first -- *the same* call
+        the title uses, so one truncation language is painted across the whole row
+        -- because handing the raw string to ``drawText`` would let Qt *clip* it
+        instead: the ink would stop at the band's last pixel with the unlucky
+        glyph cut in half, with no ellipsis to say so (measured on this host: a
+        125px rectangle and fifteen glyphs leaves ink on the 125th column, mid
+        glyph).
         """
         _name_rect, duration_rect, artist_rect, album_rect = columns
         marks = {i18n.get('meta.pending'), i18n.get('meta.unknown')}
@@ -416,7 +457,7 @@ class PlaylistItemDelegate(QStyledItemDelegate):
             painter.setPen(QColor(tokens.text_muted if text in marks
                                   else tokens.text_secondary))
             painter.drawText(rect, Qt.AlignmentFlag.AlignVCenter | align,
-                             text)
+                             self._elide_text(text, font, rect.width()))
 
     def _elide_text(self, text: str, font: QFont, max_width: int) -> str:
         """Elide text if it exceeds max_width."""

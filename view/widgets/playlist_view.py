@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListView, QAbstractItemView, QLabel
 )
 from PyQt6.QtCore import (
-    Qt, QEvent, QModelIndex, QPoint, QItemSelectionModel, pyqtSignal,
+    Qt, QEvent, QModelIndex, QMargins, QPoint, QItemSelectionModel, pyqtSignal,
 )
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
 
@@ -89,8 +89,9 @@ class PlaylistView(QWidget):
     ``#colAlbum`` and ``#playlistView``; the row states are painted by
     :class:`PlaylistItemDelegate`, which reads the theme manager's tokens. The
     header's four labels are laid out with the delegate's own column widths and
-    gutters, and :meth:`_sync_header_columns` hides the three data headings
-    whenever the delegate's give-way rule hides the columns themselves.
+    gutters, and :meth:`_sync_header_columns` both hides the three data headings
+    whenever the delegate's give-way rule hides the columns themselves and
+    shifts the band so that every heading sits over the column it names.
     """
 
     # Signals
@@ -192,26 +193,32 @@ class PlaylistView(QWidget):
     def _build_header(self) -> QWidget:
         """The ``#playlistHeaderRow`` band and its four column words.
 
-        The margins are ``SPACE_2`` because that is the inset the delegate paints
-        its own columns inside (``view.delegates.playlist_delegate.column_rects``
+        The margins start at ``SPACE_2`` because that is the inset the delegate
+        paints its own columns inside (``view.delegates.playlist_delegate.column_rects``
         adjusts the row rectangle by ``SPACE_2`` on both edges), and the spacing
         is the delegate's ``COLUMN_GAP``. A stylesheet ``padding`` would be a
         second source of the same number, which is why
         ``core/theme_qss.py`` deliberately does not declare one here.
 
-        One pixel of that alignment is not recoverable, and it is recorded rather
-        than hidden: ``#playlistView`` carries a 1px border, so its viewport --
-        and every row inside it -- starts one pixel right of this row, which is a
-        sibling of the list rather than a child of its viewport. The three fixed
-        columns are 56/120/120px wide, so a heading can never sit over the wrong
-        column because of it; a pixel-level claim about the two grids agreeing
-        would be a claim about the border, not about the layout.
+        These are only the *starting* margins: the horizontal pair is re-derived
+        from the live viewport by :meth:`_sync_header_columns`, which is what
+        makes the two grids agree to the pixel instead of by approximation. The
+        band is a sibling of the list view, so it spans this widget's full width
+        while the rows inside the viewport are narrowed by the list's 1px frame
+        and, whenever the playlist overflows, by the vertical scrollbar.
+        Mirroring only the labels' *visibility* (the shape this file shipped
+        first) left every heading right of the column it names by exactly that
+        narrowing -- measured in the real ``MainWindow`` shell at 1200x720 with
+        40 rows (``list=1144``, ``viewport=1132``): **+11px** on the three data
+        columns, ``-1px`` on the name column, and a scrolling playlist is the
+        normal state, not the edge case.
         """
         row = QWidget()
         row.setObjectName('playlistHeaderRow')
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(SPACE_2, SPACE_2, SPACE_2, SPACE_2)
         row_layout.setSpacing(COLUMN_GAP)
+        self._header_layout = row_layout
 
         self._header_data_cells: list = []
         for name, key, width, align in HEADER_COLUMNS:
@@ -230,14 +237,38 @@ class PlaylistView(QWidget):
         return row
 
     def _sync_header_columns(self) -> None:
-        """Show the three data headings only when the rows show their columns.
+        """Mirror the row grid into the header: which columns exist, and where.
 
-        ``metadata_columns_fit`` is asked about the *viewport* width, which is the
-        width a row's ``option.rect`` has, scrollbar included -- the same number
-        the delegate tests. Two widgets answering one question from two different
-        measurements is how a header grows labels over an empty grid.
+        One question, two halves, both answered from the *viewport* -- the widget
+        whose width is a row's ``option.rect`` width, scrollbar included:
+
+        * **which columns**: ``metadata_columns_fit`` is the delegate's give-way
+          rule, and asking it twice from two different measurements is how a
+          header grows labels over an empty grid.
+        * **where they are**: the band is this widget's sibling of the list, so it
+          never lost the ground the viewport lost. The left margin takes the
+          viewport's own offset inside this widget (the list's 1px frame), the
+          right margin takes that plus the vertical scrollbar, and the difference
+          is read from live geometry rather than assumed: ``self.width()`` minus
+          where the viewport ends. Without it the three data headings sit one
+          scrollbar-width right of the columns they name (see
+          :meth:`_build_header` for the measurement).
+
+        Idempotent, and it only touches the layout when the numbers actually
+        changed, so the extra calls the layout machine makes cost nothing.
         """
-        visible = metadata_columns_fit(self._list_view.viewport().width())
+        viewport = self._list_view.viewport()
+        grid_left = viewport.mapTo(self, QPoint(0, 0)).x()
+        # The ground the rows lost and this band did not: frame on the left,
+        # frame plus scrollbar on the right. ``max(0, ...)`` because a widget that
+        # has never been laid out can report a viewport wider than its parent.
+        narrowed = max(0, self.width() - grid_left - viewport.width())
+        margins = QMargins(SPACE_2 + grid_left, SPACE_2,
+                           SPACE_2 + narrowed, SPACE_2)
+        if self._header_layout.contentsMargins() != margins:
+            self._header_layout.setContentsMargins(margins)
+
+        visible = metadata_columns_fit(viewport.width())
         for label in self._header_data_cells:
             label.setVisible(visible)
 

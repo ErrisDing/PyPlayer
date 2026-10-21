@@ -8,7 +8,7 @@ delegate owns every pixel of the row (``#playlistView::item`` is shipped-dead --
 see ``tests/test_theme_manager.py``), so a rule here would style nothing and
 would make the test prove the sheet instead of the painting.
 
-Four measurements, one per defect the batch is afraid of:
+Six measurements, one per defect the batch is afraid of:
 
 * **bands** -- each column's ink sits inside the band the tokens describe, in
   both themes, and the bands are disjoint. An un-elided artist string spills
@@ -25,6 +25,18 @@ Four measurements, one per defect the batch is afraid of:
 * **the overlong combination** (Review Focus 4) -- long name, long position,
   long artist/album: the name and the position each elide, the columns keep
   their widths, and no ink escapes the row's text rectangle.
+* **the header over the grid** (fix round 1, Important-1) -- in the real
+  ``MainWindow`` shell, with a vertical scrollbar actually present, every header
+  label's ``geometry()`` mapped into the viewport's space equals the delegate's
+  ``column_rects()`` for that column, edge for edge, in both themes. Before this
+  the two grids were only ever compared for *visibility* and *width*, so a
+  heading one scrollbar-width right of the column it named (measured: +11px) was
+  invisible to this file.
+* **one truncation language** (fix round 1, Important-2) -- every text column
+  ends with the name column's ellipsis, not with a glyph cut in half at the
+  band's edge. Checked twice: on the pixels of the band, and on the string the
+  delegate actually hands ``QPainter.drawText`` (a ``QPainter`` subclass records
+  it), because this host's font makes the two shapes paint the same boxes.
 
 Two host facts, measured on this machine before the assertions below were
 written, and both of which shape them:
@@ -47,14 +59,16 @@ written, and both of which shape them:
    ten CJK glyphs. Those are the numbers the bands below are built from, and
    :meth:`ColumnTokenTest` re-measures them instead of trusting them.
 """
+import re
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtCore import QPoint, QRect, Qt
+from PyQt6.QtGui import QFont, QFontMetrics, QImage, QPainter
+from PyQt6.QtWidgets import QStyle, QStyleOptionViewItem, QWidget
 
 from core import i18n
 from core.theme import (
@@ -71,7 +85,14 @@ from service.metadata_store import (
     STATE_UNKNOWN,
 )
 from service.queue_service import DisplayEntry
-from tests.test_theme import ThemeContrastTest
+from view.time_format import format_time
+# ``tests.test_theme`` is deliberately NOT imported at this module's top level:
+# it holds ``ThemeContrastTest``, and a module-level import of another file's
+# TestCase makes ``unittest`` collect that class *again* under this module's name
+# (the same ``test_contrast_requirements`` id then runs twice per full-suite pass,
+# which inflates the suite count). Every other file in this suite that needs it
+# imports it inside the method that uses it -- e.g.
+# ``tests/test_action_rail.py`` -- and so does this one, below.
 from tests.test_view_smoke import QT_AVAILABLE, make_app, make_manager
 
 # The two marks as escapes, so a failure message survives this host's GBK
@@ -117,6 +138,25 @@ OVERLONG_ROWS = (
      RowMetadata(artist=OVERLONG_ARTIST, album=OVERLONG_ALBUM, duration=205.0),
      STATE_KNOWN),
 )
+
+#: The same row, but with a duration longer than an hour. ``1:02:03`` is 84px of
+#: this host's font against a 56px band, which makes the right-aligned column the
+#: one a clipped paint cuts a glyph in half *at its left edge* -- the two text
+#: bands cannot show that at the shipped 9pt, because 120px is exactly ten 12px
+#: boxes there. :class:`TextColumnElisionTest` needs both shapes, so it owns this
+#: fixture rather than overloading the brief's Review Focus 4 row.
+ELIDED_DURATION = 3723.0
+ELIDED_ROWS = (
+    (OVERLONG_NAME, OVERLONG_POSITION, False,
+     RowMetadata(artist=OVERLONG_ARTIST, album=OVERLONG_ALBUM,
+                 duration=ELIDED_DURATION),
+     STATE_KNOWN),
+)
+
+#: The glyph ``_elide_text`` asks for (``QFontMetrics.ElideRight``). Failure
+#: messages wrap it in ``ascii()``, the same console rule the two marks above
+#: follow.
+ELLIPSIS = '…'
 
 # The four inks a row can carry, so "no ink here at all" is a closed set rather
 # than a list of the colours this file happens to remember.
@@ -179,8 +219,18 @@ class ColumnPixelHarness(unittest.TestCase):
             widget.deleteLater()
         self.app.setPalette(self._saved_palette)
 
-    def _paint(self, mode, rows=FIXTURE_ROWS, width=VIEW_WIDTH):
-        """``(image, row_rects, tokens, list_view)`` for ``rows`` in ``mode``."""
+    def _paint(self, mode, rows=FIXTURE_ROWS, width=VIEW_WIDTH,
+               font_point=None):
+        """``(image, row_rects, tokens, list_view)`` for ``rows`` in ``mode``.
+
+        ``font_point`` overrides the list view's own point size, which is the
+        font ``QStyleOptionViewItem.font`` carries down into the delegate. The
+        elision tests need a second size on purpose: at this host's shipped 9pt
+        every glyph advances exactly 12px, so a 120px band is *precisely* ten
+        glyphs and a clipped string can never be cut mid-glyph -- the shape that
+        makes "no half-cut glyph" observable at all is a band that is not a whole
+        multiple of the advance.
+        """
         from view.widgets.playlist_view import PlaylistView
 
         manager = make_manager(mode)
@@ -198,6 +248,11 @@ class ColumnPixelHarness(unittest.TestCase):
         # the band assertions below would be measuring an empty column.
         for index, (_name, _position, _folder, md, state) in enumerate(rows):
             view.update_row_metadata(index, md, state)
+
+        if font_point:
+            font = QFont(view._list_view.font())
+            font.setPointSize(font_point)
+            view._list_view.setFont(font)
 
         view.resize(width, ROW_HEIGHT * len(rows) + 60)
         view.show()
@@ -233,6 +288,23 @@ class ColumnPixelHarness(unittest.TestCase):
     def _band_ink(self, image, rect, band, tokens, token_name):
         """Columns of ``band`` carrying exactly ``tokens.<token_name>`` ink."""
         return self._ink(image, rect, band, tokens, names=(token_name,))
+
+    @staticmethod
+    def _runs(columns):
+        """Group inked column numbers into ``(start, length)`` runs.
+
+        One painted glyph is one run, so the run census is what turns "the band
+        has ink" into "these are the glyphs, and none of them was cut in half": a
+        clipped tail glyph gives a run shorter than its neighbours, and a cell
+        that was never painted gives one run fewer.
+        """
+        runs = []
+        for x in columns:
+            if runs and x == runs[-1][0] + runs[-1][1]:
+                runs[-1][1] += 1
+            else:
+                runs.append([x, 1])
+        return [(start, length) for start, length in runs]
 
     def _ground(self, image, rect, band):
         """The colour the band is painted *on*, read from the image.
@@ -352,6 +424,11 @@ class PlaylistColumnTest(ColumnPixelHarness):
         misread as a mark, and the mark's own contrast is checked against the
         ground it actually sits on.
         """
+        # Imported here rather than at the module's top level so that this file
+        # does not re-collect ``ThemeContrastTest``'s own tests -- see the note on
+        # the import block above.
+        from tests.test_theme import ThemeContrastTest
+
         for mode in ('light', 'dark'):
             with self.subTest(mode=mode):
                 image, rects, tokens, _view = self._paint(mode)
@@ -361,7 +438,6 @@ class PlaylistColumnTest(ColumnPixelHarness):
                 for row, rect, band_row in zip(rows,
                                                [rects[r] for r in rows],
                                                bands):
-                    inked = []
                     for column in ('duration', 'artist', 'album'):
                         ink = self._band_ink(image, rect, band_row[column],
                                              tokens, 'text_muted')
@@ -370,11 +446,36 @@ class PlaylistColumnTest(ColumnPixelHarness):
                             f'row {row} ({FIXTURE_ROWS[row][0]}): {column} is '
                             f'blank, so the {FIXTURE_ROWS[row][4]} state paints '
                             f'no mark')
-                        inked.append(ink)
+
+                    # Fix round 1, Minor-1. What used to sit here counted "three
+                    # different sets of inked columns", a number that cannot be
+                    # anything but 3 while the bands are disjoint -- the review
+                    # called it tautological and it was. This census can fail:
+                    # three glyphs painted one per cell, each the same width, each
+                    # inside its own band. A cell that stopped painting is two
+                    # runs; a glyph wide enough to cross a gutter is a run with no
+                    # home band; two marks of different sizes are unequal widths.
+                    strip = (band_row['duration'][0], band_row['album'][1])
+                    runs = self._runs(self._ink(image, rect, strip, tokens,
+                                                names=('text_muted',)))
                     self.assertEqual(
-                        3, len({tuple(ink) for ink in inked}),
-                        f'row {row}: the three cells are not three separate '
-                        f'glyphs -- {inked}')
+                        3, len(runs),
+                        f'row {row}: the data strip carries {len(runs)} muted '
+                        f'glyphs, not one per cell -- {runs}')
+                    self.assertEqual(
+                        1, len({length for _start, length in runs}),
+                        f'row {row}: the three marks are not three copies of one '
+                        f'glyph -- {runs}')
+                    for start, length in runs:
+                        hosts = [column for column in
+                                 ('duration', 'artist', 'album')
+                                 if band_row[column][0] <= start
+                                 and start + length - 1 <= band_row[column][1]]
+                        self.assertEqual(
+                            1, len(hosts),
+                            f'row {row}: the muted run at x={start} ({length}px) '
+                            f'straddles a band boundary, so the three cells are '
+                            f'not three separate glyphs -- {runs}')
 
                     ground = self._ground(image, rect, band_row['album'])
                     grounds.append(ground)
@@ -591,9 +692,14 @@ class OverlongRowTest(ColumnPixelHarness):
                     f'the title runs to x={name_ink[-1]} and the position starts '
                     f'at x={muted[0]}: they are colliding')
 
-                # Neither data column is starved: a value wider than its band
-                # fills it, so ink reaching the band's right edge is the proof
-                # the column still has its width.
+                # Neither data column is starved. Fix round 1, Important-2 changed
+                # what that looks like: a value wider than its band now ends with
+                # the *name column's* ellipsis instead of running to the band's
+                # last pixel, so "filled to the edge" is no longer the evidence --
+                # the span is. Eight glyph advances of the band's own width is what
+                # a column squeezed to half its token cannot reach; the ellipsis
+                # itself is :class:`TextColumnElisionTest`'s claim.
+                advance = metrics.horizontalAdvance('A')
                 for column in ('artist', 'album'):
                     left, right = bands[column]
                     ink = self._band_ink(image, rect, (left, right), tokens,
@@ -602,9 +708,11 @@ class OverlongRowTest(ColumnPixelHarness):
                     self.assertLessEqual(min(ink), left + 2,
                                          f'{column} lost its left edge')
                     self.assertGreaterEqual(
-                        ink[-1], right - 12,
-                        f'{column} ({right - left + 1}px band) only filled to '
-                        f'x={ink[-1]}: the column was squeezed')
+                        ink[-1] - ink[0] + 1,
+                        (right - left + 1) - 2 * advance,
+                        f'{column} ({right - left + 1}px band) only spans '
+                        f'{ink[-1] - ink[0] + 1}px of ink, to x={ink[-1]}: the '
+                        f'column was squeezed')
                 duration_ink = self._band_ink(image, rect, bands['duration'],
                                               tokens, 'text_secondary')
                 self.assertTrue(duration_ink, 'the duration column disappeared')
@@ -624,6 +732,219 @@ class OverlongRowTest(ColumnPixelHarness):
                     [], overflow,
                     f'text ink at {overflow} sits right of the album band, so '
                     f'the row overflows its own rectangle')
+
+    def test_the_gap_between_the_two_inks_can_fail(self):
+        """Fix round 1, Important-3: :meth:`_paint`'s gap assertion has a mutant now.
+
+        The review's risk-2 verdict was that this file's headline claim -- "the
+        title stops at least one gutter before the footnote starts" -- was *not*
+        reachable from any module-global flip, because the deduction it guards
+        (``block - budget - SPACE_2``) was inline in ``paint``: the shipped
+        mutation ① went red one assertion earlier, on "the footnote has no ink".
+        That arithmetic is :func:`name_room` now, so flipping it to "the title
+        gets the whole block" -- Step 5's mutation ①, the reservation deleted,
+        exactly what a reviewer means by removing the reservation -- reaches the
+        gap. The evidence this test has to produce is that the mutant *fails* the
+        shipped criterion; if the mutant kept a clean gutter, the criterion would
+        be decorative and this file would say so instead of claiming falsifiability.
+        """
+        from view.delegates import playlist_delegate
+
+        def gap():
+            image, rects, tokens, _view = self._paint('light', rows=OVERLONG_ROWS)
+            rect = rects[0]
+            name_band = bands_for(rect)['name']
+            name_ink = self._band_ink(image, rect, name_band, tokens,
+                                      'text_primary')
+            muted = self._band_ink(image, rect, name_band, tokens, 'text_muted')
+            self.assertTrue(name_ink and muted,
+                            'the row lost one of the two texts it is supposed '
+                            'to keep apart')
+            return muted[0] - name_ink[-1]
+
+        shipped = gap()
+        self.assertGreaterEqual(
+            shipped, SPACE_2,
+            f'the shipped row already collides: a {shipped}px gap is less than '
+            f'one gutter')
+
+        original = playlist_delegate.name_room
+        self.addCleanup(setattr, playlist_delegate, 'name_room', original)
+        playlist_delegate.name_room = lambda block, advance: max(0, block)
+        mutant = gap()
+        self.assertLess(
+            mutant, SPACE_2,
+            f'the un-reserved title still left a {mutant}px gap, so the shipped '
+            f'gap assertion is not measuring the reservation at all')
+
+
+class _RecordingPainter(QPainter):
+    """A ``QPainter`` that remembers the strings it was asked to draw.
+
+    ``QPainter.drawText`` is not a virtual, so shadowing it only works for
+    Python-side callers -- and the delegate is one: it calls
+    ``painter.drawText(...)`` on whatever painter it was handed. That is what
+    lets these tests read *the text a row was told to paint*, which the pixel half
+    cannot do on a host where ``A``, ``⋯`` and ``…`` all rasterise to the same
+    hollow box (measured: one identical 28-pixel set for all four).
+
+    The target image is kept on the instance because ``QPainter(QImage)`` does not
+    take ownership of it -- dropping the Python reference mid-paint is a
+    segmentation fault here, not a leak (measured).
+    """
+
+    def __init__(self, image):
+        super().__init__(image)
+        self._image = image
+        self.texts = []
+
+    def drawText(self, *args):
+        text = args[-1]
+        if isinstance(text, str):
+            self.texts.append((args[0], text))
+        return super().drawText(*args)
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class TextColumnElisionTest(ColumnPixelHarness):
+    """Fix round 1, Important-2: every text column truncates in the title's language.
+
+    ``QPainter.drawText(rect, flags, text)`` does not elide, it *clips*. The review
+    measured the difference on this host -- a 125px rectangle and fifteen glyphs
+    leaves ink on the rectangle's last column, the eleventh glyph sawn in half, and
+    no ellipsis anywhere -- while the delegate's own docstring claimed every cell
+    was elided to its band. Every cell now goes through
+    :meth:`PlaylistItemDelegate._elide_text`, the very call the title uses, so one
+    truncation language is painted across the row.
+
+    Two layers, because neither one is enough on this machine:
+
+    * **pixels** -- the band's ink must stop where the *elided* string stops (the
+      clipped string's ink does not), and every ink run in the band must be as wide
+      as its neighbours, because a shorter run is the half glyph. Measured at two
+      font sizes on purpose: at the shipped 9pt every glyph is a 12px box and a
+      120px band holds exactly ten of them, so a clipped artist cannot be cut
+      mid-glyph there and only the first rule can fail. The 20pt subtest is what
+      makes "no half glyph" live in the two text bands; the 56px duration band
+      shows it at both sizes, since a right-aligned clipped value is cut at the
+      *left* edge there.
+    * **strings** -- what the delegate actually hands ``drawText``, read through
+      :class:`_RecordingPainter`. The pixels can prove where ink stopped; only this
+      can prove the last box is an ellipsis.
+    """
+
+    def _painted_row(self, mode='light', font_point=None):
+        """``(image, rect, tokens, list_view, bands, painted)`` for one elision row."""
+        from view.delegates.playlist_delegate import column_rects
+
+        image, rects, tokens, list_view = self._paint(
+            mode, rows=ELIDED_ROWS, font_point=font_point)
+        rect = rects[0]
+        option = QStyleOptionViewItem()
+        option.rect = QRect(0, 0, rect.width(), ROW_HEIGHT)
+        option.state = (QStyle.StateFlag.State_Enabled
+                        | QStyle.StateFlag.State_Active)
+        option.font = list_view.font()
+        canvas = QImage(rect.width(), ROW_HEIGHT, QImage.Format.Format_RGB32)
+        canvas.fill(Qt.GlobalColor.white)
+        painter = _RecordingPainter(canvas)
+        list_view.itemDelegate().paint(painter, option,
+                                       list_view.model().index(0))
+        painter.end()
+        return (image, rect, tokens, list_view, column_rects(rect), painter.texts)
+
+    def test_ink_stops_where_the_elided_value_stops_and_nothing_is_cut(self):
+        for mode in ('light', 'dark'):
+            for font_point in (None, 20):
+                with self.subTest(mode=mode,
+                                  font=font_point or 'shipped 9pt'):
+                    (image, rect, tokens, list_view, bands, _painted
+                     ) = self._painted_row(mode, font_point)
+                    metrics = QFontMetrics(list_view.font())
+                    cells = ((bands[1], format_time(ELIDED_DURATION), 'right'),
+                             (bands[2], OVERLONG_ARTIST, 'left'),
+                             (bands[3], OVERLONG_ALBUM, 'left'))
+                    for band, value, side in cells:
+                        self.assertGreater(
+                            metrics.horizontalAdvance(value), band.width(),
+                            f'{ascii(value[:8])} fits its {band.width()}px band, '
+                            'so this subtest is not measuring truncation')
+                        ink = self._band_ink(image, rect,
+                                             (band.left(), band.right()), tokens,
+                                             'text_secondary')
+                        self.assertTrue(
+                            ink,
+                            f'{side}-aligned cell painted nothing in '
+                            f'{band}')
+                        extent = metrics.horizontalAdvance(
+                            metrics.elidedText(value,
+                                               Qt.TextElideMode.ElideRight,
+                                               band.width()))
+                        if side == 'left':
+                            self.assertLessEqual(
+                                ink[-1], band.left() + extent - 1,
+                                f'the ink runs to x={ink[-1]} but the elided '
+                                f'{ascii(value[:8])} ends at '
+                                f'x={band.left() + extent - 1}: the cell was '
+                                f'clipped, not elided')
+                        else:
+                            self.assertGreaterEqual(
+                                ink[0], band.right() - extent + 1,
+                                f'the ink starts at x={ink[0]} but the elided '
+                                f'{ascii(value[:8])} starts at '
+                                f'x={band.right() - extent + 1}: the cell was '
+                                f'clipped, not elided')
+                        runs = self._runs(ink)
+                        self.assertEqual(
+                            1, len({length for _start, length in runs}),
+                            f'{ascii(value[:8])} in {band} painted runs of '
+                            f'different widths -- a short one is a glyph cut in '
+                            f'half at the band edge: {runs}')
+
+    def test_the_delegate_hands_drawText_the_elided_string_not_the_value(self):
+        """The string layer: this host's pixels cannot tell ``…`` from ``A``."""
+        for font_point in (None, 20):
+            with self.subTest(font=font_point or 'shipped 9pt'):
+                _image, _rect, _tokens, list_view, bands, painted = \
+                    self._painted_row('light', font_point)
+                metrics = QFontMetrics(list_view.font())
+
+                for band, value in ((bands[1], format_time(ELIDED_DURATION)),
+                                    (bands[2], OVERLONG_ARTIST),
+                                    (bands[3], OVERLONG_ALBUM)):
+                    matches = [text for target, text in painted if target == band]
+                    self.assertEqual(
+                        1, len(matches),
+                        f'band {band} was drawn {len(matches)} times: the cell is '
+                        f'not painted in the band this test reads')
+                    drawn = matches[0]
+                    expected = metrics.elidedText(
+                        value, Qt.TextElideMode.ElideRight, band.width())
+                    self.assertEqual(
+                        ascii(expected), ascii(drawn),
+                        'the cell was handed a different string than the one the '
+                        'name column\'s own elision produces')
+                    self.assertNotEqual(
+                        value, drawn,
+                        'the raw value was handed to drawText, which clips it')
+                    self.assertTrue(
+                        drawn.endswith(ELLIPSIS),
+                        f'{ascii(drawn)} does not end with the name column\'s '
+                        f'{ascii(ELLIPSIS)}')
+                    self.assertLessEqual(
+                        metrics.horizontalAdvance(drawn), band.width(),
+                        f'{ascii(drawn)} is wider than its own band')
+
+                # And the title uses the same mechanism, which is the whole point
+                # of "one truncation language": the name band carries the title
+                # (left-aligned) and the read-out (right-aligned).
+                title = [text for target, text in painted
+                         if target == bands[0] and not text.startswith('[')]
+                self.assertEqual(1, len(title), f'{title}')
+                self.assertTrue(
+                    title[0].endswith(ELLIPSIS),
+                    f'the title was painted as {ascii(title[0])}: the name column '
+                    f'lost its ellipsis, so the cells cannot share its mechanism')
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
@@ -903,15 +1224,31 @@ class TimeFormatSharedTest(unittest.TestCase):
             self.assertEqual(expected, format_time(seconds), f'{seconds}s')
 
     def test_there_is_only_one_implementation_in_the_tree(self):
-        """The brief's "no two copies" rule, checked on the sources."""
+        """The brief's "no two copies" rule, checked against the whole repository.
+
+        Fix round 1, Minor-3: the name promised *the tree* and the body read three
+        hand-picked files, so a fourth copy anywhere else was invisible to it (the
+        review had to grep by hand to establish the claim this test makes). It walks
+        every ``.py`` under the repo root now -- skipping dot-directories (``.venv``
+        has no PyQt6 and is not this project's source) and ``__pycache__`` -- and
+        matches an actual ``def`` line rather than the substring, because this very
+        file mentions the name inside a string.
+        """
         root = Path(__file__).resolve().parent.parent
-        owners = sorted(
-            str((root / relative).relative_to(root))
-            for relative in ('view/time_format.py',
-                             'view/widgets/bottom_panel.py',
-                             'view/delegates/playlist_delegate.py')
-            if 'def format_time' in (root / relative).read_text(encoding='utf-8')
-        )
+        definition = re.compile(r'^[ \t]*(?:async[ \t]+)?def[ \t]+format_time[ \t]*\(',
+                                re.MULTILINE)
+        owners = []
+        for path in sorted(root.rglob('*.py')):
+            relative = path.relative_to(root)
+            if any(part.startswith('.') or part == '__pycache__'
+                   for part in relative.parts[:-1]):
+                continue
+            try:
+                text = path.read_text(encoding='utf-8')
+            except (OSError, UnicodeDecodeError):
+                continue
+            if definition.search(text):
+                owners.append(str(relative))
         self.assertEqual(
             [str(Path('view') / 'time_format.py')], owners,
             f'{owners} define format_time: the formatter has a second copy')
@@ -1090,6 +1427,156 @@ class PlaylistHeaderTest(unittest.TestCase):
                               'the band lost its surface_header fill')
 
 
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class HeaderGridAlignmentTest(unittest.TestCase):
+    """Fix round 1, Important-1: the header band and the row grid are one grid.
+
+    What this file had before was a width check
+    (:meth:`PlaylistHeaderTest.test_the_fixed_columns_are_the_column_tokens`) and a
+    visibility check
+    (:meth:`PlaylistHeaderTest.test_the_data_headings_hide_with_the_data_columns`),
+    and nothing put a heading's ``geometry()`` next to the delegate's
+    ``column_rects`` for the same row. That hole is the defect: the band is a
+    *sibling* of the list view, so it spans the whole ``PlaylistView`` while the
+    rows are narrowed by the list's 1px frame and by the vertical scrollbar -- and
+    a scrolling playlist is the normal state, not an edge case. Measured in the
+    real ``MainWindow`` shell at 1200x720 with 40 rows: ``list=1144``,
+    ``viewport=1132``, so all three data headings sat **+11px** right of the
+    columns they name and the name heading 1px left of its block. The report's
+    self-review recorded that as "1px of border", which is what it is with no
+    scrollbar and nothing otherwise.
+
+    Both edges of all four headings, against the delegate's own rectangles, in
+    both themes, with and without the scrollbar. The comparison is done in the
+    viewport's space, since that is where ``column_rects`` lives.
+
+    One mapping note, because it is a host trap: ``mapTo``/``mapFrom`` **into** a
+    ``QAbstractScrollArea`` viewport are not trusted here (measured: a label at
+    x=9 in the view's space, with the viewport at x=1, reports x=11 through
+    ``label.mapTo(viewport, ...)`` and -3 back the other way). Both sides are
+    therefore expressed in the ``PlaylistView``'s own space -- where those mappings
+    do measure straight -- and the row grid is translated by the viewport's offset.
+    """
+
+    WINDOW_SIZE = (1200, 720)
+
+    def setUp(self):
+        self.app = make_app()
+        self._saved_palette = self.app.palette()
+        self._previous_locale = i18n.get_current_locale()
+        self._windows = []
+
+    def tearDown(self):
+        i18n.set_locale(self._previous_locale)
+        for window in self._windows:
+            window.close()
+            window.deleteLater()
+        self.app.processEvents()
+        self.app.setPalette(self._saved_palette)
+
+    def _shell(self, mode, row_count):
+        """A real ``MainWindow`` holding ``row_count`` rows, shown at 1200x720."""
+        from view.main_window import MainWindow
+
+        manager = make_manager(mode)
+        manager.apply_to(self.app)
+        window = MainWindow(manager)
+        self._windows.append(window)
+        window.set_playlist_entries(
+            [make_entry(row, 'Track %02d' % row) for row in range(row_count)])
+        window.resize(*self.WINDOW_SIZE)
+        window.show()
+        self.app.processEvents()
+        return window
+
+    def test_every_heading_lands_on_the_column_it_names(self):
+        from PyQt6.QtWidgets import QLabel
+
+        from view.delegates.playlist_delegate import (
+            column_rects,
+            metadata_columns_fit,
+        )
+        from view.widgets.playlist_view import HEADER_COLUMNS
+
+        names = [name for name, _key, _width, _align in HEADER_COLUMNS]
+        for mode in ('light', 'dark'):
+            # 40 rows at 720px tall is more than the list can show, so the
+            # scrollbar is there; 2 rows is the case the report remembered.
+            for row_count, scrollbar_expected in ((40, True), (2, False)):
+                with self.subTest(mode=mode, rows=row_count):
+                    window = self._shell(mode, row_count)
+                    view = window._playlist_view
+                    list_view = view._list_view
+                    viewport = list_view.viewport()
+                    header = view.findChild(QWidget, 'playlistHeaderRow')
+                    self.assertIsNotNone(header, '#playlistHeaderRow is missing')
+
+                    # Precondition, so the run cannot quietly measure the easy case.
+                    has_scrollbar = (
+                        viewport.width() + 2 * list_view.frameWidth()
+                        < list_view.width())
+                    self.assertEqual(
+                        scrollbar_expected, has_scrollbar,
+                        f'{row_count} rows in a {self.WINDOW_SIZE} window: the '
+                        f'vertical scrollbar is {"" if has_scrollbar else "not "} '
+                        f'there, so this run is not the case it claims -- '
+                        f'list={list_view.width()} viewport={viewport.width()}')
+                    self.assertTrue(
+                        metadata_columns_fit(viewport.width()),
+                        f'the rows hide the columns at {viewport.width()}px, so '
+                        f'the headings have nothing to sit on')
+
+                    grid_origin = viewport.mapTo(view, QPoint(0, 0))
+                    header_origin = header.mapTo(view, QPoint(0, 0))
+                    bands = column_rects(
+                        list_view.visualRect(list_view.model().index(0)))
+                    for name, band in zip(names, bands):
+                        label = header.findChild(QLabel, name)
+                        self.assertIsNotNone(label, f'#{name} is missing')
+                        geometry = label.geometry()
+                        left = (header_origin.x() + geometry.left()
+                                - grid_origin.x())
+                        right = left + geometry.width() - 1
+                        self.assertEqual(
+                            band.left(), left,
+                            f'#{name} starts at x={left} in the row grid\'s space '
+                            f'while the delegate paints that column from '
+                            f'x={band.left()} (list={list_view.width()} '
+                            f'viewport={viewport.width()} '
+                            f'grid_left={grid_origin.x()})')
+                        self.assertEqual(
+                            band.right(), right,
+                            f'#{name} ends at x={right} while the delegate\'s '
+                            f'band for that column ends at x={band.right()}')
+
+    def test_the_mirrored_inset_follows_the_scrollbar_in_and_out(self):
+        """The margins are read from live geometry, not written down as 11px.
+
+        The alignment test above is the claim users see; this one is the claim
+        about *how* it is computed: an implementation that hard-coded the
+        measured 11px would pass the first test in that shell and fail here, where
+        the same window is asked to hold two rows (no scrollbar) and forty.
+        """
+        tall = self._shell('light', 40)
+        short = self._shell('light', 2)
+        for row_count, window in ((40, tall), (2, short)):
+            with self.subTest(rows=row_count):
+                view = window._playlist_view
+                viewport = view._list_view.viewport()
+                margins = view._header_layout.contentsMargins()
+                grid_left = viewport.mapTo(view, QPoint(0, 0)).x()
+                self.assertEqual(
+                    SPACE_2 + grid_left, margins.left(),
+                    f'{row_count} rows: the band\'s left margin does not match '
+                    f'the viewport\'s own offset ({grid_left}px) plus the '
+                    f'delegate inset')
+                self.assertEqual(
+                    SPACE_2 + max(0, view.width() - grid_left
+                                  - viewport.width()), margins.right(),
+                    f'{row_count} rows: the band\'s right margin does not '
+                    f'return the ground the viewport lost')
+
+
 class HeaderLocaleKeyTest(unittest.TestCase):
     """The four column words exist, in both files, and name four different things."""
 
@@ -1115,51 +1602,55 @@ class HeaderLocaleKeyTest(unittest.TestCase):
 
 
 class PositionReservationInvariantTest(unittest.TestCase):
-    """The falsifiability mutation ① was meant to buy, bought back from the test side.
+    """The arithmetic behind the name block, testable as a function pair.
 
     Step 5 asks for two single-variable mutations. The harness refused the edit to
     :mod:`view.delegates.playlist_delegate` (a production file), and the brief's
-    rule for that is explicit: do not retry, do not route around it. So the claim
-    mutation ① would have made red -- "if the title stopped giving way to the
-    position, the overlong row's ink would collide" -- is pinned here instead, as
-    an invariant of the one function :meth:`PlaylistItemDelegate.paint` uses for
-    that reservation. The mutant's shape is ``budget == 0``: the title is elided
-    against the whole block and paints under the muted text, and both assertions
-    below are what the shipped product keeps true and that shape breaks.
+    rule for that is explicit: do not retry, do not route around it, buy the
+    falsifiability back from the test side. Two things changed in fix round 1 to
+    make that claim true rather than approximately true:
 
-    :meth:`OverlongRowTest.test_long_name_long_position_and_long_columns_fit_without_overflow`
-    is the pixel half of the same claim (it measures the gap between the two inks),
-    and it is the reason this function exists as a function: inline in ``paint``
-    the arithmetic could only be observed through a grab.
+    * ``paint``'s inline ``block - budget - SPACE_2`` deduction is
+      :func:`name_room` now. The review's risk-2 verdict was that *no* module-global
+      flip could reach the pixel gap assertion, because the reservation only lived
+      inside ``paint``; :meth:`OverlongRowTest.test_the_gap_between_the_two_inks_can_fail`
+      flips the one function and makes that assertion the red one.
+    * the expectations below no longer import :data:`MIN_TITLE_WIDTH` (or re-derive
+      it). An assertion of the form ``x >= min(PRODUCTION_CONSTANT, y)`` is true for
+      every value the constant could ever take -- that is how review M3 flipped the
+      constant to 0 and stayed green across all 35 cases. The title's share is now
+      stated as quantities this file owns, and the constant is pinned by the two
+      tests that walk to the blocks where it is the binding cap.
     """
 
     def test_the_pair_never_needs_more_room_than_the_block_has(self):
         """The one invariant the collision assertion rests on.
 
         Whatever the position's advance, the reserved footnote, the one ``SPACE_2``
-        of gutter and the title's own room add up to no more than the block, and
-        the title keeps its floor. A reservation that was deleted (Step 5's
-        mutation ①) is the shape that breaks the second half of this pair, and
-        :meth:`OverlongRowTest.test_the_reservation_is_what_the_gap_measures`
-        shows the pixels breaking with it.
+        of gutter and the title's own room add up to no more than the block, and the
+        title keeps at least the share the footnote may never take -- ``block // 2``,
+        minus the gutter the footnote still has to stand in. That floor is the
+        halving rule, not :data:`MIN_TITLE_WIDTH`, and it is stated here in pixels
+        the test measured for itself.
         """
-        from view.delegates.playlist_delegate import (
-            MIN_TITLE_WIDTH,
-            position_budget,
-        )
+        from view.delegates.playlist_delegate import name_room, position_budget
 
         for block in (96, 200, 302, 640):
             for advance in (0, 12, 72, 120, 4000):
                 budget = position_budget(block, advance)
-                name_avail = max(0, block - budget - SPACE_2)
+                room = name_room(block, advance)
                 with self.subTest(block=block, advance=advance):
                     self.assertLessEqual(
-                        budget + SPACE_2 + name_avail, block,
+                        budget + SPACE_2 + room, block,
                         'the reservation lets the pair need more room than the '
                         'block has, which is the collision in the other direction')
+                    self.assertLessEqual(budget, block // 2,
+                                         'the footnote took more than half the block')
                     self.assertGreaterEqual(
-                        name_avail, min(MIN_TITLE_WIDTH, block - SPACE_2),
-                        'the title lost its floor to the position text')
+                        room, block - SPACE_2 - block // 2,
+                        f'the title kept {room}px of a {block}px block: the '
+                        f'footnote took the half it is capped at and the gutter, '
+                        f'so nothing is left to elide a name in')
 
     def test_a_position_within_the_cap_is_reserved_in_full(self):
         """A footnote that fits is not shrunk, and a longer one only ever takes more."""
@@ -1183,26 +1674,160 @@ class PositionReservationInvariantTest(unittest.TestCase):
                                  'a longer position got less room')
 
     def test_a_position_too_long_for_the_block_elides_on_itself(self):
-        from view.delegates.playlist_delegate import (
-            MIN_TITLE_WIDTH,
-            position_budget,
-        )
+        from view.delegates.playlist_delegate import name_room, position_budget
 
         for block in (96, 200, 302, 640):
             budget = position_budget(block, 10_000)
-            name_avail = max(0, block - budget - SPACE_2)
+            room = name_room(block, 10_000)
             with self.subTest(block=block):
                 self.assertGreater(
                     budget, 0,
                     'a fifty-segment library path was given no room at all, so '
                     'the position text is not being painted either')
-                self.assertGreaterEqual(
-                    name_avail, min(MIN_TITLE_WIDTH, block - SPACE_2),
-                    'the title lost its floor to the position text')
                 self.assertLessEqual(
                     budget, block // 2,
                     'the footnote took more than half the block: the title is the '
                     'column a user scans, and an overlong path may not delete it')
+                self.assertEqual(
+                    room, block - budget - SPACE_2,
+                    'the title is not getting "the block minus the footnote minus '
+                    'the gutter" -- the one subtraction the gap between the two '
+                    'inks is made of')
+
+    def test_the_floor_is_what_caps_a_narrow_block(self):
+        """Below 88px of block the title's floor, not the halving, is in charge.
+
+        Every fixture this file had walked 96px and up, where ``block // 2`` is the
+        smaller cap, so flipping :data:`MIN_TITLE_WIDTH` to 0 changed no answer
+        anywhere (review M3: 35 cases green). The blocks here are the ones where the
+        floor binds -- reachable, because the narrowest viewport measured on this
+        host is 62px and the rows that hide the columns hand the whole row to the
+        name block. Two claims, both in pixels the test owns: the footnote still
+        gets something (a floor that swallowed the block would take it all away),
+        and it gets strictly less than the half-block share (a floor of 0 would let
+        it take exactly that).
+        """
+        from view.delegates.playlist_delegate import name_room, position_budget
+
+        for block in (46, 64, 80):
+            with self.subTest(block=block):
+                budget = position_budget(block, 4000)
+                self.assertGreater(
+                    budget, 0,
+                    f'a {block}px block handed the footnote nothing: the title '
+                    f'floor swallowed the block, so the read-out is never painted')
+                self.assertLess(
+                    budget, block // 2,
+                    f'a {block}px block gave the footnote the whole '
+                    f'{block // 2}px half-block share, so no floor is capping it '
+                    f'(this is what MIN_TITLE_WIDTH = 0 does)')
+                self.assertGreaterEqual(
+                    name_room(block, 4000), budget,
+                    f'the title kept less room than the footnote at {block}px: '
+                    f'the footnote gives way to the name, never the reverse')
+
+    def test_the_title_floor_is_a_value_something_can_observe(self):
+        """The mutation review M3 could not make red, made red from the test side.
+
+        ``position_budget`` reads :data:`MIN_TITLE_WIDTH` as a module global, so
+        rebinding it on the live module *is* the single-variable mutation -- the same
+        shape :meth:`PlaylistColumnTest.test_the_folder_census_has_teeth` uses for
+        ``metadata_cells``, for the same reason (the harness will not let this file
+        edit a production file, and the rule then is to buy the falsifiability here
+        rather than route around the refusal). Both directions have to change the
+        answer at a narrow block: 0 lets the footnote take the whole half-block
+        share, and a floor wider than the block leaves the footnote nothing. A
+        constant neither end can move is a constant that should be deleted, not
+        documented.
+        """
+        from view.delegates import playlist_delegate
+
+        real = playlist_delegate.MIN_TITLE_WIDTH
+        self.addCleanup(setattr, playlist_delegate, 'MIN_TITLE_WIDTH', real)
+        block = 64
+
+        def pair():
+            return (playlist_delegate.position_budget(block, 4000),
+                    playlist_delegate.name_room(block, 4000))
+
+        shipped = pair()
+        playlist_delegate.MIN_TITLE_WIDTH = 0
+        no_floor = pair()
+        playlist_delegate.MIN_TITLE_WIDTH = 4 * block
+        floor_wider_than_the_block = pair()
+
+        self.assertNotEqual(
+            shipped, no_floor,
+            f'zeroing the floor changed nothing at a {block}px block (both say '
+            f'{shipped}): the constant is unfalsifiable here')
+        self.assertNotEqual(
+            shipped, floor_wider_than_the_block,
+            f'a floor of {4 * block}px changed nothing at a {block}px block '
+            f'(both say {shipped}): the constant is unfalsifiable here')
+        self.assertEqual(shipped, (20, 36),
+                         'the shipped answers moved: this test pins them so the '
+                         'two mutants above have something to be different from')
+
+    def test_the_budget_is_never_negative_to_the_caller(self):
+        """Minor-5: the docstring promises 0 for an empty or near-empty block.
+
+        ``block // 2`` floors *down* through zero, so a negative block used to hand
+        back a negative budget, which the caller subtracts from a width -- i.e. the
+        title would be elided against more room than the block has. The clamp is the
+        fix, and the boundary is part of the function's contract now, so it is
+        written down as cases rather than as prose.
+        """
+        from view.delegates.playlist_delegate import name_room, position_budget
+
+        for block in (-1, 0, 1):
+            for advance in (0, 100):
+                with self.subTest(block=block, advance=advance):
+                    self.assertEqual(
+                        0, position_budget(block, advance),
+                        f'a {block}px block with a {advance}px position handed '
+                        f'back negative room')
+                    self.assertEqual(
+                        0, name_room(block, advance),
+                        f'a {block}px block handed the title negative room')
+        # A block wide enough to hold the floor and the gutter is where room starts.
+        self.assertGreater(position_budget(200, 4000), 0)
+        self.assertEqual(0, position_budget(640, 0),
+                         'an empty position text still took room off the title')
+
+    def test_the_zero_the_contract_promises_comes_from_the_clamp(self):
+        """Where the clamp above earns its keep (Minor-5's evidence).
+
+        The harness will not let this file edit :mod:`view.delegates.playlist_delegate`
+        for a mutation run, and the rule when that happens is to buy the
+        falsifiability from the test side rather than route around the refusal. So the
+        pre-fix arithmetic -- the same ``cap``, no ``max(0, ...)`` on the way out -- is
+        spelled out here and shown to be the shape the docstring denies, while the
+        shipped function is shown to keep the promise. If the clamp is ever dropped,
+        the second half goes red on its own; if the function is rewritten so that the
+        cap can no longer go negative at all, the first half says so.
+        """
+        from view.delegates import playlist_delegate
+
+        real = playlist_delegate.position_budget
+        self.addCleanup(setattr, playlist_delegate, 'position_budget', real)
+
+        def unclamped(block_width, position_advance):
+            cap = min(max(0, block_width - SPACE_2
+                           - playlist_delegate.MIN_TITLE_WIDTH), block_width // 2)
+            return min(position_advance, cap)
+
+        self.assertEqual(
+            -1, unclamped(-1, 100),
+            'the un-clamped shape no longer hands back a negative budget, so this '
+            'test no longer describes the defect the clamp was added for')
+        self.assertEqual(
+            0, real(-1, 100),
+            'position_budget(-1, 100) is negative: a caller that subtracts it from '
+            'a width gets MORE room than the block has')
+        for block in (-40, -1, 0):
+            self.assertGreaterEqual(
+                real(block, 10_000), 0,
+                f'a {block}px block handed back negative footnote room')
 
     def test_the_folder_rule_has_one_author(self):
         """Mutation ②'s claim, likewise: the cells come from one function.
