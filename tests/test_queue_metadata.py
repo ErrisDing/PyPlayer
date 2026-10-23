@@ -127,6 +127,37 @@ def _file_rows(queue: QueueService) -> list:
     return [entry for entry in queue.get_display_entries() if not entry.is_folder]
 
 
+class _CountingEntries(list):
+    """The display list as an instrument: it journals how production consults it.
+
+    Standing in for ``QueueService._display_entries`` (same ``DisplayEntry`` objects,
+    same ``list`` semantics) turns "the sweep is quadratic in the library" into a
+    *countable* claim -- ``iterations`` counts whole-table walks, ``item_reads``
+    counts single-row lookups -- instead of a wall-clock assertion that would be the
+    fragile shape this suite refuses.取证等级: test-side collaborator, swapped in and
+    out around one call; the production mutation of the same variable is recorded
+    separately in the report.
+    """
+
+    def __init__(self, items):
+        super().__init__(items)
+        self.iterations = 0
+        self.item_reads = 0
+
+    def reset(self) -> None:
+        self.iterations = 0
+        self.item_reads = 0
+
+    def __iter__(self):
+        self.iterations += 1
+        return super().__iter__()
+
+    def __getitem__(self, index):
+        if isinstance(index, int):
+            self.item_reads += 1
+        return super().__getitem__(index)
+
+
 def _values(entries) -> list:
     return [(e.duration, e.artist, e.album, e.metadata_state) for e in entries]
 
@@ -689,6 +720,157 @@ class ClearKeepsTheMetadataTableTest(unittest.TestCase):
         entry = _file_rows(queue)[0]
         self.assertEqual(STATE_PENDING, entry.metadata_state)
         self.assertIsNone(entry.duration)
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class DeliveryRowIndexTest(unittest.TestCase):
+    """I4 / ruling B4-R32: one delivery consults **its own rows**, never the table.
+
+    ``apply_metadata`` used to rebuild its row list with
+    ``[idx for idx, entry in enumerate(self._display_entries) ...]`` -- once per
+    answered row, so the sweep's own cost went quadratic in the library. Measured by
+    the review on this host with a real ``QueueService`` and no mocks: **147 us per
+    delivery, 441 ms cumulative at N=3000** of GUI-thread work, against the ~0.95 s of
+    extraction the spec §8 probe recorded -- the write-back's whole budget again, for
+    walking a list. §8's probe program measured extraction, the ``os.stat`` walk and
+    the JSON dump, and *not* the row lookup, which is why the term survived the batch.
+
+    The nail is a **countable quantity, not a timing test** (a wall-clock assertion
+    here would be the fragile shape this suite refuses): a ``list`` subclass stands in
+    for ``_display_entries`` and journals how it is consulted, so a delivery in a
+    300-row queue must touch *its own* row and iterate nothing. That is what a
+    "walk-and-filter" reimplementation cannot fake: the index has to both exist and be
+    the thing that is read.
+
+    The other half is freshness -- an index that lies is worse than a slow one, so
+    every structural route (build, rebuild after a removal, the folder shape, ``clear``
+    which empties the rows without rebuilding them) is compared against the ground
+    truth read back off the entries themselves, and one behavioural test asserts the
+    *row numbers* a delivery returns after a removal shifted them.
+    """
+
+    def _instrument(self, queue: QueueService) -> '_CountingEntries':
+        counter = _CountingEntries(queue.get_display_entries())
+        queue._display_entries = counter
+        counter.reset()
+        return counter
+
+    def _ground_truth(self, queue: QueueService) -> dict:
+        """What the rows themselves say, read by the *test* walking them."""
+        truth: dict = {}
+        for row, entry in enumerate(queue.get_display_entries()):
+            if entry.is_folder or not entry.full_path:
+                continue
+            truth.setdefault(entry.full_path, []).append(row)
+        return truth
+
+    def test_a_delivery_in_a_long_queue_touches_only_its_own_rows(self):
+        size = 300
+        queue = _flat(*range(size))
+        target = size - 1  # the worst row for a scan: everything precedes it
+
+        counter = self._instrument(queue)
+        rows = queue.apply_metadata(_path(target), KNOWN, STATE_KNOWN)
+
+        self.assertEqual([target], rows, 'the update itself went wrong: fixture bug')
+        self.assertEqual(
+            0, counter.iterations,
+            'a delivery walked the whole display list again: at one delivery per '
+            'answered row that is the sweep\'s quadratic term (measured: 147 us per '
+            'delivery, 441 ms cumulative at N=3000)')
+        self.assertEqual(
+            1, counter.item_reads,
+            'a delivery read %d entries by index -- exactly one per row of its own '
+            'path is the whole job' % counter.item_reads)
+
+    def test_the_folder_shape_costs_one_read_per_row_of_the_path(self):
+        """Two rows of one path cost two reads, not two walks of the table."""
+        queue = _folders()
+        counter = self._instrument(queue)
+
+        rows = queue.apply_metadata(_path(0), KNOWN, STATE_KNOWN)
+
+        self.assertEqual([1, 3], rows)
+        self.assertEqual(0, counter.iterations, 'the multi-row case fell back to a scan')
+        self.assertEqual(2, counter.item_reads,
+                         'a path on two rows consulted %d entries, not 2'
+                         % counter.item_reads)
+
+    def test_the_index_holds_exactly_the_rows_of_each_path(self):
+        queue = _folders()
+        queue.apply_metadata(_path(1), KNOWN, STATE_KNOWN)
+        entries = queue.get_display_entries()
+
+        self.assertEqual(self._ground_truth(queue), dict(queue._rows_by_full_path),
+                         'the row index and the rows themselves disagree: a delivery '
+                         'would then repaint the wrong row (or none)')
+        # Fixture guard with teeth: row 0 is the folder header, and the duplicated
+        # path is the one that occupies 1 *and* 3 -- so ``[1, 3]`` below is index
+        # space, not ``node_idx``/``sub_index`` space.
+        self.assertTrue(entries[0].is_folder,
+                        'the folder fixture lost its header row, so every row number '
+                        'asserted here is measuring the wrong space')
+        self.assertEqual(_path(0), entries[1].full_path)
+        self.assertEqual(_path(1), entries[2].full_path)
+        self.assertEqual(_path(0), entries[3].full_path)
+        self.assertEqual([1, 3], queue._rows_by_full_path[_path(0)],
+                         'the folder path that occupies two rows is indexed as one')
+        self.assertEqual([2], queue._rows_by_full_path[_path(1)])
+        self.assertNotIn(entries[0].path, queue._rows_by_full_path,
+                         'a folder header entered the index: it owns no columns, and '
+                         'a delivery would then paint its header row')
+
+    def test_the_index_survives_a_removal_with_the_shifted_row_numbers(self):
+        """Behavioural half: after a rebuild the delivery returns *new* rows.
+
+        ``remove_at_display_index`` rebuilds the entries, so every row at or above the
+        hole moves down by one. An index carried over from the old layout would still
+        answer ``[1, 3]`` here and repaint a row that now holds a different file -- the
+        one failure mode an index like this can have, and it is silent.
+        """
+        queue = _folders()
+        queue.remove_at_display_index(1)   # removes the first copy of _path(0)
+
+        self.assertEqual(self._ground_truth(queue), dict(queue._rows_by_full_path),
+                         'the index did not follow the rebuild')
+        self.assertEqual([2], queue.apply_metadata(_path(0), KNOWN, STATE_KNOWN),
+                         'the surviving row of the duplicated path is no longer at 2, '
+                         'so a stale index is repainting the wrong row')
+        self.assertEqual([1], queue.apply_metadata(_path(1), KNOWN, STATE_KNOWN),
+                         '_path(1) shifted with it')
+        entries = queue.get_display_entries()
+        self.assertEqual(STATE_KNOWN, entries[2].metadata_state)
+        self.assertEqual(STATE_KNOWN, entries[1].metadata_state)
+        self.assertEqual(STATE_PENDING, entries[0].metadata_state,
+                         'the folder header row owns no columns and must stay out of '
+                         'the index')
+
+    def test_clear_empties_the_index_along_with_the_rows(self):
+        """``clear()`` drops the entries without rebuilding them (ruling B4-R18).
+
+        The row-metadata *table* stays by design; the *index* is a view of the rows,
+        so an index that outlives them is a delivery that paints nothing and reports
+        rows that do not exist.
+        """
+        queue = _flat(0, 1)
+        queue.apply_metadata(_path(0), KNOWN, STATE_KNOWN)
+        queue.clear()
+
+        self.assertEqual({}, dict(queue._rows_by_full_path),
+                          'the index survived a clear() that emptied the rows')
+        self.assertEqual([], queue.apply_metadata(_path(0), KNOWN, STATE_KNOWN))
+        queue.build_from_tracks([_track(0), _track(1)])
+        self.assertEqual(self._ground_truth(queue), dict(queue._rows_by_full_path))
+
+    def test_set_metadata_does_not_move_the_index(self):
+        """The whole-table fill writes values, never rows."""
+        queue = _flat(0, 1, 2)
+        before = dict(queue._rows_by_full_path)
+        queue.set_metadata({_path(0): KNOWN, _path(2): EMPTY})
+
+        self.assertEqual(before, dict(queue._rows_by_full_path),
+                         'a value-only fill changed the row layout it indexes')
+        self.assertEqual(self._ground_truth(queue), dict(queue._rows_by_full_path))
 
 
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')

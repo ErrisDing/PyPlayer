@@ -137,6 +137,27 @@ class QueueService(QObject):
         # ever disagreeing about one path.
         self._row_metadata: Dict[str, Tuple[Optional[RowMetadata], str]] = {}
 
+        # Batch 4, final review I4 (ruling B4-R32): ``full_path -> the display rows
+        # that show it``, rebuilt with the rows themselves.
+        #
+        # This exists for one reason: ``apply_metadata`` used to answer every single
+        # delivery by filtering the whole display list. A sweep delivers once per
+        # answered row, so the GUI-thread cost of filling a library went quadratic in
+        # its size -- measured by the review on this host, real queue, no mocks: 147 us
+        # per delivery, 441 ms cumulative at N=3000, against the ~0.95 s of extraction
+        # the spec §8 probe recorded. That probe measured extraction, the pre-write
+        # ``os.stat`` walk and the JSON dump, and never the row lookup, because the
+        # lookup is not part of the write -- which is exactly how the term survived the
+        # batch's own cost review.
+        #
+        # It is a *view of the rows*, not a second source of truth: the one place that
+        # knows where a path lives is the loop that fills the columns
+        # (:meth:`_fill_display_metadata`), so the index cannot drift from the layout it
+        # indexes -- a stale one would repaint the wrong row, which is worse than being
+        # slow. Unlike ``_row_metadata`` it does **not** survive the rows: an emptied
+        # playlist has no rows to point at (see :meth:`clear`).
+        self._rows_by_full_path: Dict[str, List[int]] = {}
+
     # === Queue Building ===
 
     def set_library_id(self, library_id: str) -> None:
@@ -308,16 +329,25 @@ class QueueService(QObject):
 
         Shared by the rebuild (new objects) and :meth:`set_metadata` (existing
         ones), so the two can never disagree about what a path means.
+
+        Walking the rows for the values is also the only moment that knows where a
+        path *is*, so the ``full_path -> rows`` index is rebuilt here in the same
+        pass (ruling B4-R32). A second reader of the layout would be the drift this
+        batch keeps finding: an index maintained by anyone other than the loop that
+        fills the columns repaints a wrong row silently.
         """
-        for entry in self._display_entries:
+        index: Dict[str, List[int]] = {}
+        for row, entry in enumerate(self._display_entries):
             if entry.is_folder or not entry.full_path:
                 # A folder header owns no columns; ``full_path`` is empty for it by
                 # construction, and the guard also keeps an empty path from ever
                 # matching the table.
                 continue
+            index.setdefault(entry.full_path, []).append(row)
             md, state = self._row_metadata.get(
                 entry.full_path, (None, STATE_PENDING))
             _write_metadata(entry, md, state)
+        self._rows_by_full_path = index
 
     def set_metadata(self, mapping: Dict[str, Optional[RowMetadata]]) -> None:
         """Replace the whole row-metadata table, then refresh the visible rows.
@@ -372,12 +402,20 @@ class QueueService(QObject):
         ``state`` is stored verbatim (it is the store's ``state_of`` answer, and
         re-deriving it here would put a second owner on the tri-state), and it
         travels into the table with the values so a later rebuild sees both.
+
+        The rows come from :attr:`_rows_by_full_path`, the index the fill loop
+        rebuilds (ruling B4-R32) -- **not** from a scan of the display list. One
+        delivery per answered row is the sweep's own rhythm, so a scan here made
+        filling a library quadratic on the GUI thread (measured: 147 us per delivery,
+        441 ms cumulative at N=3000, which is the entire write-back budget again);
+        a lookup costs one dict read plus one entry per row that really carries the
+        path. The folder shape above is why the value is a *list*: a path can own
+        several rows, and every one of them is still returned.
         """
         if not full_path:
             return []
 
-        rows = [idx for idx, entry in enumerate(self._display_entries)
-                if not entry.is_folder and entry.full_path == full_path]
+        rows = list(self._rows_by_full_path.get(full_path, ()))
         if not rows:
             return []
 
@@ -630,9 +668,17 @@ class QueueService(QObject):
     # === Modification ===
 
     def clear(self) -> None:
-        """Clear the queue."""
+        """Clear the queue.
+
+        The row-metadata **table** stays (ruling B4-R18: ``clear`` serves "empty the
+        playlist", a library switch is :meth:`set_metadata` ``({})``), but the
+        ``full_path -> rows`` **index** goes with the rows it indexes -- it is a view
+        of the layout, and an index pointing at rows that no longer exist would make
+        :meth:`apply_metadata` hand back row numbers the view cannot paint.
+        """
         self._queue_nodes.clear()
         self._display_entries.clear()
+        self._rows_by_full_path = {}
         self._position = PlaybackPosition()
         self.queue_changed.emit()
         self.display_changed.emit([])
