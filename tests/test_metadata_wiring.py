@@ -1098,6 +1098,13 @@ class MetadataProgressTest(WiringHarness, unittest.TestCase):
         ``PROGRESSABLE_IDS`` is read from the rail rather than assumed: it is the
         list the rail refuses everything else against, and the shape batch 2's
         guard points at ("widening it is a spec decision, not a test edit").
+
+        The plan this refresh starts is no longer empty: ruling B4-R30 makes a refresh
+        force the library's metadata, so a warm two-row library hands back two targets
+        where it used to hand back none. The claim under test is the *shape of the
+        progress channel*, which is why the pair is read once immediately after the
+        click and again after the whole sweep has landed -- a third ``set_progress``
+        from the sweep would show up in the second read whatever the plan size is.
         """
         library = self._make_library(count=2)
         self._scan(library)
@@ -1113,7 +1120,7 @@ class MetadataProgressTest(WiringHarness, unittest.TestCase):
                              calls['set_action_progress'],
                              'a refresh must put its own button in flight and take it '
                              'out again, with no third state')
-            self._await_plan([])
+            self._await_plan(self._file_paths(library))
             self.assertEqual([('refresh', True), ('refresh', False)],
                              calls['set_action_progress'],
                              'the sweep that followed the scan reported progress of '
@@ -1396,6 +1403,62 @@ class MultiLibraryJointPlanTest(WiringHarness, unittest.TestCase):
                             f'artist::{Path(entry["path"]).stem}', entry['md']['artist'],
                             'one library\'s metadata was written into another library\'s '
                             'cache file (spec §10 risk 1)')
+
+    def test_a_refresh_all_forces_every_library_of_the_walk(self):
+        """B4-R30 seen from the joint plan: the flag belongs to the window, not to the
+        first library collected in it.
+
+        ``refresh_all_libraries`` fires ``library_loaded`` once per library, and each one
+        calls ``_metadata_collect``. A force that was consumed by the first of those calls
+        would refresh only the first library and leave the rest at their cached answers
+        -- the shape of the bug ruling B4-R21b exists to prevent, in the opposite
+        direction. The walk is run cold first (so both libraries really are warm, files
+        and stores alike), then a non-forcing scan of one library proves the same warm
+        state yields zero targets without the flag.
+        """
+        rock = self._make_library('rock', count=2)
+        jazz = self._make_library('jazz', count=1, prefix='jazz')
+        (jazz / 'locked.ncm').write_bytes(b'ncm' * 24)
+        rock_paths = self._file_paths(rock)
+        jazz_paths = self._file_paths(jazz)
+        ncm = str(jazz / 'locked.ncm')
+        self._walk(rock, jazz)
+
+        self.view.refresh_all_requested.emit()
+        self._await_plan(rock_paths + jazz_paths)
+        self.extract_calls.clear()
+        self.library.written.clear()
+
+        # The same two warm libraries, one ordinary open, no flag: nothing to extract.
+        self._scan(rock)
+        self._pump_for(DRAIN_MS)
+        self.assertEqual([], self.metadata.plans[-1][1],
+                         'an open-folder scan re-extracted a library it was only asked '
+                         'to open (criterion 5), so the forced half below proves nothing')
+
+        plans_before = len(self.metadata.plans)
+        self.view.refresh_all_requested.emit()
+
+        self.assertEqual(plans_before + 1, len(self.metadata.plans),
+                         'the second walk started one sweep per library instead of one '
+                         'plan for the window (ruling B4-R21b)')
+        _, targets = self.metadata.plans[-1]
+        self.assertEqual(
+            sorted(rock_paths + jazz_paths), sorted(triple[0] for triple in targets),
+            'the forced refresh-all reached only part of the walk: the flag was spent on '
+            'the first library collected instead of carried by the window')
+        self._await_plan(rock_paths + jazz_paths)
+        self.assertEqual(sorted(rock_paths + jazz_paths), sorted(self.extract_calls),
+                         'a library of a forced walk was not actually re-extracted')
+        self.assertNotIn(ncm, self.extract_calls,
+                         'the forced walk handed the excluded format to the sweep')
+        # The ``.ncm`` row is deliberately *not* in what each flush owes: a forced scan
+        # re-asks the files it re-extracts, and re-records nothing it already answered.
+        for library, own in ((rock, rock_paths), (jazz, jazz_paths)):
+            writes = self._writes_for(library)
+            self.assertEqual(1, len(writes), f'{library}: the forced walk wrote {writes}')
+            self.assertEqual(sorted(own), sorted(writes[0][1]),
+                             f'{library}: the forced flush carried {sorted(writes[0][1])}')
 
     def test_the_batch_boundary_is_per_library_not_per_plan(self):
         """Each library flushes on its own count, into its own file.
@@ -1724,6 +1787,184 @@ class ClosingFlushDomainTest(WiringHarness, unittest.TestCase):
                     'the row A had already answered never reached A\'s cache file: '
                     'its dirty flag was consumed by another plan, so the answer was '
                     'thrown away (durability, ruling B4-R23)')
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class ForcedRefreshTest(WiringHarness, unittest.TestCase):
+    """I1 / ruling B4-R30: 刷新媒体库 re-extracts a library the cache already answers.
+
+    spec §4.6's third bullet is the one sentence in this batch that promises the user a
+    re-read rather than a re-load: "强制重扫全库元数据 … 忽略 size/mtime 比对，对每个非
+    排除格式重新提取（**不是清掉** ``md`` 等 sweep 再填，也不是只挑失败的那些）". Nothing
+    in Tasks 1-9 carried that flag, so ``validate`` always refused an unchanged file and
+    the button re-scanned the *file table* only -- which is precisely the case the action
+    exists for, because a tag editor that ``utime``s the file back (the common shape)
+    leaves every fingerprint matching.
+
+    The three directions the brief asks for are three separate cases on separate
+    fixtures, so none can be made green by the others:
+
+    * ① a warm library, refreshed -> every non-excluded row is re-extracted and
+      re-persisted;
+    * ② the same library opened again without the flag -> zero targets. That is already
+      ``MetadataSweepStartTest.test_a_warm_library_extracts_nothing_but_still_takes_a_generation``
+      (criterion 5 / Review Focus 5) and is **not** re-written here; what is added is the
+      half that test cannot see -- that the flag does not *leak* into that route;
+    * ③ an excluded format is still never swept, still answered on the spot, and still
+      not re-recorded just because the click forced the scan.
+    """
+
+    def test_a_refresh_of_a_warm_library_re_extracts_every_row(self):
+        """Direction ①, end to end: plan, extraction, rows, and the write-back.
+
+        Every joint is read, not just the first: a force that fills ``targets`` but is
+        dropped before ``start_sweep`` would look identical in a store-only test.
+        """
+        library = self._make_library(count=3)
+        paths = self._file_paths(library)
+        self._scan(library)
+        self._await_plan(paths)
+        self.assertEqual(3, len(self.extract_calls),
+                         'the fixture is wrong: the first scan never filled this library')
+        self.extract_calls.clear()
+        self.library.written.clear()
+
+        self.view.refresh_library_requested.emit(str(library))
+
+        _, targets = self.metadata.plans[-1]
+        self.assertEqual(
+            sorted(paths), sorted(triple[0] for triple in targets),
+            'a refresh of a library the cache already answers for handed nothing to the '
+            'sweep: the tags a tag editor rewrote while keeping the stamps are '
+            'unreadable by every click in the app (spec §4.6 third bullet)')
+        self._await_plan(paths)
+        self.assertEqual(sorted(paths), sorted(self.extract_calls),
+                         'the forced plan reached the service but not the extractor')
+        self.assertEqual([STATE_KNOWN] * 3, self._states())
+        self.assertEqual(1, len(self._writes_for(library)),
+                         'a forced re-scan answered and never persisted the new answer')
+        self.assertEqual(sorted(paths), sorted(self.library.written[-1][1]),
+                         'the forced write-back carried something other than the '
+                         'rows this library re-answered')
+
+    def test_a_forced_refresh_shows_the_old_answers_while_it_refills(self):
+        """spec §4.6 verbatim, read off the screen: re-extract is not wipe-then-refill.
+
+        One row's extraction is parked on a gate so the plan is provably mid-flight while
+        the columns are read. If a forced ``validate`` cleared the values it was about to
+        replace, every row of a warm library would flash ``⋯`` on a click whose whole
+        purpose is to *keep* looking at them -- and a refresh interrupted halfway would
+        leave the library with less than it had.
+        """
+        library = self._make_library(count=2)
+        paths = self._file_paths(library)
+        self._scan(library)
+        self._await_plan(paths)
+        self._gate(paths[1])
+
+        self.view.refresh_library_requested.emit(str(library))
+        self._pump_until(
+            lambda: paths[0] in self.extract_calls,
+            'the forced refresh never started extracting the unblocked row',
+            state=lambda: f'calls={self.extract_calls}')
+
+        self.assertEqual([STATE_KNOWN] * 2, self._states(),
+                         f'a refresh emptied the columns it was refilling: '
+                         f'{self._state_by_path()}')
+        self.assertEqual(['artist::track0', 'artist::track1'], self._artists())
+
+        self._release(paths[1])
+        self._await_plan(paths)
+
+    def test_a_forced_refresh_never_sweeps_the_excluded_format(self):
+        """Direction ③: exclusion is a fact about the format, not about the flag.
+
+        Asserted with a normal row in the same library, so a force implemented as "list
+        everything" cannot pass by accident -- and the write-back is read too, because
+        re-recording an already-tried ``.ncm`` on every click is the same rule broken one
+        layer up (spec §2 versus §4.1).
+        """
+        library = self._make_library(count=1)
+        (library / 'locked.ncm').write_bytes(b'ncm' * 24)
+        mp3 = self._file_paths(library)[0]
+        ncm = str(library / 'locked.ncm')
+        self._scan(library)
+        self._await_plan([mp3])
+        self.extract_calls.clear()
+        self.library.written.clear()
+
+        self.view.refresh_library_requested.emit(str(library))
+
+        _, targets = self.metadata.plans[-1]
+        self.assertEqual([mp3], [triple[0] for triple in targets],
+                         'a forced re-scan handed an excluded format to the sweep')
+        self._await_plan([mp3])
+        self.assertEqual([mp3], self.extract_calls,
+                         'the refresh decrypted a proxy file per NCM row (spec §2)')
+        self.assertEqual({mp3: STATE_KNOWN, ncm: STATE_UNKNOWN}, self._state_by_path(),
+                         f'{self._state_by_path()}: the forced scan moved the .ncm row '
+                         'back to "未取到"')
+        self.assertEqual([mp3], sorted(self.library.written[-1][1]),
+                         'the forced scan re-recorded the already-tried excluded file')
+
+    def test_a_refresh_leaves_no_force_for_the_next_open(self):
+        """Direction ②'s other half: the flag belongs to one action, not to the session.
+
+        ``test_a_warm_library_extracts_nothing_but_still_takes_a_generation`` already
+        pins that a second open extracts nothing; it never refreshes first, so it cannot
+        see a flag that outlived its own plan. Together the two cases are the reason this
+        handoff has to be cleared on the way *out*, not only read on the way in.
+        """
+        library = self._make_library(count=2)
+        paths = self._file_paths(library)
+        self._scan(library)
+        self._await_plan(paths)
+        self.view.refresh_library_requested.emit(str(library))
+        self._await_plan(paths)
+        self.extract_calls.clear()
+
+        self._scan(library)
+
+        self._pump_for(DRAIN_MS)
+        self.assertFalse(self.presenter._metadata_force_next,
+                         'the flag outlived the plan it was set for')
+        self.assertEqual(
+            [], self.metadata.plans[-1][1],
+            'the 打开文件夹 route re-extracted a library it was only asked to open: '
+            'criterion 5 is paid for by every scan that is *not* a refresh')
+        self.assertEqual([], self.extract_calls)
+
+    def test_a_refresh_whose_scan_raises_leaves_no_force_behind(self):
+        """The leak that a "clear it in ``_metadata_collect``" fix would miss.
+
+        ``_on_refresh_library`` sets the flag *before* the scan, and the scan is the part
+        that can raise (``LibraryService.load_library`` turns exceptions into
+        ``library_error``, and ``refresh_library`` does not). With no collection there is
+        no consumer, so only the slot's own ``finally`` can keep the next library from
+        being force-re-extracted by a click that never happened.
+        """
+        library = self._make_library(count=2)
+        paths = self._file_paths(library)
+        self._scan(library)
+        self._await_plan(paths)
+
+        with mock.patch.object(RecordingLibraryService, 'refresh_library',
+                               side_effect=RuntimeError('the scan died')):
+            with self.assertRaises(RuntimeError):
+                # Called on the handler, not through the rail: an exception escaping a
+                # slot invoked from C++ is qFatal on this host (see module docstring).
+                self.presenter._on_refresh_library(str(library))
+
+        self.assertFalse(self.presenter._metadata_force_next)
+        self.extract_calls.clear()
+
+        self._scan(library)
+
+        self._pump_for(DRAIN_MS)
+        self.assertEqual(
+            [], self.metadata.plans[-1][1],
+            'a failed refresh left the whole library forced for the next, ordinary scan')
+        self.assertEqual([], self.extract_calls)
 
 
 if __name__ == '__main__':

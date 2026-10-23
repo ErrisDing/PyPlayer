@@ -459,6 +459,159 @@ class ValidateTargetsTest(unittest.TestCase):
                          {path for path, _size, _mtime in targets})
 
 
+class ForcedRescanTest(unittest.TestCase):
+    """spec §4.6's third bullet (final review I1): 刷新媒体库 re-scans the whole library.
+
+    The two directions are pinned by **separate** cases on **separate** stores, so
+    neither can make the other green by accident: ``test_a_full_library_is_asked_for_
+    nothing_without_force`` is criterion 5/criterion 6's existing rule read at this
+    layer, and ``test_force_lists_every_non_excluded_format_of_a_full_library`` is the
+    force flag. A single case asserting both would still pass if ``force`` were ignored
+    *and* if it were always on -- each half needs its own store and its own call.
+
+    Three things the spec settles and an implementation can easily get wrong:
+
+    * force means **re-extract**, not **wipe then refill** ("不是清掉 ``md`` 等 sweep
+      再填"), so the stored answers survive the call -- otherwise a warm library
+      flashes ``⋯`` for every row on every click, and a refresh that dies halfway
+      leaves the library worse than it was;
+    * force is a **question**, so it owes no write-back: nothing may be dirtied
+      (ruling B4-R10's shape -- only ``record`` answers);
+    * excluded formats stay excluded ("对每个**非排除**格式"), and an already-tried
+      one is not re-recorded, because that would buy a write of the same answer on
+      every click for no state change.
+    """
+
+    def _full_store(self) -> LibraryMetadataStore:
+        """A library in which every file has already been answered.
+
+        Built through ``record`` (the sweep's own write path) and then drained, so no
+        row starts out dirty and a test can tell "nothing owed a write" apart from
+        "the fixture owed one".
+        """
+        store = LibraryMetadataStore()
+        store.record(MP3_PATH, KNOWN_MD, 1000, 100.0)
+        store.record(FLAC_PATH, KNOWN_MD, 1000, 100.0)
+        store.take_dirty()
+        self.assertEqual(0, store.dirty_count())
+        return store
+
+    def test_force_is_a_keyword_and_the_default_is_the_old_rule(self):
+        """The signature is part of the contract: no positional force.
+
+        ``validate(files, True)`` reaching the flag would make every caller that ever
+        passes a second positional argument force a whole library by accident, and the
+        brief's shape is ``validate(files, *, force=False)``.
+        """
+        store = self._full_store()
+        with self.assertRaises(TypeError):
+            store.validate([_media(MP3_PATH)], True)   # type: ignore[misc]
+        self.assertEqual([], store.validate([_media(MP3_PATH), _media(FLAC_PATH)]))
+
+    def test_a_full_library_is_asked_for_nothing_without_force(self):
+        """Direction 1 (criterion 5 / Review Focus 5 at this layer): zero targets.
+
+        The same store, the same file list the force case uses, and nothing to do.
+        """
+        store = self._full_store()
+        self.assertEqual(
+            [], store.validate([_media(MP3_PATH), _media(FLAC_PATH)]),
+            'an unchanged known file was re-offered for extraction without force -- '
+            'that is the rule criterion 5 exists to protect (spec §4.6 second bullet)')
+
+    def test_force_lists_every_non_excluded_format_of_a_full_library(self):
+        """Direction 2: the same warm library hands back every file.
+
+        The file list deliberately carries **the fingerprints the store already
+        answered for**. A mismatching pair would be listed by the invalidation branch
+        with or without the flag, and this case would then pass for a force that only
+        re-asks the files that already looked stale -- the one reading spec 4.6 rules
+        out in words ("也不是只挑失败的那些"). That narrower misreading is what
+        ``test_force_lists_a_tried_and_empty_row_again`` and this case together shut:
+        one of them requires the failed rows back on the list, this one requires the
+        *healthy* ones there too. Fingerprints are still the ones handed in, so a
+        forced row is re-extracted against the version this scan measured, like any
+        other (spec 4.6 says ignore the comparison, not compare something else).
+        """
+        store = self._full_store()
+        targets = store.validate([_media(MP3_PATH, 1000, 100.0),
+                                 _media(FLAC_PATH, 1000, 100.0)], force=True)
+        self.assertEqual({(MP3_PATH, 1000, 100.0), (FLAC_PATH, 1000, 100.0)},
+                         set(targets),
+                         'a refresh did not re-request the files a warm library had '
+                         'already answered (spec §4.6: 强制重扫全库元数据)')
+
+    def test_force_lists_a_tried_and_empty_row_again(self):
+        """Criterion 6's *other* side: "already tried" stops shielding a file only
+        when the user asked for a re-scan.
+
+        The row that failed once is the one a user refreshes after fixing the tags, so
+        a force that skipped the ``unknown`` rows would miss the entire reason the
+        action exists.
+        """
+        store = LibraryMetadataStore()
+        store.record(MP3_PATH, None, 1000, 100.0)
+        store.take_dirty()
+        self.assertEqual([], store.validate([_media(MP3_PATH)]),
+                         'an already-tried row was retried without force (criterion 6)')
+        self.assertEqual([(MP3_PATH, 1000, 100.0)],
+                         store.validate([_media(MP3_PATH)], force=True))
+
+    def test_force_still_never_requests_an_excluded_format(self):
+        """Case 3: exclusion is a decision about *extraction*, not about the flag.
+
+        Asserted with a file list that also holds a normal row, so an implementation
+        that returned ``[]`` for everything under force would not pass this way.
+        """
+        store = self._full_store()
+        store.record(NCM_PATH, None, 1000, 100.0)
+        store.take_dirty()
+        targets = store.validate([_media(MP3_PATH), _media(NCM_PATH)], force=True)
+        self.assertEqual([MP3_PATH], [path for path, _size, _mtime in targets],
+                         'a forced re-scan handed an excluded format to the sweep '
+                         '(spec §2: decrypting one writes a proxy file per row)')
+        self.assertEqual(STATE_UNKNOWN, store.state_of(NCM_PATH))
+        self.assertEqual(0, store.dirty_count(),
+                         'the forced scan re-recorded an already-tried excluded file')
+
+    def test_force_asks_without_clearing_the_answers_it_will_replace(self):
+        """spec §4.6 verbatim: "不是清掉 ``md`` 等 sweep 再填".
+
+        The values stay readable while the new extraction is in flight, and nothing is
+        dirtied by asking -- a question owes no write-back.
+        """
+        store = self._full_store()
+        store.validate([_media(MP3_PATH), _media(FLAC_PATH)], force=True)
+        self.assertEqual(STATE_KNOWN, store.state_of(MP3_PATH))
+        self.assertEqual(KNOWN_MD, store.get(MP3_PATH))
+        self.assertEqual(0, store.dirty_count())
+        self.assertEqual([], store.take_dirty())
+
+    def test_force_lists_a_file_once_however_many_rules_match_it(self):
+        """The one-shape-per-file claim, on a library mixing pending, stale and known.
+
+        A force written as an extra ``if force: append`` beside the existing branches
+        would list the pending and the stale rows twice; the sweep would then count two
+        deliveries per target and the plan's own completion rule would fire early.
+        """
+        store = self._full_store()
+        store.load_cache_entries([
+            _cached(MP3_PATH, md=_dict_of(KNOWN_MD)),    # known, unchanged
+            _cached(FLAC_PATH),                          # pending
+            _cached(NCM_PATH, md=_null_dict()),          # excluded, tried
+            _cached(STALE_PATH, md=_dict_of(KNOWN_MD), size=1, mtime=1.0),
+        ])
+        files = [_media(MP3_PATH), _media(FLAC_PATH), _media(NCM_PATH),
+                 _media(STALE_PATH, size=2, mtime=2.0)]
+        targets = store.validate(files, force=True)
+        paths = [path for path, _size, _mtime in targets]
+        self.assertEqual(sorted([MP3_PATH, FLAC_PATH, STALE_PATH]), sorted(paths),
+                         'the forced list is not "every non-excluded file, once"')
+        self.assertEqual(len(paths), len(set(paths)),
+                         f'a file was listed twice: {paths}')
+        self.assertEqual([], [p for p in paths if p == NCM_PATH])
+
+
 class DurationNormalizationTest(unittest.TestCase):
     """B4-R7: the non-positive rule enters the cache through ``record`` only."""
 

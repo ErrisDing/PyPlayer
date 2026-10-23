@@ -23,7 +23,12 @@ contract; this class is the behaviour:
   it cannot see a tag edited in place. Invalidating clears the values and keeps
   that fingerprint, so a file whose extraction never came back is stale on the
   next scan too and gets asked for again; a fingerprint only moves under
-  ``record``, onto the version its payload describes.
+  ``record``, onto the version its payload describes. ``validate(..., force=True)``
+  is 刷新媒体库 (spec 4.6's third bullet, final review I1): the one entry point that
+  means "a tag editor rewrote the tags and kept the stamps", so it drops this
+  comparison for every non-excluded file -- and drops nothing else, because the
+  button re-asks rather than wiping (clearing the values here would turn a refresh
+  into ``⋯`` across a warm library, and into data loss if it were interrupted).
 * **Excluded formats are answered immediately** (spec 2). ``.ncm`` is never
   swept (decrypting one writes a proxy file), so ``validate`` records it as
   "tried, nothing" on the spot. Left pending it would advertise a loading state
@@ -229,10 +234,12 @@ class LibraryMetadataStore:
         """
         return self._extension_of(full_path) in self.excluded_extensions
 
-    def validate(self, files: List[MediaFile]) -> List[Tuple[str, int, float]]:
+    def validate(self, files: List[MediaFile], *,
+                 force: bool = False) -> List[Tuple[str, int, float]]:
         """Return the ``(full_path, size, mtime)`` triples to extract now.
 
-        Three cases, in the order the spec settles them:
+        Three cases, in the order the spec settles them -- and a fourth only under
+        ``force``, spelled out at the bottom of this docstring:
 
         * **pending** (no entry, or an entry with no ``md``) -- requested, and
           *not* recorded: pending is a question, and writing ``md`` for it would
@@ -265,6 +272,35 @@ class LibraryMetadataStore:
         (spec 8's fourth class, criterion 6) -- is not requested again. The
         fingerprints in the result are the ones handed in, so the caller's sweep
         and Task 7's write-back re-check stay comparable against a single instant.
+
+        ``force`` is 刷新媒体库 (spec 4.6's third bullet, final review I1): it drops
+        the *third* case only -- an unchanged file whose stored values still describe
+        the file on disk -- and lists every non-excluded format anyway. What it does
+        **not** do, each of them a reading of the same sentence
+        ("忽略 size/mtime 比对 … 不是清掉 ``md`` 等 sweep 再填，也不是只挑失败的那些"):
+
+        * it does not clear the values of an unchanged row. The answer stays readable
+          while the new extraction is in flight, so a refresh shows the old tags and
+          then the new ones, never ``⋯`` across a warm library -- and a refresh that
+          is cancelled halfway leaves a library *answered* rather than wiped;
+        * it does not record anything. Asking is not answering, so no row goes dirty
+          here (ruling B4-R10 keeps the fingerprint and the payload a single step,
+          taken only by ``record``);
+        * it does not re-request an excluded format. Exclusion is a decision that
+          extraction will *never* run for this file, which is a fact about the format
+          and not about a fingerprint, so a forced scan answers an NCM row exactly as
+          an ordinary one does: on the spot, and only the first time;
+        * it does not list a file twice. The pending and the stale branches already
+          return it, so the flag is an ``elif`` on the case they both missed; and
+        * it *does* re-request a tried-and-empty row. That row is the whole point of
+          the button -- a tag editor that rewrote the tags while keeping the
+          fingerprint (or a file whose extraction failed) is unreachable by any other
+          click in the app, because criterion 6 rightly shields it from every
+          automatic scan.
+
+        The default stays ``False`` because every other route into this method is an
+        ordinary scan: 打开文件夹, a library switch, startup, and the second opening
+        of the same library, all of which criterion 5 forbids re-extracting.
         """
         targets: List[Tuple[str, int, float]] = []
         for media in files:
@@ -281,6 +317,10 @@ class LibraryMetadataStore:
                 targets.append((full_path, fingerprint[0], fingerprint[1]))
             elif entry.fingerprint != fingerprint:
                 entry.md = None
+                targets.append((full_path, fingerprint[0], fingerprint[1]))
+            elif force:
+                # spec 4.6: the comparison is what a refresh ignores, not the values
+                # it compared -- so this branch adds nothing but the request.
                 targets.append((full_path, fingerprint[0], fingerprint[1]))
         return targets
 

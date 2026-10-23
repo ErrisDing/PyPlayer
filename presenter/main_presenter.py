@@ -109,6 +109,12 @@ class _MetadataJoin:
     #: full path -> the answer the cache already holds, for the columns of every
     #: library collected so far: ``set_metadata`` replaces, so it is fed the union.
     mapping: Dict[str, Optional[RowMetadata]] = field(default_factory=dict)
+    #: Whether this plan ignores the fingerprint comparison (spec §4.6's third bullet).
+    #: It lives here rather than being re-read from the action because a multi-library
+    #: walk fires ``library_loaded`` once per library: the flag a refresh sets has to
+    #: reach *every* library collected in the window it opened, and the window -- not
+    #: the slot -- is what outlives the first one.
+    force: bool = False
 
 
 class MainPresenter(QObject):
@@ -174,6 +180,14 @@ class MainPresenter(QObject):
         # The window a multi-library scan opens while it collects (see ``_MetadataJoin``),
         # ``None`` when no joint plan is being built.
         self._metadata_join: Optional[_MetadataJoin] = None
+        # The handoff from a refresh *button* to the plan its scan builds (spec §4.6's
+        # third bullet, ruling B4-R30). It cannot be derived from ``library_loaded`` --
+        # 打开文件夹, a library switch, startup and a refresh-all's per-library fire all
+        # travel that one signal, and only two of them are 刷新. So the slot that *is* a
+        # refresh sets it, the first collection of the window moves it onto the plan
+        # (where a walk's later libraries still find it), and every end of a plan or
+        # window clears it, so a scan nobody forced is never forced by a stale flag.
+        self._metadata_force_next: bool = False
         # The live plan's bookkeeping, per ``task-4-report.md`` §5.1's five conditions:
         # the count that decides completion is *this* generation's deliveries against
         # *this* generation's ``len(targets)``. ``_metadata_generation`` of -1 means no
@@ -533,12 +547,26 @@ class MainPresenter(QObject):
         ``_BLOCKED_PAIR`` disables the other refresh entry while this one runs --
         an unbalanced report would leave two dead buttons on a shell that has no
         other way to notice.
+
+        This button also forces the metadata re-scan (spec §4.6's third bullet, ruling
+        B4-R30). Why the flag has to be set *here* and cannot be inferred downstream:
+        ``refresh_library`` re-fires ``library_loaded``, the same signal 打开文件夹, a
+        library switch and startup all fire, and the store cannot tell a refresh from
+        a re-open -- it only sees a file list whose stamps it has already answered for.
+        The scan's own coarse root-directory check is no help either: a tag editor that
+        ``utime``s the file back after rewriting it (the common shape) leaves the whole
+        library looking untouched, and no other click in the app re-reads it.
+
+        The clear in ``finally`` is the other half of that: this slot's own scan can
+        raise, and a flag left standing would force the *next* library the user opens.
         """
+        self._metadata_force_next = True
         self._view.set_action_progress(ACTION_REFRESH, True)
         try:
             files = self._library.refresh_library(library_path)
         finally:
             self._view.set_action_progress(ACTION_REFRESH, False)
+            self._metadata_force_next = False
 
         if files:
             self._view.show_toast(
@@ -572,7 +600,14 @@ class MainPresenter(QObject):
         is what makes every library's columns fill from one click. The window is closed
         in ``finally`` for the same reason the rail's running state is: a scan that raises
         must not leave the presenter collecting into a plan nobody will ever start.
+
+        The force flag is set before the window opens (spec §4.6's third bullet, ruling
+        B4-R30): 刷新全部 is the same promise 刷新 makes, for every library on the walk.
+        One ``_metadata_collect`` moves it onto the plan, so all k libraries are forced
+        and none of them can be missed; ``_end_metadata_join`` clears it, in this
+        method's ``finally`` even when the walk raised.
         """
+        self._metadata_force_next = True
         self._view.set_action_progress(ACTION_REFRESH_ALL, True)
         self._begin_metadata_join()
         try:
@@ -954,7 +989,8 @@ class MainPresenter(QObject):
         except (TypeError, ValueError):
             return None
 
-    def _metadata_plan(self, store: LibraryMetadataStore, files: list) -> Tuple[
+    def _metadata_plan(self, store: LibraryMetadataStore, files: list, *,
+                       force: bool = False) -> Tuple[
             List[Tuple[str, int, float]], Dict[str, Tuple[int, float]]]:
         """``(targets, fingerprints)`` for one scan -- the two halves of the pair rule.
 
@@ -962,6 +998,14 @@ class MainPresenter(QObject):
         whose fingerprint moved, and nothing else, with the excluded formats answered on
         the spot (so a ``.ncm`` row is never ``⋯``, and never a target either). It has to
         be asked before the columns are filled, because that record is the answer.
+
+        ``force`` is passed straight through and belongs to ``validate`` alone (spec
+        §4.6's third bullet, ruling B4-R30): this method deliberately holds no rule of
+        its own about which files need work, which is why a refresh adds one parameter
+        here rather than a second filter. The fingerprints stay the scan's own, forced
+        or not -- a forced row is re-extracted against the version this scan measured,
+        exactly like an unforced one, so the write-back's re-check still compares one
+        instant.
 
         The fingerprints are taken from the *same* file list as the triples, so every
         number this plan later compares against the disk is the one this scan measured
@@ -976,7 +1020,7 @@ class MainPresenter(QObject):
                 fingerprints[media.path] = pair
 
         targets: List[Tuple[str, int, float]] = []
-        for full_path, size_bytes, modified_time in store.validate(files):
+        for full_path, size_bytes, modified_time in store.validate(files, force=force):
             pair = self._numeric_pair(size_bytes, modified_time)
             if pair is not None:
                 targets.append((full_path, pair[0], pair[1]))
@@ -1019,6 +1063,13 @@ class MainPresenter(QObject):
         library's paths would blank the first library's rows (spec §10 risk 1 seen from
         the other side).
 
+        Under ``force`` that fill is also what keeps a refresh honest on screen:
+        ``validate`` re-asks for an unchanged row without clearing it, so ``store.get``
+        still answers with the old tags and the columns keep showing them while the new
+        extraction runs. Reading the mapping *after* the plan is what makes that true --
+        before it, a forced library would be pushed as ``⋯`` on the strength of a request
+        that has not been answered yet.
+
         The whole method is guarded because every caller of it is a Qt slot: on this host
         an exception escaping one is ``qFatal``, not a traceback, and a library whose
         cache cannot be read is a library whose columns stay ``⋯`` -- never a dead
@@ -1029,9 +1080,18 @@ class MainPresenter(QObject):
         join = self._metadata_join
         if join is None:
             return
+        # The flag is moved onto the plan, not read from the presenter on every call:
+        # one refresh sets it once, and the window it opened collects one library per
+        # ``library_loaded``. Clearing it here is what stops the *second* library of a
+        # walk from re-arming a plan that has already been marked, and what stops a
+        # flag from outliving the action that set it; ``join.force`` then carries it to
+        # every library this window still collects (ruling B4-R30).
+        join.force = join.force or self._metadata_force_next
+        self._metadata_force_next = False
         try:
             store = self._metadata_store_for(library_path)
-            targets, fingerprints = self._metadata_plan(store, files)
+            targets, fingerprints = self._metadata_plan(store, files,
+                                                        force=join.force)
             mapping = {media.path: store.get(media.path) for media in files}
             owners = {full_path: library_path for full_path, _, _ in targets}
         except Exception as exc:
@@ -1089,6 +1149,10 @@ class MainPresenter(QObject):
         """
         join = self._metadata_join
         self._metadata_join = None
+        # The handoff is over: whatever the window collected, its plan now carries the
+        # force (or never did), and a flag left set would make the *next* scan -- an
+        # ordinary 打开文件夹 -- re-extract a whole library nobody asked it to.
+        self._metadata_force_next = False
         if join is None or not join.targets:
             return -1
         targets = [triple for library_targets in join.targets.values()
@@ -1134,6 +1198,7 @@ class MainPresenter(QObject):
         self._metadata.cancel_sweep()
         self._queue.set_metadata({})
         self._metadata_join = None
+        self._metadata_force_next = False
         self._metadata_stores = {}
         self._metadata_owners = {}
         self._metadata_generation = -1
