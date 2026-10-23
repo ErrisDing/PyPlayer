@@ -37,9 +37,9 @@ spec 暗示但没有任务的测试覆盖、最可能真实咬人的五类输入
 
 1. **文件在"扫描后、写回前"被删/被改**：期望该条不写进新快照，而不是写进去一份过期元数据。→ Task 7 Step 1。
 2. **切库后上一库的 sweep 结果回来**：期望既不写进当前库缓存，也不刷当前列表的行（共享池上串库是本批最贵的脏数据）。→ Task 4 Step 1。
-3. **NCM 行**：期望显示"取不到"记号，且永不停在"未取到"（被排除 ≠ 待办）。→ Task 3 Step 1。
+3. **NCM 行**：期望显示"取不到"记号，且永不停在"未取到"（被排除 ≠ 待办）。→ Task 3 Step 1。**`force=True` 也不得改变这一条**（排除是关于格式的，不是关于标志的）→ Task 3/Task 7 各一条。
 4. **名字 + 位置脚注 + 三列一起超宽**：期望名字与位置文本各自省略，数据列不被挤成空、行不溢出。→ Task 8 Step 1。
-5. **全知库第二次打开**：期望零次提取、无"未取到"记号（否则持久化等于没生效）。→ Task 5 Step 1。
+5. **全知库第二次打开**：期望零次提取、无"未取到"记号（否则持久化等于没生效）。→ Task 5 Step 1。**这一条与 spec §4.6 第三条（刷新强制重扫，B4-R30 → Task 3/Task 7）是同一条规则的两个方向，谁也不许顺手把另一个弄红**：默认 `force=False` 的那次断言必须继续绿，而"刷新"是唯一能重读标签编辑器改过、mtime 被改回去的文件的入口。
 
 ---
 
@@ -114,7 +114,7 @@ Run: `QT_QPA_PLATFORM=offscreen /d/PROGRAMMES/miniconda3/envs/dev_313/python.exe
   - `RowMetadata(artist: Optional[str], album: Optional[str], duration: Optional[float])`
   - `LibraryMetadataStore(excluded_extensions: frozenset[str] = frozenset({'.ncm'}))`
   - `.load_cache_entries(files: list[CachedFile]) -> int`（返回可用条数）
-  - `.validate(files: list[MediaFile]) -> list[tuple[str, int, float]]`（**需要提取的 (全路径, size, mtime) 三元组**：pending、指纹变了、被排除但还没记"已试过"的；后两类在返回前先 `record(md=None)`。返三元组而不返路径：Task 4 起 sweep 与 Task 7 写回复核要用**同一个时刻**的指纹，只返路径会逼调用方再 stat 一次）
+  - `.validate(files: list[MediaFile], *, force: bool = False) -> list[tuple[str, int, float]]`（**需要提取的 (全路径, size, mtime) 三元组**：pending、指纹变了、被排除但还没记"已试过"的；后两类在返回前先 `record(md=None)`。返三元组而不返路径：Task 4 起 sweep 与 Task 7 写回复核要用**同一个时刻**的指纹，只返路径会逼调用方再 stat 一次。**`force` 是 spec §4.6 第三条（终审 I1，补记 B4-R30 —— 写这份计划时那句明文要求没落到任何任务的步骤上，执行者照计划走就漏了它）**：`force=True` 时把**每个非排除格式**都列入返回值，忽略"未变化即已答过"这一类；四个约束都是那一句话读出来的 —— ① **不清值**（"不是清掉 `md` 等 sweep 再填"，所以未变化的行照常带着旧答案，暖库刷新不许闪 `⋯`）；② **不记 `dirty`**（提问不是回答，`record` 仍是唯一让指纹移动的地方，B4-R10）；③ **排除格式照旧**（当场作答、且不重新记录 —— 重新记等于每次刷新都为无状态变化买一次写盘）；④ **一个文件只上榜一次**（pending/失效两条分支已经收走了它们各自的文件，force 只补第三条漏掉的那一类；重复上榜会让"每 target 一次投递"的完成判据提前兑现）。默认 `False`：打开文件夹、切库、启动、第二次打开同一库都走逐文件指纹判据（判据 5））
   - `.record(full_path: str, md: Optional[RowMetadata], size_bytes: int, modified_time: float) -> None`（`md=None` 即"试过了但没有"，仍算已试过；`md` 的 `duration` 在此过 `normalize_duration`，所以非正时长**进不了缓存** —— spec §4.2 的缓存面）
   - `.get(full_path: str) -> Optional[RowMetadata]`（`None` = pending）
   - `.state_of(full_path: str) -> str`（`'pending' | 'unknown' | 'known'`，供视图与测试用；三态字符串是本类的**唯一**对外表达）
@@ -123,10 +123,18 @@ Run: `QT_QPA_PLATFORM=offscreen /d/PROGRAMMES/miniconda3/envs/dev_313/python.exe
 被排除的格式在 `validate` 里**立即 `record(md=None)`**，所以它们从第一次扫描起就是 `unknown`，不会停在 `pending`（Review Focus 3）。
 
 - [ ] **Step 1: 写失败的测试**：三态矩阵（未 load / load 后 `md` 缺失 / record 已知 / record 三项全 `null` / 排除格式）；`size` 变、`mtime` 变、都没变三类对 `validate` 返回值的影响；**`md` 存在但全 `null` 的文件不再出现在 `validate` 返回值里**（spec §8 失效矩阵第四类"提取失败不重试"、判据 6 —— 这条和"排除格式记 unknown"是同一条规则的两侧，都要单独红一次）；`record(RowMetadata(duration=0.0))` 与 `duration=-1` 经 `take_dirty` 落出的 `md['duration']` 是 `None`；`take_dirty` 幂等；同名不同库不共享（两个 store 实例互不污染）。
+  **force 三向（B4-R30，`ForcedRescanTest` 7 条）**，两个方向各用**自己的 store**、分开两次断言，谁也不许顺手把另一个弄红：
+  - `test_a_full_library_is_asked_for_nothing_without_force`（②判据 —— 与 Review Focus 5 同一条规则在本层的读法；这条做完之后仍须是绿的）；
+  - `test_force_lists_every_non_excluded_format_of_a_full_library`（①判据 —— 文件表**故意带着库里已答过的那对指纹**：换了数字就会被失效分支收走，force 不生效也能过，而"只挑失败的那些"正是 spec 原文禁止的第二种读法）；
+  - `test_force_lists_a_tried_and_empty_row_again`（①的另一半：取不到的行也要回来，且同一份文件表在 `force=False` 下仍不在榜上 —— 判据 6 与刷新之间的分界）；
+  - `test_force_still_never_requests_an_excluded_format`（③判据，且同一次调用里必须有一个正常文件上榜，防"force 一律返空"）；
+  - `test_force_asks_without_clearing_the_answers_it_will_replace`（spec 的"不是清掉 `md`"：值与状态仍在、`dirty_count()` 为 0、`take_dirty()` 为空）；
+  - `test_force_lists_a_file_once_however_many_rules_match_it`（④判据：pending/失效/未变三类混在一库里，榜上每个路径只出现一次）；
+  - `test_force_is_a_keyword_and_the_default_is_the_old_rule`（接口形状：`validate(files, True)` 抛 `TypeError`，位置参数不允许）。
 - [ ] **Step 2: 运行确认失败** → Expected: FAIL（模块不存在）。
 - [ ] **Step 3: 实现** 按 Interfaces。数据结构：`dict[full_path, _Entry]`，`_Entry` 持 `md` + 指纹 `(size, mtime)` + `dirty` 标志。
 - [ ] **Step 4: 全量确认不新增失败**。
-- [ ] **Step 5: 变异取证**（三次，各单变量）：① 删掉"排除格式立即记 `md=None`"→ `state_of('x.ncm') == 'unknown'` 红；② 把"`md` 存在即已试过"改成"仅当有非空值才算已试过"→"全 `null` 不重取"那条红；③ 删掉 `record` 里的 `normalize_duration` → `duration=0.0` 落缓存那条红。还原用 `cp` + `cmp`。
+- [ ] **Step 5: 变异取证**（五次，各单变量）：① 删掉"排除格式立即记 `md=None`"→ `state_of('x.ncm') == 'unknown'` 红；② 把"`md` 存在即已试过"改成"仅当有非空值才算已试过"→"全 `null` 不重取"那条红；③ 删掉 `record` 里的 `normalize_duration` → `duration=0.0` 落缓存那条红；④（B4-R30）`elif force:` 之后再加一个条件（`elif force and entry.md.artist is None:`，即 spec 禁止的"只挑失败的那些"）→ `test_force_lists_every_non_excluded_format_of_a_full_library`、`test_force_lists_a_file_once_however_many_rules_match_it` 红，而 `test_force_lists_a_tried_and_empty_row_again` **必须仍绿**（这一对才是"每个非排除格式"与"只挑失败的"之间的真分界）；⑤（B4-R30）在 force 分支里顺手 `entry.md = None`（"清掉再填"那种读法）→ `test_force_asks_without_clearing_the_answers_it_will_replace` 与 Task 7 的"刷新期间列不空"那条红，其余仍绿。还原用 `cp` + `cmp`。
 - [ ] **Step 6: Commit** `feat(service): 库元数据仓库，三态与逐文件失效`
 
 ---
@@ -208,17 +216,24 @@ Run: `QT_QPA_PLATFORM=offscreen /d/PROGRAMMES/miniconda3/envs/dev_313/python.exe
 
 **Interfaces:**
 - Consumes: Task 3 store、Task 4 `start_sweep`、Task 5 `set_metadata`/`apply_metadata`、Task 6 `MainWindow.update_row_metadata`、既有图标栏进度语义（`ActionRail.set_progress(action_id, running)` 与 `PROGRESSABLE_IDS`）
-- Produces: `MainPresenter._start_metadata_sweep(files: list[MediaFile]) -> int`（返回本次代号，供切库/重复扫描时比对）；`MainPresenter._on_metadata_row(full_path, md, size, mtime) -> None`；写回批大小常量 `METADATA_WRITE_BATCH = 25`（**实现前用探针量单文件提取耗时与 JSON 整份写耗时，再定这个数**，探针不入库、数字与依据写进报告）
+- Produces: `MainPresenter._start_metadata_sweep(files: list[MediaFile]) -> int`（返回本次代号，供切库/重复扫描时比对）；`MainPresenter._on_metadata_row(full_path, md, size, mtime) -> None`；写回批大小常量 `METADATA_WRITE_BATCH = 25`（**实现前用探针量单文件提取耗时与 JSON 整份写耗时，再定这个数**，探针不入库、数字与依据写进报告）；**B4-R30 的交接件**：`self._metadata_force_next: bool` 由 `_on_refresh_library` / `_on_refresh_all`（图标栏的 `ACTION_REFRESH` / `ACTION_REFRESH_ALL`）在调用服务**之前**置真，第一次 `_metadata_collect` 把它挪到 `_MetadataJoin.force` 并清零自己，`_end_metadata_join` / `_cancel_metadata_sweep` / 两个槽的 `finally` 各自再清一次。为什么非要一个标志而不能就地判断：`library_loaded` 是**四个**入口共用的信号（打开文件夹、启动、切库、刷新的每一库都发一次），刷新与"第二次打开同一库"在信号上长得一模一样，而它们要求的恰恰是相反的行为。
 
-顺序：扫描→文件表上屏→`store.validate`→起 sweep；每行结果 `record` 后调 `apply_metadata`，再对它返回的每个行号调 `view.update_row_metadata`；累计 `METADATA_WRITE_BATCH` 条或 sweep 收尾时 `take_dirty` 写回一次。**写回前**逐条重比对磁盘 `size/mtime`，不一致即跳过（Review Focus 1）。切库：先 `cancel_sweep()` 再 `set_metadata({})`，顺序反了会把上一库的结果灌进当前库的行。
+顺序：扫描→文件表上屏→`store.validate(files, force=<本次计划是不是刷新触发的>)`→起 sweep（B4-R30：`force` 只能从发起动作传下来，见上面 Produces 的交接件；`_metadata_plan` 因此多一个 `force` 关键字参数，它自己**不持有任何"哪些文件需要干活"的规则**，只把标志原样交给 `validate` —— 这就是为什么本任务是加一个参数而不是加一层过滤）；每行结果 `record` 后调 `apply_metadata`，再对它返回的每个行号调 `view.update_row_metadata`；累计 `METADATA_WRITE_BATCH` 条或 sweep 收尾时 `take_dirty` 写回一次。**写回前**逐条重比对磁盘 `size/mtime`，不一致即跳过（Review Focus 1）。切库：先 `cancel_sweep()` 再 `set_metadata({})`，顺序反了会把上一库的结果灌进当前库的行。
 
 **进度只在发起动作可报进度时才报**：`PROGRESSABLE_IDS` 实测只有 `('refresh', 'refresh_all')`（[view/widgets/action_rail.py:122](file:///D:/Codes/Python/PyPlayer/view/widgets/action_rail.py#L122)），而 `set_progress` 对一个已知但不可进度的 id 是**抛 `ValueError`**，不是静默忽略（[同文件:269-270](file:///D:/Codes/Python/PyPlayer/view/widgets/action_rail.py#L269)）。所以由「打开文件夹」触发的首次 sweep **不得**调用 `set_progress`（转圈会承诺一个这个按钮不做的动作，且当场崩）；此时"未取到"的 `⋯` 记号本身就是进度，正是 spec §10 风险 4 的对策。由刷新触发的 sweep 照旧起停配平。加宽 `PROGRESSABLE_IDS` 不在本批：那条守卫自己写着"这是 spec 决定，不是改测试"（[tests/test_presenter_status.py:311](file:///D:/Codes/Python/PyPlayer/tests/test_presenter_status.py#L311)），而 spec 没做这个决定。
 
 - [ ] **Step 1: 写失败的测试**：假 extractor 下断言"扫完起 sweep、按批写 `ceil(N/25)` 次而不是 N 次"；构造"扫描后删文件"→断言该条不进写回；**由打开文件夹触发的 sweep 全程不触碰 `set_progress`**（用计数器断言 0 次，而不是断言它"被容忍"），由刷新触发的断言起止配平（复用 `tests/test_presenter_status.py` 那套 `_progressable_action_ids` 形状，patch 用 `f'{__name__}.'`）；**`save_cache` 抛 `OSError`** 时内存结果照常生效、行照样刷新、异常不逃出回调（spec §6 第三条）；**sweep 更新到正在播放那一行时不重建 `NowPlayingStrip`**（对 strip 的填充入口计 0 次；spec §6 第四条：标题不许因补元数据而闪）；**切库先 cancel 再清空**：A 库在途结果回来时既不写 B 的缓存也不刷 B 的行（Review Focus 2 的接线面）。
+  **force 的接线面（B4-R30，`ForcedRefreshTest` 5 条 + 联合计划 1 条）**，逐个都要求"标志被传下去"而不只是"被设了"：
+  - `test_a_refresh_of_a_warm_library_re_extracts_every_row`（①判据，端到端读四个关节：`start_sweep` 拿到的 targets、extractor 真被叫到、行回到 `known`、新答案再一次写回**自己那个**文件）；
+  - `test_a_forced_refresh_shows_the_old_answers_while_it_refills`（把一行的提取门住，证明刷新进行中列仍是旧值而不是 `⋯` —— spec"不是清掉 `md` 等 sweep 再填"的屏幕读法）；
+  - `test_a_forced_refresh_never_sweeps_the_excluded_format`（③判据，同库放一个 `.ncm`；并断言那一次的写回只带被重新取过的那些行，刷新不得为无状态变化的排除行买一次写盘）；
+  - `test_a_refresh_leaves_no_force_for_the_next_open`（②判据**在标志生命周期上的那一半** —— 既有的 `test_a_warm_library_extracts_nothing_but_still_takes_a_generation` 从没先刷新过，看不见"标志活得比它那次点击久"这种泄漏；两条不是重复采集：一条管默认值，一条管收尾清零）；
+  - `test_a_refresh_whose_scan_raises_leaves_no_force_behind`（刷新自己的扫描抛错时也必须清干净 —— 这条只有发起槽的 `finally` 能满足，只在 `_metadata_collect` 里清是不够的，因为抛错时根本没有 collect 发生）；
+  - `test_a_refresh_all_forces_every_library_of_the_walk`（`MultiLibraryJointPlanTest`：一次 refresh_all 发 k 次 `library_loaded`，标志必须活在**窗口**上，第二库同样被强制；顺带复核 B4-R21b 的"一次 walk 一个计划"没被这一步弄回 k 个）。
 - [ ] **Step 2: 运行确认失败**。
 - [ ] **Step 3: 实现**。
 - [ ] **Step 4: 全量确认不新增失败**。
-- [ ] **Step 5: 变异取证**（四次，各单变量）：① 写回改成每行一次 → 次数断言红（O(n²) 回归的钉子）；② 打开文件夹路径也去 `set_progress` → 0 次那条红；③ sweep 完成后顺手重发一次"正在播放" → strip 计数那条红；④ `record` 后不转发给 `apply_metadata`（只写缓存） → 行不更新那条红。还原用 `cp` + `cmp`。
+- [ ] **Step 5: 变异取证**（七次，各单变量）：① 写回改成每行一次 → 次数断言红（O(n²) 回归的钉子）；② 打开文件夹路径也去 `set_progress` → 0 次那条红；③ sweep 完成后顺手重发一次"正在播放" → strip 计数那条红；④ `record` 后不转发给 `apply_metadata`（只写缓存） → 行不更新那条红；⑤（B4-R30）`_metadata_collect` 里 `force=join.force` 换成 `force=False`（服务已实现、发起动作也有标志，只是没接上）→ **只有接线层那 6 条红、store 层 7 条全绿**（这两侧的钉子必须各自能红，否则 force 的正确性被一层"顺手"覆盖，换实现时静默丢失）；⑥（B4-R30）`join.force = join.force or self._metadata_force_next` 去掉左半边（标志被第一个库的消费动作吃掉、第二次 collect 反过来把它清掉）→ **只有 `test_a_refresh_all_forces_every_library_of_the_walk` 红**，红在"榜上是 rock 的两个文件、jazz 的那一个缺席"；⑦（B4-R30）删掉 `_on_refresh_library` 的 `finally` 清零 → **只有 `test_a_refresh_whose_scan_raises_leaves_no_force_behind` 红**。还原用 `cp` + `cmp`。
 - [ ] **Step 6: Commit** `feat(presenter): 扫描后补齐元数据并按批写回缓存`
 
 ---
@@ -271,3 +286,9 @@ Run: `QT_QPA_PLATFORM=offscreen /d/PROGRAMMES/miniconda3/envs/dev_313/python.exe
 ## 自审记录（writing-plans 第 2 遍）
 
 九处，全部改在正文里：`drirty_count` 拼写；`update_row_metadata` 的 `state: int` 与 Task 3/5 的三态字符串不一致；sweep 的 `generation` 由调用方传入（恒假参数会伪装成"丢弃过期结果"）；`validate` 返路径导致调用方二次 stat 且与判定不同时刻；`_rebuild_display_entries` 会重造条目、元数据只挂条目则"移除一首歌整表退回 pending"是绿的；接线任务原本排在队列/模型之前、引用两个尚未诞生的接口；`display_row_metadata_changed` 无落地站（R9）；spec §8 的"事件循环仍可响应"、§6 的"提取抛异常""缓存写失败""正在播放行被更新不闪标题"四条没有 owning task；Task 1 的 `duration=0.0` 用例与 Task 3 的归一重复，删前者。（上一笔提交写作"八处"，是把最后一条并进了正文而没数进去。）
+
+## 计划补记（终审修复波 B4-R30，实现之后才回写）
+
+spec §4.6 的第三条 ——「刷新媒体库」**强制重扫全库元数据**：忽略 size/mtime 比对，对每个非排除格式重新提取 —— 在这份计划里**没有任何承载点**。Pre-flight 扫描成对地核了 `validate` 的返回形状（T3↔T4）与九个任务的顺序，却没把这一句和一个步骤配对；Task 7 的步骤措辞写的是"扫描→文件表上屏→`store.validate`→起 sweep"，`validate` 永远拒绝未变化的文件，于是九个任务做完之后，按那个图标刷新一个暖库**一次提取也不会发生**。执行者照计划执行是正确的，缺陷在计划：spec 的 §4 标题是"必须钉死的决策"，而它是本批唯一一条 spec 有、代码无的的行为承诺（终审 I1）。
+
+上面两笔（Task 3 的 `validate(files, *, force=False)` + 7 条用例 + 两次变异；Task 7 的交接件 + 6 条用例 + 三次变异）是这条漏项补进计划后的形状，同时把 Review Focus 的第 3、5 条与它的边界写明。**这类漏项的自检口径**：spec §4 的每一条要么对应一个步骤的措辞，要么在计划里显式写明"本批不做、由谁做"；"必须钉死"而既没有步骤又没有裁定的那一条，就是这份计划欠下的债。
