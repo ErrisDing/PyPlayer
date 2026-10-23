@@ -1234,12 +1234,24 @@ class MainPresenter(QObject):
         return (stat.st_size, stat.st_mtime) == pair
 
     def _flush_metadata_cache(self, library_path: Optional[str] = None) -> None:
-        """Write the rows answered since the last flush -- one library, or all of them.
+        """Write the rows answered since the last flush -- one library, or the plan's.
 
-        With no library it walks every store this presenter holds, which is what a
-        closing flush of a joint plan owes: each library's rows go into **its own** cache
-        file, one save per file, and never into another's (spec §10 risk 1). A store with
-        nothing dirty costs no write, so walking wider than the plan is free.
+        With no library it walks **the libraries of the live plan** --
+        ``_metadata_since_flush``, seeded from the join's targets when the plan was
+        launched and the same map the per-library batch boundaries count into. It
+        deliberately does not walk ``_metadata_stores``, and the older wording in
+        this docstring ("walking wider than the plan is free") was wrong in the one
+        direction that matters: a store is not free to visit, because visiting it
+        calls ``take_dirty``, which *consumes the dirty flags* -- and the rows of a
+        retired plan are then skipped by the fingerprint filter right after, so the
+        answers that plan had already extracted become unwritable for the rest of
+        the session (ruling B4-R23, final review I3: durability, never bad data).
+        Narrowing the range is what makes the flag and the write share one domain;
+        the other shape the ledger offered (make ``take_dirty`` and the write
+        reentrant) is bigger and buys nothing extra.
+
+        What each library's own flush owes is unchanged: its rows go into **its own**
+        cache file, one save per file, and never into another's (spec §10 risk 1).
 
         Three rules, all about the file rather than the rows:
 
@@ -1252,9 +1264,8 @@ class MainPresenter(QObject):
           (ruling B4-R10 -- this is the branch its ``dict | None`` was kept for).
         * **Re-checked against the disk, one row at a time.** The pair in
           ``_metadata_fingerprints`` is the instant the scan measured; a row the file has
-          moved past is skipped, and so is a row this plan has no pair for (a leftover of
-          a retired plan, which the store still holds an answer for). Skipping costs a
-          re-extraction after a restart and nothing else. This walk is the second of the
+          moved past is skipped, and so is a row this plan has no pair for. Skipping costs
+          a re-extraction after a restart and nothing else. This walk is the second of the
           three costs behind ``METADATA_WRITE_BATCH``: one ``os.stat`` per row the batch
           is carrying, so it grows with the batch and not with the library.
         * **Never a row the cache file does not list.** The writer stamps paths it finds
@@ -1268,7 +1279,7 @@ class MainPresenter(QObject):
         persistence, which is exactly the work the next start does again.
         """
         if library_path is None:
-            for held in sorted(self._metadata_stores):
+            for held in sorted(self._metadata_since_flush):
                 self._flush_metadata_cache(held)
             return
 

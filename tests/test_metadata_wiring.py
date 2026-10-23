@@ -1648,5 +1648,83 @@ class FingerprintNormalisationTest(WiringHarness, unittest.TestCase):
                          'so a late row of the retired sweep would still be counted')
 
 
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class ClosingFlushDomainTest(WiringHarness, unittest.TestCase):
+    """I3 / ruling B4-R23: a closing flush may only spend the libraries of its own plan.
+
+    ``_flush_metadata_cache(None)`` closes a plan, and it used to walk **every store
+    the presenter holds** while filtering against the *live plan's* fingerprint map.
+    A store belonging to a retired plan is reachable without exotic timing --
+    打开文件夹 while the previous sweep still has rows in flight starts a new plan
+    without cancelling, so the old store survives with rows that were answered and
+    not yet written. The wide walk consumed those rows' dirty flags and then skipped
+    them (their paths are no longer in the map), i.e. threw away paid-for work for
+    the rest of the session; the review's "the wide walk is free" is exactly the
+    claim that is false -- it costs the flags. The plan's own libraries are already
+    knowable (``_metadata_since_flush`` is seeded from ``join.targets``), which is
+    why the fix is a range and not a redesign.
+
+    Both halves are asserted: the flag survives (the store can still answer for it),
+    **and** the answer reaches the file when that library's own plan closes --
+    "not consumed" that never lands would only be a leak with better manners.
+    """
+
+    def test_a_closing_flush_leaves_another_library_s_dirty_flags_alone(self):
+        first = self._make_library('rock', count=2)
+        second = self._make_library('jazz', count=1, prefix='jazz')
+        first_paths = self._file_paths(first)
+        second_paths = self._file_paths(second)
+        # Park the tail of A's plan so it stays *answered but unflushed*: with
+        # METADATA_WRITE_BATCH far above 2 the only thing that flushes A is A's own
+        # completion, and this gate is what keeps that from happening.
+        self._gate(first_paths[1])
+
+        self._scan(first)
+        self._pump_until(
+            lambda: self.presenter._metadata_delivered == 1,
+            'the first library never answered its unblocked row',
+            state=lambda: (f'delivered={self.presenter._metadata_delivered} '
+                           f'calls={self.extract_calls}'))
+        store_a = self.presenter._metadata_stores[str(first)]
+        self.assertEqual(1, store_a.dirty_count(),
+                         'the fixture is wrong: A owes no write-back, so this test '
+                         'has nothing to lose')
+
+        # The library route that does *not* cancel: a new plan replaces A's.
+        self._scan(second)
+        self._await_plan(second_paths)
+        self._release(first_paths[1])
+
+        self.assertEqual(
+            1, store_a.dirty_count(),
+            "B's closing flush drained A's dirty flags without writing them: A's "
+            'answered row is now unwritable for the rest of the session (its path is '
+            'not in the live plan\'s fingerprint map), so the extraction A paid for '
+            'is redone after every restart (ruling B4-R23)')
+        # The plan's own library still got its own write: the narrowing is a domain,
+        # not a suppression.
+        self.assertEqual(1, len(self._writes_for(second)),
+                         'the closing flush never wrote the library it belongs to')
+        self.assertIsNone(
+            self._raw_by_name(first)['track0.mp3'].get('md'),
+            'A was written by B\'s flush after all -- the cross-library leak '
+            'spec §10 risk 1 forbids, and the reason the flags and the writes '
+            'have to share one domain')
+
+        # And A still reaches its own file when *A's* plan closes.
+        self._scan(first)
+        self._await_plan([first_paths[1]])
+
+        by_name = self._raw_by_name(first)
+        for name in ('track0.mp3', 'track1.mp3'):
+            with self.subTest(entry=name):
+                self.assertEqual(
+                    f'artist::{Path(name).stem}',
+                    (by_name[name].get('md') or {}).get('artist'),
+                    'the row A had already answered never reached A\'s cache file: '
+                    'its dirty flag was consumed by another plan, so the answer was '
+                    'thrown away (durability, ruling B4-R23)')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
