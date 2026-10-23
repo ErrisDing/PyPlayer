@@ -1094,8 +1094,13 @@ class MainPresenter(QObject):
                                                         force=join.force)
             mapping = {media.path: store.get(media.path) for media in files}
             owners = {full_path: library_path for full_path, _, _ in targets}
+        # Wide on purpose: every caller here is a Qt slot, where an escape is qFatal.
         except Exception as exc:
-            print(f'PyPlayer: metadata for {library_path} was not collected: {exc}')
+            print(f'PyPlayer: metadata for {library_path} was not collected: {exc} -- '
+                  f'that library loses only its own half of the plan: its rows still '
+                  f'list and still play and only their metadata columns stay unrefreshed, '
+                  f'what the window has already collected keeps its targets, and the scan '
+                  f'that is walking the other libraries is not interrupted')
             return
         # Merged last, from locals, so the half-failed library above leaves the
         # accumulator exactly as it was: the plan the launch builds has to be the plan
