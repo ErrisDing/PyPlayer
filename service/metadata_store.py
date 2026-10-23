@@ -138,6 +138,23 @@ def _row_from_md(md: Optional[dict]) -> Optional[RowMetadata]:
     file -- is type-checked by the reader instead
     (:func:`core.cache_manager._read_md_value`, final review C1), so a string
     duration never reaches this constructor and from there the painter.
+
+    **That trust is a contract, not an accident.** ``_read_md_value`` is the *only*
+    value-shape gate on the read side and :meth:`LibraryMetadataStore.record` the only
+    one on the write side; this function validates nothing itself, on purpose -- a
+    second copy of either rule is the logic-block duplication batch 4's review forbids
+    (the same finding that made :func:`state_for_values` the single author of the
+    tri-state). The contract is scoped by its input: it holds for every dict that
+    arrives as ``CachedFile.md``, i.e. through ``load_cache_entries`` and nowhere else.
+    If a second producer of ``md`` payloads ever appears -- another cache reader, or a
+    batch-5 tag editor handing rows to a store without going through ``record`` -- the
+    re-validation does **not** belong here: put it in
+    :func:`core.cache_manager._read_md_value`, the one place a malformed value can
+    still become ``None`` without disturbing the tri-state, and re-read the two
+    consumers that currently take the shape on trust -- :func:`state_for_values`
+    (which counts presence, never truthiness) and ``view.time_format.format_time``
+    (which compares ``seconds < 0``, so a non-number raises inside a paint override:
+    the exit-127 shape C1 measured).
     """
     if md is None:
         return None

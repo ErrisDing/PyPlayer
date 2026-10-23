@@ -1240,9 +1240,27 @@ class MainPresenter(QObject):
 
         The trailing counter/flush block is *outside* the ``try`` on purpose: the write
         back must happen for a row whose repaint failed (the answer is real whether or not
-        a widget was listening), and neither the arithmetic nor ``_flush_metadata_cache``
-        can raise. Each library keeps its own count because each has its own file to
-        flush; the plan's own count is what decides the closing flush.
+        a widget was listening). It is **not** outside because it cannot raise. The
+        arithmetic is this file's own state -- a ``dict.get`` with a default, ``+ 1``, and
+        integer comparisons on the counters this file keeps (the only four writers are
+        ``_end_metadata_join``, ``_cancel_metadata_sweep``, this method and
+        ``_flush_metadata_cache``, and all four write ints) -- so nothing reachable there
+        escapes. ``_flush_metadata_cache`` owes a different account, and its docstring
+        below is the honest one: one ``try``, around ``save_cache_metadata`` alone, with
+        ``take_dirty()``, the per-row ``os.stat`` re-check and the dict assembly outside it,
+        and ``_fingerprint_still_current`` catching ``OSError`` and nothing wider. If one of
+        those three does raise (the ``ValueError`` a NUL byte in a path gives ``os.stat``),
+        the cost is not "one lost batch": this callback runs on the GUI thread as the
+        service's delivery callback, the broad ``except`` on the delivery side covers the
+        ``emit`` and not this method, and an exception leaving a Python override of a C++
+        virtual -- or a ``QRunnable.run()`` -- on this host is the process itself: **exit
+        127, no traceback**, not even the runner's ``Ran`` line (measured in this batch's
+        C1 round). Stated rather than widened, for the reason the flush docstring gives:
+        every path reaching this block came off a scan that already listed the file. If a
+        non-scan producer of dirty rows ever appears, the guard belongs at that ``os.stat``
+        walk, and the missing ``try`` here is the line that would have to change.
+        Each library keeps its own count because each has its own file to flush; the plan's
+        own count is what decides the closing flush.
         """
         if self._metadata_generation != self._metadata.current_generation():
             # The service already refused this row; the question asked here is about the
