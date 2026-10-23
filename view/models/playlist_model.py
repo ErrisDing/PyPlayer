@@ -125,6 +125,13 @@ class PlaylistModel(QAbstractListModel):
         """
         Update entries with minimal model changes.
         Compares with current entries and only updates changed rows.
+
+        "Changed" means the row would be **painted** differently: the display text,
+        the playing flag, and since batch 4 the three metadata columns plus their
+        state word (see :meth:`_metadata_differs`, ruling B4-R31). A library switch
+        between two libraries that hold same-named files is exactly the input where
+        the first two say "nothing happened" and the screen keeps the previous
+        library's artist, album and length.
         """
         old_count = len(self._entries)
         new_count = len(entries)
@@ -172,7 +179,8 @@ class PlaylistModel(QAbstractListModel):
             changed_indices = []
             for i, (old, new) in enumerate(zip(self._entries, entries)):
                 if (old.display_text != new.display_text or
-                    old.is_playing != new.is_playing):
+                    old.is_playing != new.is_playing or
+                    self._metadata_differs(old, new)):
                     changed_indices.append(i)
 
             if len(changed_indices) < old_count // 2:
@@ -190,8 +198,48 @@ class PlaylistModel(QAbstractListModel):
         # Fallback to full reset
         self.set_entries(entries)
 
+    @staticmethod
+    def _metadata_differs(old: DisplayEntry, new: DisplayEntry) -> bool:
+        """Whether the two rows would be **painted differently** in the data columns.
+
+        Final review I2 (ruling B4-R31): this class used to decide "changed" from
+        ``display_text`` and ``is_playing`` alone, which was a complete answer until
+        batch 4 put three more painted cells on the row. Two libraries holding
+        same-named files produce a row-for-row identical ``display_text`` list
+        (``display_text`` for a file node *is* the filename), so a switch left the
+        model holding library B's values while the view was told zero times --
+        measured: ``dataChanged`` 0, reset 0, screen still showing A's artist. The
+        stale frame then cleared on the first hover/scroll repaint, which is the
+        shape that survives a demo and arrives as "the playlist showed the wrong
+        artist".
+
+        Compared **by value, not by identity**, and that is what keeps this and
+        Task 7's pin on the other side of the same seam alive together (both are
+        asserted in ``tests/test_playlist_metadata_model.py`` and in
+        ``tests/test_metadata_wiring.py::TargetedUpdateIsTheOnlyRepaintTest``):
+        the queue and the model share the ``DisplayEntry`` objects, so a re-push of
+        a table the queue updated behind the model's back still announces nothing --
+        a row compared against itself cannot differ, and the sweep's fill stays the
+        only repaint route. What this closes is the case the old comparison missed
+        for the *new* objects a rebuild produces.
+
+        ``full_path`` is deliberately not in here: the delegate paints no path, so a
+        path that differs under an identical name is a routing question (batch 3's
+        row-targeting contract), not a stale cell.
+        """
+        return (old.duration != new.duration
+                or old.artist != new.artist
+                or old.album != new.album
+                or old.metadata_state != new.metadata_state)
+
     def _only_playing_changed(self, new_entries: List[DisplayEntry]) -> bool:
-        """Check if only the is_playing flag changed."""
+        """Check if only the is_playing flag changed.
+
+        The metadata cells count as content (ruling B4-R31): without this the fast
+        path below would answer "only the highlight moved" for a library switch whose
+        rows changed artist, announce ``IsPlayingRole`` on two rows, and leave every
+        other row -- including the ones holding the new columns -- unpainted.
+        """
         if len(self._entries) != len(new_entries):
             return False
 
@@ -203,6 +251,8 @@ class PlaylistModel(QAbstractListModel):
             if old.display_text != new.display_text:
                 return False
             if old.is_folder != new.is_folder:
+                return False
+            if self._metadata_differs(old, new):
                 return False
 
         return True

@@ -438,6 +438,189 @@ class WholeListRouteCarriesNoRepaintTest(unittest.TestCase):
         self.assertEqual(1, len(self.signals.data_changed))
 
 
+def _library_entries(rows, playing=None):
+    """Fresh ``DisplayEntry`` objects for *one* library, made by a fresh queue.
+
+    ``rows`` is ``((title, path, md), ...)``. The new ``QueueService`` per call is the
+    point: a library switch hands the model **new objects** whose values came from a
+    different library, which is what separates the cases below from
+    :class:`WholeListRouteCarriesNoRepaintTest`'s aliasing case (same objects, so a
+    value comparison against themselves can only say "unchanged").
+    """
+    queue = QueueService()
+    queue.build_from_tracks([Track(path=path, title=title)
+                             for title, path, _md in rows])
+    queue.set_metadata({path: md for _title, path, md in rows})
+    entries = queue.get_display_entries()
+    if playing is not None:
+        entries[playing].is_playing = True
+    return entries
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class LibrarySwitchColumnTest(unittest.TestCase):
+    """I2 / ruling B4-R31: same names, different columns -- the view has to hear it.
+
+    ``update_entries`` decided "changed" from ``display_text`` and ``is_playing``, and
+    for a file node ``display_text`` **is** the filename
+    (``core/library_manager.py:49-53``). Two libraries holding same-named files
+    therefore produce a row-for-row identical text list made of brand-new objects: the
+    review measured the switch and got ``dataChanged`` 0, reset 0, with the model
+    already reading the new artist -- the previous library stayed on screen until some
+    unrelated hover or scroll repainted it.
+
+    The comparison this class pins is by **value**, which is exactly what keeps
+    :class:`WholeListRouteCarriesNoRepaintTest` (Task 7's "re-push repaints nothing")
+    alive beside it: an entry compared against itself never differs, so a queue-side
+    update behind the model's back still announces nothing and the sweep keeps its one
+    repaint route. Both pins are asserted here in their own direction: unchanged
+    metadata on *new* objects must announce nothing, and changed metadata must.
+    """
+
+    TITLES = ['Track 0', 'Track 1', 'Track 2', 'Track 3']
+
+    def setUp(self):
+        self.app = make_app()
+        self.model = PlaylistModel()
+        self.signals = ModelSignals(self.model)
+        self.library_a = _library_entries(
+            [(title, _path(index), KNOWN) for index, title in enumerate(self.TITLES)])
+        self.model.set_entries(self.library_a)
+        # The reset above is the fixture, not the case under test.
+        self.signals.data_changed.clear()
+        for name in self.signals.counts:
+            self.signals.counts[name] = 0
+
+    def _library_b(self, empty_rows=()):
+        return _library_entries([
+            (title, _path(index), EMPTY if index in empty_rows else KNOWN)
+            for index, title in enumerate(self.TITLES)])
+
+    def test_one_changed_row_announces_that_row_and_nothing_else(self):
+        self.model.update_entries(self._library_b(empty_rows=(1,)))
+
+        self.assertEqual(
+            [(1, 1, frozenset())], self.signals.data_changed,
+            'a row whose three columns changed announced nothing (or the wrong row '
+            'announced): the switch leaves the painted artist of library A on it')
+        self.assertEqual(
+            0, self.signals.rebuild_count,
+            'a one-row difference took the whole table down: this is the targeted '
+            'route, and a reset drops the selection and the scroll position')
+        self.assertEqual(
+            STATE_UNKNOWN,
+            self.model.data(self.model.index(1), PlaylistModel.MetadataStateRole),
+            'the announced row still reads A\'s state')
+        self.assertIsNone(
+            self.model.data(self.model.index(1), PlaylistModel.ArtistRole))
+        self.assertEqual(
+            'The Trio',
+            self.model.data(self.model.index(0), PlaylistModel.ArtistRole),
+            'an unchanged row lost its values even though it was not announced')
+
+    def test_every_row_changed_announces_instead_of_going_stale(self):
+        """The review's own shape: *all* rows differ, so the >half route may reset.
+
+        Asserted as "the view was told", not as a fixed mechanism: at four rows out of
+        four the pre-existing heuristic deliberately takes the reset route, and a reset
+        repaints correctly. What must never happen -- and what the review measured --
+        is the third option: nothing at all.
+        """
+        self.model.update_entries(self._library_b(empty_rows=(0, 1, 2, 3)))
+
+        self.assertTrue(
+            self.signals.data_changed or self.signals.counts['modelReset'],
+            'a full-table metadata change announced NOTHING: the model holds B\'s '
+            'values while the viewport keeps painting A\'s three columns until an '
+            'unrelated hover or scroll forces a repaint (ruling B4-R31)')
+        self.assertEqual(
+            [STATE_UNKNOWN] * 4, _states(self.model),
+            'the switch left the old library\'s state words behind')
+
+    def test_new_objects_with_the_same_columns_announce_nothing(self):
+        """The other direction of the same rule, and the anti-overreach pin.
+
+        "Compare the metadata roles" must mean *compare their values*: re-pushing an
+        identical table built from fresh objects has to stay silent, or every sweep
+        repaint would also repaint the columns that did not change -- which is the
+        half of Task 7's claim this file must not overturn.
+        """
+        self.model.update_entries(_library_entries(
+            [(title, _path(index), KNOWN)
+             for index, title in enumerate(self.TITLES)]))
+
+        self.assertEqual([], self.signals.data_changed,
+                         'a value-identical re-push announced rows: the comparison '
+                         'went by object identity instead of by content')
+        self.assertEqual(0, self.signals.rebuild_count)
+
+    def test_the_playing_only_fast_path_survives_the_new_comparison(self):
+        """``_only_playing_changed`` must still answer "only the highlight moved".
+
+        The highlight fast path is why moving the playing row does not re-elide every
+        title on screen. Adding a content test to it was mandatory (a switch that also
+        moved the highlight used to announce the highlight and swallow the columns),
+        and adding it *wrongly* -- e.g. comparing the entries by identity -- would shut
+        the fast path forever, so both halves are asserted here.
+        """
+        playing_a = _library_entries(
+            [(title, _path(index), KNOWN)
+             for index, title in enumerate(self.TITLES)], playing=0)
+        self.model.set_entries(playing_a)
+        self.signals.data_changed.clear()
+        for name in self.signals.counts:
+            self.signals.counts[name] = 0
+        self.model.set_current_playing(0)
+        self.signals.data_changed.clear()
+
+        self.model.update_entries(_library_entries(
+            [(title, _path(index), KNOWN)
+             for index, title in enumerate(self.TITLES)], playing=2))
+
+        self.assertEqual(
+            [(0, 0, frozenset({PlaylistModel.IsPlayingRole})),
+             (2, 2, frozenset({PlaylistModel.IsPlayingRole}))],
+            self.signals.data_changed,
+            'the highlight move lost its fast path: it now repaints the whole table '
+            'for a flag that changed on two rows')
+        self.assertEqual(0, self.signals.rebuild_count)
+
+    def test_a_highlight_move_over_changed_columns_is_not_swallowed(self):
+        """The joint case: the highlight moves *and* a row's columns change.
+
+        Eight rows because the fast path is reached by construction: the pre-fix
+        ``_only_playing_changed`` compared ``node_idx``/``sub_index``/``display_text``/
+        ``is_folder`` -- all four identical here -- so it answered "only the highlight
+        moved", repainted rows 0 and 2, and left row 7 showing the *other* library's
+        artist. The row count that keeps this in the targeted route (fewer than half
+        changed) is a property of the pre-existing heuristic, not of this fix.
+        """
+        rows = [('Track %d' % index, '/media/rock/track%d.mp3' % index)
+                for index in range(8)]
+        self.model.set_entries(_library_entries(
+            [(title, path, KNOWN) for title, path in rows], playing=0))
+        for name in self.signals.counts:
+            self.signals.counts[name] = 0
+        self.model.set_current_playing(0)
+        self.signals.data_changed.clear()
+
+        self.model.update_entries(_library_entries(
+            [(title, path, EMPTY if index == 7 else KNOWN)
+             for index, (title, path) in enumerate(rows)], playing=2))
+
+        changed = [top for top, _bottom, _roles in self.signals.data_changed]
+        self.assertEqual([0, 2, 7], sorted(changed),
+                         'a row whose columns changed was swallowed by the '
+                         'playing-only fast path: the stale cell is exactly the bug '
+                         '(ruling B4-R31) -- %s' % (self.signals.data_changed,))
+        self.assertEqual(0, self.signals.rebuild_count)
+        states = _states(self.model)
+        self.assertEqual(STATE_UNKNOWN, states[7],
+                         'row 7 still reports the library it came from before the '
+                         'switch')
+        self.assertEqual([STATE_KNOWN] * 7 + [STATE_UNKNOWN], states)
+
+
 @unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
 class MainWindowForwardingTest(unittest.TestCase):
     """The presenter only knows ``MainWindow``: one forward down, no side effects."""
