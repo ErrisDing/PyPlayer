@@ -1460,6 +1460,73 @@ class MultiLibraryJointPlanTest(WiringHarness, unittest.TestCase):
             self.assertEqual(sorted(own), sorted(writes[0][1]),
                              f'{library}: the forced flush carried {sorted(writes[0][1])}')
 
+    def test_a_delivery_that_answers_no_store_still_closes_the_plan(self):
+        """M2 / fact 3: the delivery counter is not a side effect of writing a row.
+
+        ``if not answered: return`` sat *above* ``_metadata_delivered += 1``, so a
+        delivery that recorded into no store was swallowed by the counter as well as by
+        the repaint -- and the plan's completion rule is "one delivery per target", so a
+        swallowed delivery means a plan that **never closes**: its closing flush never
+        runs, and every row it had already answered stays dirty in memory for the rest of
+        the session (the same durability cost ruling B4-R23 was paid for, reached from
+        the other side).
+
+        No state reachable *today* produces an empty ``answered``: a row of a retired
+        plan is dropped by the generation check first, and the only thing that removes a
+        store is ``_cancel_metadata_sweep``, which retires the plan as it does so. That
+        is exactly why the invariant may not depend on it -- the counter has to be the
+        unconditional half of the callback, and the state is constructed here by dropping
+        one library's store under a plan that is still live (the same hand-the-store-drop
+        move ``test_a_refresh_keeps_the_answers_the_new_file_table_still_describes`` uses
+        to stand for a next process).
+
+        The observable is deliberately *another* library's write-back: the swallowed row
+        belongs to rock, whose store is gone, so rock itself can show nothing; jazz is in
+        the same joint plan, is dirty, and is only ever flushed when the plan completes.
+        Red in the counter *and* in the file, green in neither.
+        """
+        rock = self._make_library('rock', count=2)
+        jazz = self._make_library('jazz', count=1, prefix='jazz')
+        rock_paths = self._file_paths(rock)
+        jazz_paths = self._file_paths(jazz)
+        self._walk(rock, jazz)
+        self._gate(*rock_paths)
+        self._gate(*jazz_paths)
+
+        self.view.refresh_all_requested.emit()
+        self.library.written.clear()
+
+        # Answer jazz first, and leave it dirty: 500 is well above one row, so nothing
+        # but the plan's own completion will write it.
+        self._release(*jazz_paths)
+        self._pump_until(
+            lambda: self.presenter._metadata_delivered == 1,
+            'the unblocked library never got its delivery',
+            state=lambda: f'delivered={self.presenter._metadata_delivered}')
+        self.assertIn(str(jazz), self.presenter._metadata_since_flush)
+        self.assertEqual(0, len(self._writes_for(jazz)),
+                         'the fixture is wrong: jazz was already flushed, so the '
+                         'completion below would prove nothing')
+
+        # Rock's store goes while its two rows are still in flight: their deliveries
+        # find owners, no store, and therefore no row to write.
+        del self.presenter._metadata_stores[str(rock)]
+        self._release(*rock_paths)
+        self._pump_for(DRAIN_MS)
+
+        self.assertEqual(
+            3, self.presenter._metadata_delivered,
+            'a delivery that recorded into no store was not counted, so the plan of '
+            f'{self.presenter._metadata_expected} targets can never reach its own count')
+        self.assertEqual(
+            1, len(self._writes_for(jazz)),
+            'the swallowed delivery left the plan open, and the closing flush that would '
+            "have written jazz's already-answered row never ran (durability: the "
+            'extraction is redone after every restart)')
+        self.assertEqual(sorted(jazz_paths), sorted(self._writes_for(jazz)[0][1]),
+                         'the plan that finally closed wrote something other than the '
+                         'library it owned')
+
     def test_the_batch_boundary_is_per_library_not_per_plan(self):
         """Each library flushes on its own count, into its own file.
 

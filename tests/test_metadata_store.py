@@ -671,6 +671,34 @@ class TakeDirtyTest(unittest.TestCase):
                          'md=None means "tried, nothing", which on disk is the '
                          'three-null dict -- never an absent key')
 
+    def test_an_invalidated_row_drains_as_pending_and_owes_nothing(self):
+        """The shape **B4-R10** exists for, read at its own layer (ledger: "缺的是
+        docstring 与测试钉" -- the wiring nail is
+        ``MetadataWriteBackTest.test_a_pending_row_is_never_written_with_a_fingerprint``).
+
+        ``record`` then ``validate`` with a moved fingerprint puts a *pending* entry
+        **inside** the dirty set: invalidation clears ``md`` and leaves the flag, because
+        clearing is a question and only ``record`` answers. So the drain reports
+        ``(path, None)`` -- which the writer must read as "neither an ``md`` key nor a
+        fingerprint for this path", never as "write the three-null dict" (that is the
+        *other* case above, ``record(path, None)``). The two lines of this test are the
+        whole difference between those two shapes, and a mutation that un-dirties on
+        invalidation -- or that fills the cleared row with an empty payload -- is red on
+        one of them and only one of them.
+        """
+        store = LibraryMetadataStore()
+        store.record(MP3_PATH, KNOWN_MD, 1000, 100.0)
+        store.validate([_media(MP3_PATH, size=2000, mtime=100.0)])
+        self.assertEqual(STATE_PENDING, store.state_of(MP3_PATH))
+        self.assertEqual([(MP3_PATH, None)], store.take_dirty(),
+                         'an invalidated row either left the dirty set (so the '
+                         'invalidation is invisible to the writer and the old payload '
+                         'survives on disk) or drained as a payload (which would claim '
+                         '"this version has no tags" on the sweep\'s behalf)')
+        self.assertEqual([], store.take_dirty(),
+                         'the drain must still consume the flag: a None that came back '
+                         'twice would make the writer re-check a dead row forever')
+
     def test_take_dirty_is_idempotent(self):
         store = LibraryMetadataStore()
         store.record(MP3_PATH, KNOWN_MD, 1000, 100.0)

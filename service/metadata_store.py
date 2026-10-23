@@ -369,10 +369,33 @@ class LibraryMetadataStore:
         Task 7 batches these so a library of N new rows costs a handful of
         ``json.dump`` calls instead of N. ``md`` is Task 1's canonical payload --
         exactly the ``MD_KEYS`` names -- so the caller can stamp it straight onto
-        ``CachedFile.md``. A ``None`` here would mean "write no ``md`` key", i.e.
-        pending, and the sweep never marks a pending row dirty; it is part of the
-        signature because the cache's tri-state has that third shape and the
-        writer must not have to guess which ones it may receive.
+        ``CachedFile.md``.
+
+        **A ``None`` here does happen, and it does not mean "a row nobody touched".**
+        A pending entry is normally outside the dirty set (nothing marks it), but there
+        is one shape that puts it inside: a row ``record``ed -- hence ``dirty`` -- and
+        then invalidated by a later ``validate`` before any flush, which clears ``md``
+        back to ``None`` and leaves the flag standing (ruling **B4-R10**: invalidation is
+        a question, so it neither records nor un-dirties). The drain therefore reports
+        that row as ``(path, None)``: *pending, and still owed a write of nothing*.
+
+        That is the whole reason the signature is ``dict | None`` and why the reader of
+        this list must treat ``None`` as "write **neither** ``md`` **nor** a fingerprint
+        for this path", not as "write an empty ``md``" and not as "skip the flag" (the
+        flag is already consumed -- the drain that reported it is the reason). Writing a
+        stale payload for it would put an answer the file no longer describes back on
+        disk; advancing its fingerprint beside a ``None`` payload would make the
+        invalidation invisible to the next scan, i.e. the file that changed would never
+        be re-read -- the failure criterion 5 exists to prevent. Task 7's flush honours
+        it with ``if md is None: continue``, and the shape is pinned by
+        ``tests/test_metadata_wiring.py::MetadataWriteBackTest``'
+        ``test_a_pending_row_is_never_written_with_a_fingerprint`` (that test builds the
+        store twice precisely because this method consumes the flag).
+
+        ``record(path, None, ...)`` is *not* this branch: a deliberate "tried, nothing"
+        is stored as an all-``None`` ``RowMetadata`` and drains as a present three-key
+        dict, because spec 4.1 distinguishes "answered: there is nothing here" from "not
+        answered yet" by exactly this difference.
         """
         taken: List[Tuple[str, Optional[dict]]] = []
         for full_path, entry in self._entries.items():

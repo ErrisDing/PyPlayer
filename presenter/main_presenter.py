@@ -1217,9 +1217,14 @@ class MainPresenter(QObject):
         **It may not raise.** On this host (PyQt6 6.11) an exception leaving a pool
         worker's ``run`` aborts the process -- exit 127, no traceback, not even the
         runner's ``Ran`` line -- and the broad ``except`` on the delivery side only
-        covers the ``emit``, not this callback. So the row work is guarded here, and
-        :meth:`_flush_metadata_cache` guards its own disk access: a failed repaint costs
-        one row and a failed write costs one batch, never the player.
+        covers the ``emit``, not this callback. So the row work is guarded here.
+        :meth:`_flush_metadata_cache` guards **the write** and nothing else (its own
+        docstring spells out which three steps sit outside that ``try``), so the honest
+        reading of this method is: a failed repaint costs one row, a failed *save* costs
+        one batch, and neither of those is what makes the callback safe to call -- the
+        ``try`` around the row work is. Its counter block stays outside on purpose, and
+        that is the trade recorded in ruling B4-R30's report rather than a claim that the
+        write-back path cannot raise.
 
         Record, then read back from the store, then repaint -- in that order, because the
         store is what normalizes the duration (ruling B4-R7). Handing ``md`` straight to
@@ -1259,18 +1264,27 @@ class MainPresenter(QObject):
                 store.record(full_path, md, size, mtime)
                 answered.append(store)
             self._metadata_fingerprints[full_path] = (size, mtime)
-            if not answered:
-                return
-            row = answered[0].get(full_path)
-            state = answered[0].state_of(full_path)
-            # ``apply_metadata`` returns the rows it wrote, and only they get repainted:
-            # the model shares the entry objects with the queue, so re-pushing the whole
-            # table would let the new values be read and never drawn (fact 1 in the report).
-            for display_row in self._queue.apply_metadata(full_path, row, state):
-                self._view.update_row_metadata(display_row, row, state)
+            if answered:
+                row = answered[0].get(full_path)
+                state = answered[0].state_of(full_path)
+                # ``apply_metadata`` returns the rows it wrote, and only they get repainted:
+                # the model shares the entry objects with the queue, so re-pushing the whole
+                # table would let the new values be read and never drawn (fact 1 in the report).
+                for display_row in self._queue.apply_metadata(full_path, row, state):
+                    self._view.update_row_metadata(display_row, row, state)
         except Exception as exc:
             print(f'PyPlayer: metadata row {full_path} was not applied: {exc}')
 
+        # Counted *unconditionally*: the plan closes on "one delivery per target", and a
+        # row that wrote nothing is still a delivery that came back (final review M2). The
+        # ``return`` that used to sit here skipped the counter as well as the repaint, so
+        # such a plan could never reach its own count: its closing flush never ran, and
+        # the rows another library had already answered stayed dirty for the session --
+        # ruling B4-R23's durability cost, arrived at from the other side. No state
+        # reachable today empties ``answered`` (the generation check above fires first,
+        # and the only thing that drops a store is ``_cancel_metadata_sweep``, which
+        # retires the plan with it), which is exactly why the invariant may not rest on
+        # that; ``tests/test_metadata_wiring.py`` constructs the state to keep this honest.
         self._metadata_delivered += 1
         for library_path in owners:
             since = self._metadata_since_flush.get(library_path, 0) + 1
@@ -1342,6 +1356,22 @@ class MainPresenter(QObject):
         risk 2). A failed write leaves the in-memory rows and the repaints standing --
         spec §6's third item, with no new error channel -- and costs that batch's
         persistence, which is exactly the work the next start does again.
+
+        **What this method actually guards** (final review M1, which found the previous
+        wording here overclaiming): one ``try``, around ``save_cache_metadata`` alone.
+        Three steps run outside it -- ``store.take_dirty()``, the ``_fingerprint_still_current``
+        walk that stats every row the batch carries, and the dict assembly -- and
+        ``_fingerprint_still_current`` catches ``OSError``, nothing wider. So a path whose
+        ``os.stat`` raises another way (a NUL byte in the name is ``ValueError``) would
+        leave this method and, because it is called from the sweep callback, leave a Qt
+        slot -- which on this host is the process, not a traceback. That is stated rather
+        than fixed: every row this method can be handed comes from a scan that already
+        listed the file (Task 7's ledger judged the shape unreachable from a real
+        filesystem, and the review agreed), so widening the ``except`` here would add a
+        branch no producer can take and hide the one thing a reader needs -- that the
+        write is the only step with a guard under it. If a second producer of dirty rows
+        ever appears (a hand-written cache read into a store), the one-word change is
+        ``except Exception`` at the stat walk, and this paragraph is where it is owed.
         """
         if library_path is None:
             for held in sorted(self._metadata_since_flush):
