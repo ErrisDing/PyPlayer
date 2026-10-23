@@ -207,6 +207,28 @@ ROW_HEIGHT = 28
 TRANSPORT_SIZE = 40
 PLAY_SIZE = 50
 
+# Batch 4 Task 8: the playlist's three metadata columns, in the same geometry
+# block as ``ROW_HEIGHT`` because the delegate and the header both read them and
+# neither may invent a width. The two numbers are measurements, not preferences --
+# but read them with their ruler named, because the ruler is broken: ``QT_QPA_PLATFORM
+# = offscreen`` has no real font on this host and rasterises **every** glyph (CJK or
+# Latin) to the same hollow box, so ``QFontMetrics`` on the playlist's own font
+# reports one fixed advance per character (measured: 12px at 9pt, 15px at 11pt, i.e.
+# ``3:25`` = 48px and ``1:02:03`` = 84px/105px -- about twice what a real Segoe/YaHei
+# pass gives). 56 therefore holds an ``MM:SS`` with slack and 120 holds ten CJK
+# glyphs *as glyph boxes*, and a ``HH:MM:SS`` value does not fit in 56 at that scale,
+# so the delegate elides it. Neither figure is a user-visible fact, and ruling
+# **B4-R24** refused to widen on them: raising 56 to 88/112 off these numbers would
+# push the three columns' give-way threshold from the measured 432/448 to 464/488 and
+# throw away a strip of window width in which no column is drawn at all. The open
+# question -- does an over-one-hour length survive on a real desktop, and does
+# ``elidedText`` eat the minutes -- is item 15 of the README's requires-a-human
+# checklist, and the answer there may only raise this to **72**.
+# ``tests/test_playlist_columns.py::ColumnTokenTest`` fails on both sides of the two
+# claims made here, so the numbers cannot drift silently.
+COLUMN_DURATION_WIDTH = 56
+COLUMN_TEXT_WIDTH = 120
+
 # Batch 2 (icon rail + full-width list + floating library panel) retired
 # ``ART_SIZE``: the 200 px cover box belonged to the left panel, and the left
 # panel is gone. The three replacements are sized for the shells that do exist.

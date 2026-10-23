@@ -5,9 +5,11 @@ Playlist View - List view for playlist with custom rendering
 
 from typing import Optional
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QListView, QAbstractItemView, QLabel
+    QWidget, QVBoxLayout, QHBoxLayout, QListView, QAbstractItemView, QLabel
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QModelIndex, QPoint, QItemSelectionModel
+from PyQt6.QtCore import (
+    Qt, QEvent, QModelIndex, QMargins, QPoint, QItemSelectionModel, pyqtSignal,
+)
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
 
 import sys
@@ -15,10 +17,35 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from core import i18n
+from core.theme import COLUMN_DURATION_WIDTH, COLUMN_TEXT_WIDTH, SPACE_2
+from service.metadata_store import RowMetadata
+from view.delegates.playlist_delegate import (
+    COLUMN_GAP,
+    PlaylistItemDelegate,
+    metadata_columns_fit,
+)
 from view.models.playlist_model import PlaylistModel
-from view.delegates.playlist_delegate import PlaylistItemDelegate
 from view.widgets.playlist_context_menu import (
     MENU_CLEAR, MENU_PLAY, MENU_REMOVE, build_playlist_menu
+)
+
+
+#: The header row's four columns, left to right:
+#: ``(objectName, locale key, fixed width, horizontal alignment)``.
+#:
+#: ``0`` width means "take what is left", which is the name column's job for the
+#: same reason the delegate gives it the whole remainder of the row: the three
+#: data columns are fixed by the ``COLUMN_*`` tokens and only the title floats.
+#: The alignment flags mirror :func:`view.delegates.playlist_delegate.column_rects`
+#: -- duration flush right against the row's right inset, the two text columns
+#: flush left at their own band's edge -- so a heading sits over the ink it names
+#: instead of over the middle of the band.
+HEADER_COLUMNS = (
+    ('colName', 'col.name', 0, Qt.AlignmentFlag.AlignLeft),
+    ('colDuration', 'col.duration', COLUMN_DURATION_WIDTH,
+     Qt.AlignmentFlag.AlignRight),
+    ('colArtist', 'col.artist', COLUMN_TEXT_WIDTH, Qt.AlignmentFlag.AlignLeft),
+    ('colAlbum', 'col.album', COLUMN_TEXT_WIDTH, Qt.AlignmentFlag.AlignLeft),
 )
 
 
@@ -58,8 +85,13 @@ class PlaylistView(QWidget):
       R11 put them here on purpose: see :meth:`keyPressEvent`.
 
     The header and the list are styled by the application sheet through
-    ``#playlistHeader`` / ``#playlistView``; the row states are painted by
-    :class:`PlaylistItemDelegate`, which reads the theme manager's tokens.
+    ``#playlistHeaderRow`` + ``#colName``/``#colDuration``/``#colArtist``/
+    ``#colAlbum`` and ``#playlistView``; the row states are painted by
+    :class:`PlaylistItemDelegate`, which reads the theme manager's tokens. The
+    header's four labels are laid out with the delegate's own column widths and
+    gutters, and :meth:`_sync_header_columns` both hides the three data headings
+    whenever the delegate's give-way rule hides the columns themselves and
+    shifts the band so that every heading sits over the column it names.
     """
 
     # Signals
@@ -101,11 +133,13 @@ class PlaylistView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header (A6: the English literal is gone; #playlistHeader's text is
-        # the i18n value, re-read whenever the widget tree is built).
-        header = QLabel(i18n.get('playlist.header'))
-        header.setObjectName("playlistHeader")
-        layout.addWidget(header)
+        # Header (A6: the English literal is gone; each column word is the i18n
+        # value, re-read whenever the widget tree is built). Batch 4 Task 8: this
+        # was one ``#playlistHeader`` label carrying ``playlist.header``; the
+        # three columns the rows now paint need their words explained, so the
+        # band took over.
+        self._header_row = self._build_header()
+        layout.addWidget(self._header_row)
 
         # List view with custom model
         self._list_view = QListView()
@@ -150,6 +184,112 @@ class PlaylistView(QWidget):
 
         layout.addWidget(self._list_view)
 
+        # Once at build time, then on every change of the row width: the rows
+        # hide the three data columns when the give-way rule says they do not fit,
+        # and the header hides the matching words with them.
+        self._list_view.viewport().installEventFilter(self)
+        self._sync_header_columns()
+
+    def _build_header(self) -> QWidget:
+        """The ``#playlistHeaderRow`` band and its four column words.
+
+        The margins start at ``SPACE_2`` because that is the inset the delegate
+        paints its own columns inside (``view.delegates.playlist_delegate.column_rects``
+        adjusts the row rectangle by ``SPACE_2`` on both edges), and the spacing
+        is the delegate's ``COLUMN_GAP``. A stylesheet ``padding`` would be a
+        second source of the same number, which is why
+        ``core/theme_qss.py`` deliberately does not declare one here.
+
+        These are only the *starting* margins: the horizontal pair is re-derived
+        from the live viewport by :meth:`_sync_header_columns`, which is what
+        makes the two grids agree to the pixel instead of by approximation. The
+        band is a sibling of the list view, so it spans this widget's full width
+        while the rows inside the viewport are narrowed by the list's 1px frame
+        and, whenever the playlist overflows, by the vertical scrollbar.
+        Mirroring only the labels' *visibility* (the shape this file shipped
+        first) left every heading right of the column it names by exactly that
+        narrowing -- measured in the real ``MainWindow`` shell at 1200x720 with
+        40 rows (``list=1144``, ``viewport=1132``): **+11px** on the three data
+        columns, ``-1px`` on the name column, and a scrolling playlist is the
+        normal state, not the edge case.
+        """
+        row = QWidget()
+        row.setObjectName('playlistHeaderRow')
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(SPACE_2, SPACE_2, SPACE_2, SPACE_2)
+        row_layout.setSpacing(COLUMN_GAP)
+        self._header_layout = row_layout
+
+        self._header_data_cells: list = []
+        for name, key, width, align in HEADER_COLUMNS:
+            label = QLabel(i18n.get(key))
+            label.setObjectName(name)
+            label.setAlignment(Qt.AlignmentFlag.AlignVCenter | align)
+            if width:
+                # ``setFixedWidth`` rather than a minimum: the delegate's bands
+                # are these numbers, and a heading that grew with its word would
+                # slide every column to its right.
+                label.setFixedWidth(width)
+                self._header_data_cells.append(label)
+                row_layout.addWidget(label, 0)
+            else:
+                row_layout.addWidget(label, 1)
+        return row
+
+    def _sync_header_columns(self) -> None:
+        """Mirror the row grid into the header: which columns exist, and where.
+
+        One question, two halves, both answered from the *viewport* -- the widget
+        whose width is a row's ``option.rect`` width, scrollbar included:
+
+        * **which columns**: ``metadata_columns_fit`` is the delegate's give-way
+          rule, and asking it twice from two different measurements is how a
+          header grows labels over an empty grid.
+        * **where they are**: the band is this widget's sibling of the list, so it
+          never lost the ground the viewport lost. The left margin takes the
+          viewport's own offset inside this widget (the list's 1px frame), the
+          right margin takes that plus the vertical scrollbar, and the difference
+          is read from live geometry rather than assumed: ``self.width()`` minus
+          where the viewport ends. Without it the three data headings sit one
+          scrollbar-width right of the columns they name (see
+          :meth:`_build_header` for the measurement).
+
+        Idempotent, and it only touches the layout when the numbers actually
+        changed, so the extra calls the layout machine makes cost nothing.
+        """
+        viewport = self._list_view.viewport()
+        grid_left = viewport.mapTo(self, QPoint(0, 0)).x()
+        # The ground the rows lost and this band did not: frame on the left,
+        # frame plus scrollbar on the right. ``max(0, ...)`` because a widget that
+        # has never been laid out can report a viewport wider than its parent.
+        narrowed = max(0, self.width() - grid_left - viewport.width())
+        margins = QMargins(SPACE_2 + grid_left, SPACE_2,
+                           SPACE_2 + narrowed, SPACE_2)
+        if self._header_layout.contentsMargins() != margins:
+            self._header_layout.setContentsMargins(margins)
+
+        visible = metadata_columns_fit(viewport.width())
+        for label in self._header_data_cells:
+            label.setVisible(visible)
+
+    def eventFilter(self, watched, event) -> bool:
+        """Re-ask the fit rule when the viewport -- the row width -- changes.
+
+        ``resizeEvent`` on *this* widget is too early: the layout has not given
+        the list its new geometry yet, so the viewport still reports the old width
+        and the header would sync to a stale row width (measured: a 300px view
+        whose viewport was still 640px wide inside ``resizeEvent``). The viewport's
+        own ``Resize`` arrives after the layout ran, and it also fires when the
+        vertical scrollbar appears, which is the other thing that changes a row's
+        width. Nothing is consumed here, so hover and the item view keep their
+        events; :meth:`_sync_header_columns` is idempotent, so the extra calls the
+        layout makes are free.
+        """
+        if (watched is self._list_view.viewport()
+                and event.type() == QEvent.Type.Resize):
+            self._sync_header_columns()
+        return super().eventFilter(watched, event)
+
     def _on_double_click(self, index: QModelIndex) -> None:
         """Handle double-click on item."""
         self.track_double_clicked.emit(index.row())
@@ -185,6 +325,19 @@ class PlaylistView(QWidget):
         if display_idx >= 0:
             index = self._model.index(display_idx)
             self._list_view.scrollTo(index, QListView.ScrollHint.EnsureVisible)
+
+    def update_row_metadata(self, row: int, md: Optional[RowMetadata],
+                            state: str) -> None:
+        """Refresh one row's three metadata columns -- no rebuild, no selection loss.
+
+        A forward to the model, in the same shape as :meth:`set_entries` and
+        :meth:`set_current_playing`: the presenter addresses this widget and never
+        reaches for ``self._model``. It exists for batch 4's background sweep, which
+        fills rows one at a time -- ``PlaylistModel.update_row_metadata`` carries the
+        rules (out-of-range rows are a no-op, and the only emission is one
+        ``dataChanged`` over the four metadata roles).
+        """
+        self._model.update_row_metadata(row, md, state)
 
     def selected_display_indices(self) -> list:
         """Every selected row, ascending and without duplicates.

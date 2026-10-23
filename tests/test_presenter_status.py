@@ -19,7 +19,7 @@ Three sites are **deleted**: ``status.playing``, ``status.paused`` and
 same fact is the defect spec §1 criterion 3 describes.
 
 Harness: a **real** ``MainWindow`` and a **real** ``MainPresenter``; only the five
-services are ``MagicMock``\\ s. Two consequences shape the helpers below:
+services are ``MagicMock``\\ s. Three consequences shape the helpers below:
 
 * service *signals* cannot be ``emit``\\ ted on a mock, but ``connect`` on a mock
   records the receiver it was handed -- so :meth:`PresenterHarness._emit` calls
@@ -30,6 +30,18 @@ services are ``MagicMock``\\ s. Two consequences shape the helpers below:
   **and runs the real method**, so the toast really paints and the rail really
   spins -- an assertion about a call list cannot pass on a channel that was
   quietly rewired to nowhere.
+
+A third consequence of the mocked services is a fixture rule, and batch 4's controller
+finding is what made it explicit: ``refresh_all_libraries`` is a mock, so it fires no
+``library_loaded`` at all, and a scanned file list is fed to the presenter by
+:meth:`PresenterHarness._walk` rather than by the service. Since Task 7 the scan's other
+half -- collect each library's plan, merge it, start one sweep -- runs *through* a
+``try/except Exception`` whose handler prints and returns. A file list whose shape is not
+``MediaFile``\ 's therefore leaves every one of these tests by that error exit while
+staying green; :func:`_media` builds the real DTO for that reason, and
+:func:`_captured_stdout` is what lets a test see the exit taken at all.
+``MetadataPlanTest`` pins the merged plan and the one-library failure under exactly this
+assembly.
 
 The two structural guards read the modules' **AST**, not their lines
 (:func:`status_channel_violations`). They have to: four of the nine routed toast
@@ -55,6 +67,7 @@ Run with an offscreen Qt platform:
 """
 import ast
 import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -66,6 +79,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from core import i18n
+from core.library_manager import MediaFile
 from tests.test_view_smoke import QT_AVAILABLE, make_app, make_manager
 
 ROCK = SimpleNamespace(name='Rock', path='/media/rock')
@@ -392,10 +406,59 @@ def _source_guard(paths, concerns) -> list:
 
 
 def _media(count, prefix='/media/rock'):
-    """``count`` MediaFile-shaped stand-ins (only ``.path``/``.title`` are read)."""
-    return [SimpleNamespace(path=f'{prefix}/track{index}.mp3',
-                            title=f'Track {index}')
+    """``count`` scanned files -- the **real** DTO, because a stub of our own shape lied.
+
+    Batch-4 controller finding. This helper used to hand back ``SimpleNamespace``s with
+    ``path`` and ``title`` and a docstring claiming "only ``.path``/``.title`` are read".
+    Since Task 7 that is false: the scan's collection path also reads ``size_bytes`` and
+    ``modified_time`` -- :meth:`MainPresenter._metadata_plan` for the fingerprints and
+    ``LibraryMetadataStore.validate`` for the ``(path, size, mtime)`` triples -- and it
+    does so inside a ``try`` whose ``except Exception`` answers with a ``print`` and a
+    ``return``. Every library of every scan in this file therefore left through that error
+    exit: six ``was not collected`` lines on each full run, and -- the part four reviews
+    missed -- the behaviour those tests were driving was never executed by any of them.
+
+    So the fixture *is* :class:`core.library_manager.MediaFile` now, and cannot drift from
+    the DTO again. The rule for any media stand-in this module builds: its field set has
+    to match ``MediaFile``'s (``path``/``title``/``file_type``/``extension``/
+    ``size_bytes``/``modified_time``), or the presenter's collection path silently goes
+    back through ``except`` and a green suite means nothing.
+
+    No disk dependency comes with it. ``MediaFile.__post_init__`` stats the path and keeps
+    the *handed* ``size_bytes``/``modified_time`` when that stat raises (the ``except
+    OSError: pass`` half of ``core/library_manager.py``), and ``/media/...`` is not a path
+    this host has -- the same controlled fingerprint ``tests/test_metadata_store.py`` and
+    ``tests/test_queue_metadata.py`` already rely on for this class.
+    """
+    return [MediaFile(path=f'{prefix}/track{index}.mp3',
+                      title=f'Track {index}',
+                      file_type='audio',
+                      extension='.mp3',
+                      size_bytes=1000 + index,
+                      modified_time=100.0 + index)
             for index in range(count)]
+
+
+@contextlib.contextmanager
+def _captured_stdout():
+    """Everything printed while the block runs, handed back as a ``StringIO``.
+
+    The metadata guards report a refused library with ``print`` -- on **stdout**, not as
+    an exception and not on stderr -- so a test that only counts toasts and rail states
+    cannot tell "collected" from "swallowed", which is exactly the blind spot the stub
+    above fell into. Yielding the buffer is what lets the assertions below *read* the
+    error exit: the positive cases demand it stay empty, the boundary case demands it
+    name exactly one library.
+    """
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        yield buffer
+
+
+def _noise(buffer) -> list:
+    """The refused-library lines in captured output (one ``print`` is one line)."""
+    return [line for line in buffer.getvalue().splitlines()
+            if 'was not collected' in line]
 
 
 @contextlib.contextmanager
@@ -563,6 +626,41 @@ class PresenterHarness:
     def _click(self, action_id: str):
         """Press one rail button -- the route a user takes, shortcut included."""
         self.rail.button_for(action_id).click()
+
+    def _walk(self, *libraries):
+        """Drive 刷新全部 over these ``(library path, files)`` pairs, one signal each.
+
+        The mock answers ``refresh_all_libraries`` with a value, and a value is not a
+        walk: the real service fires ``library_loaded`` once per library, and those
+        emissions are the only thing that feeds the joint plan. So the side effect emits
+        through :meth:`_emit` -- the connection the presenter itself made, never a slot
+        called by hand -- and returns the mapping ``_on_refresh_all`` counts into the
+        result toast. Without this helper the metadata half of a refresh-all would collect
+        nothing and the plan under test would not exist.
+        """
+        def walk():
+            results = {}
+            for library_path, files in libraries:
+                results[library_path] = files
+                self._emit(self.library, 'library_loaded', library_path, files)
+            return results
+
+        self.library.refresh_all_libraries.side_effect = walk
+
+    def _record_metadata_pushes(self):
+        """A snapshot of every table the scan hands the queue, in call order.
+
+        Taken through the mock's ``side_effect`` rather than read back off
+        ``call_args_list``: :meth:`MainPresenter._metadata_collect` pushes **its live
+        accumulator**, so a mock records one object that keeps growing and every call
+        looks like the final one. Copying at the moment of the call is what makes "each
+        push carried the union so far" -- the rule that stops the second library blanking
+        the first -- readable at all.
+        """
+        pushed = []
+        self.queue.set_metadata.side_effect = (
+            lambda mapping: pushed.append(dict(mapping)))
+        return pushed
 
     def _open_appearance_dialog(self, *actions):
         """Reach the appearance dialog through the rail button, then act on it."""
@@ -1351,6 +1449,231 @@ class LibraryAdministrationReachabilityTest(PresenterHarness, unittest.TestCase)
         self.config.add_library.assert_called_once_with(NEW_LIBRARY_PATH)
         self.assertEqual(3, len(_library_rows(self.view)),
                          'the dialog-side add never reached the window')
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class MetadataPlanTest(PresenterHarness, unittest.TestCase):
+    """批次 4 补漏：扫描的元数据正路要真的被执行，也要真的被看见。
+
+    Four reviews read ``test_presenter_status.py`` and saw scan tests passing. They were
+    not passing on the metadata route -- they were *skipping* it: :func:`_media` handed
+    the presenter a stand-in with no ``size_bytes``, the collection path raised
+    ``AttributeError`` inside :meth:`MainPresenter._metadata_collect`, its
+    ``except Exception`` printed one line to stdout and returned, and every test carried
+    on asserting toasts and rail states it could assert either way. The dense pins for
+    this route live in ``tests/test_metadata_wiring.py``, with real services and a real
+    sweep; what was missing is the **shape under this file's own assembly**, because the
+    assembly is where the drift hid. These three cases use nothing but the mocks
+    :class:`PresenterHarness` already builds.
+
+    All three read :func:`_captured_stdout`. That is the part that makes the fix
+    permanent rather than incidental: "no library was refused" is an observable fact here,
+    so a stub that loses a field again fails on the *positive* case instead of quietly
+    routing it through the guard.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Cold libraries, spelled out rather than left to a mock's empty iterator: every
+        # row below is pending, so a plan that came back empty is a plan that was not
+        # built and not a library that had nothing to ask for.
+        self.library.get_cache_entries.return_value = []
+
+    def test_a_scan_starts_one_sweep_that_carries_every_library_of_the_walk(self):
+        """Two libraries walked -> one plan, both to-do lists, one owner per row.
+
+        The claim is ruling B4-R21b seen from the presenter's side and without a
+        thread in the room: ``start_sweep`` is asked **once** for the whole window (each
+        extra call retires the plan before it, which is how k-1 libraries used to be left
+        at ``⋯``), the merged targets are exactly the union of what each library listed
+        with none of them listed twice for the same library, each row is owned by the
+        library that listed it, the per-library flush domain names both libraries, and the
+        table pushed to the queue is the union so far rather than the last library alone
+        (spec §10 risk 1 seen from the producer's side).
+        """
+        rock_files = _media(2)
+        jazz_files = _media(1, prefix=JAZZ.path)
+        self.assertEqual([], self.queue.set_metadata.call_args_list,
+                         'the harness started a plan before the walk did')
+
+        self._walk((ROCK.path, rock_files), (JAZZ.path, jazz_files))
+        pushed = self._record_metadata_pushes()
+        with _captured_stdout() as out:
+            self._click('refresh_all')
+
+        self.assertEqual(
+            [], _noise(out),
+            'the walk left through the guard, not through the plan: nothing below can '
+            'tell a merged two-library plan from a window that collected nothing at all')
+
+        self.metadata.start_sweep.assert_called_once()
+        targets, callback = self.metadata.start_sweep.call_args.args
+        self.assertEqual(
+            self.presenter._on_metadata_row, callback,
+            'the plan was handed to a callback the presenter does not own, so no answer '
+            'could ever be recorded into the stores that asked for it')
+
+        paths = [triple[0] for triple in targets]
+        self.assertEqual(
+            sorted(media.path for media in rock_files + jazz_files), sorted(paths),
+            f'the joint plan did not carry both libraries\' to-do lists: {paths}')
+        self.assertEqual(3, len(set(paths)),
+                         f'a path was planned twice over: {paths}')
+        for _full_path, size, mtime in targets:
+            self.assertIsInstance(size, int, 'the plan carried a size that is not an int')
+            self.assertIsInstance(
+                mtime, float,
+                'the plan carried an mtime that is not a float -- start_sweep refuses '
+                'the whole list for one such row (ruling B4-R16), so this payload would '
+                'have cost both libraries their columns')
+
+        self.assertEqual(
+            {**{media.path: (ROCK.path,) for media in rock_files},
+             **{media.path: (JAZZ.path,) for media in jazz_files}},
+            self.presenter._metadata_owners,
+            'a row is not owned by the library that listed it, so an answer would be '
+            'recorded into the wrong store and written into the wrong cache file')
+        self.assertEqual(
+            set(paths), set(self.presenter._metadata_fingerprints),
+            'the fingerprints the plan carries are not the rows the plan asks for: a '
+            'write-back re-check would compare one row against another file\'s numbers')
+        self.assertEqual({ROCK.path, JAZZ.path},
+                         set(self.presenter._metadata_since_flush),
+                         'the plan\'s flush domain does not name both libraries: one '
+                         'library\'s answers could only ever be written by the other '
+                         '(ruling B4-R23)')
+
+        self.assertEqual(
+            [{media.path for media in rock_files},
+             {media.path for media in rock_files + jazz_files}],
+            [set(mapping) for mapping in pushed],
+            'the queue was not fed the union so far at each push: ``set_metadata`` '
+            'replaces the whole table, so a second library pushing only its own paths '
+            'blanks the first one\'s rows (spec §10 risk 1)')
+        for index, mapping in enumerate(pushed):
+            with self.subTest(push=index):
+                self.assertEqual(
+                    {None}, set(mapping.values()),
+                    'a cold library was pushed as if it had already been answered: an '
+                    'empty cache means pending, and pending is what the plan below is '
+                    'there to clear')
+        self.assertIsNone(self.presenter._metadata_join,
+                          'the window stayed open after the walk launched its plan')
+
+    def test_a_path_two_libraries_share_is_planned_once_per_library_and_owned_by_both(self):
+        """A library inside a library: one row per asking library, one owner list each.
+
+        ``scan_directory`` walks recursively, so two configured libraries really can list
+        the same absolute file, and the plan is deliberately **not** deduplicated across
+        them: it counts one delivery per target, and the answer lands in every store that
+        asked (ruling B4-R21b). The half that must not repeat is the *owners* list -- two
+        entries for one library would double-record and double-write that row. Neither
+        shape is visible to the tests above, and neither was reachable at all while the
+        stub was leaving through the guard.
+        """
+        rock_files = _media(2)
+        shared = rock_files[1]
+        jazz_files = [shared] + _media(1, prefix=JAZZ.path)
+
+        self._walk((ROCK.path, rock_files), (JAZZ.path, jazz_files))
+        pushed = self._record_metadata_pushes()
+        with _captured_stdout() as out:
+            self._click('refresh_all')
+
+        self.assertEqual([], _noise(out), 'the overlapping walk never reached the plan')
+        self.metadata.start_sweep.assert_called_once()
+        targets = self.metadata.start_sweep.call_args.args[0]
+        paths = [triple[0] for triple in targets]
+
+        self.assertEqual(
+            sorted([media.path for media in rock_files]
+                   + [media.path for media in jazz_files]), sorted(paths),
+            f'the shared path was dropped from one library\'s half: {paths}')
+        self.assertEqual(2, paths.count(shared.path),
+                         'a path two libraries ask for is one target per library that '
+                         f'asked, not one in total: {paths}')
+        self.assertEqual(3, len(set(paths)))
+
+        owners = self.presenter._metadata_owners
+        self.assertEqual((ROCK.path, JAZZ.path), owners[shared.path],
+                         'the shared row lost one of its two owners, so one library\'s '
+                         'cache file can never be answered')
+        for full_path, asked in owners.items():
+            with self.subTest(path=full_path):
+                self.assertEqual(
+                    len(set(asked)), len(asked),
+                    f'{full_path} is owned twice by the same library: the answer would '
+                    'be recorded and flushed twice for one request')
+        self.assertEqual(
+            [{media.path for media in rock_files},
+             {media.path for media in rock_files + jazz_files}],
+            [set(mapping) for mapping in pushed],
+            'the shared path was either dropped from the table the queue was handed or '
+            'counted twice in it: one row of the display is one file, whichever of the '
+            'two libraries listed it')
+
+    def test_one_library_that_fails_to_collect_leaves_the_others_planned_and_reported(self):
+        """The guard is a boundary, so its boundary has to be observable.
+
+        ``_metadata_collect``'s ``except Exception`` stays wide on purpose (its own
+        comment says why: every caller is a Qt slot, and on this host an escape is the
+        process, not a traceback). A deliberate guard with no test is a guard nobody can
+        tell apart from the bug it hides, so this is the other side of the same window:
+        one library's cache read raises, and what has to be true is -- the failure is
+        reported *for that library alone*, the library collected before it keeps its
+        targets and its owner entry, the launch still happens, the walk is not
+        interrupted, and the progress pair and the result toast still close.
+        """
+        rock_files = _media(2)
+        jazz_files = _media(1, prefix=JAZZ.path)
+
+        def cache_entries(library_path):
+            if library_path == JAZZ.path:
+                raise OSError('the cache document is unreadable')
+            return []
+
+        self.library.get_cache_entries.side_effect = cache_entries
+        self._walk((ROCK.path, rock_files), (JAZZ.path, jazz_files))
+        pushed = self._record_metadata_pushes()
+
+        with _spied(self.view, 'set_action_progress', 'show_toast') as calls, \
+                _captured_stdout() as out:
+            self._click('refresh_all')
+
+        noise = _noise(out)
+        self.assertEqual(1, len(noise), f'a refused library is not a silent one: {noise}')
+        self.assertIn(JAZZ.path, noise[0])
+        self.assertNotIn(ROCK.path, noise[0],
+                         'the report blamed the library that worked: ' + noise[0])
+        self.assertIn('unreadable', noise[0],
+                      'the cause did not travel with the line: ' + noise[0])
+
+        self.metadata.start_sweep.assert_called_once()
+        survived = [triple[0] for triple in self.metadata.start_sweep.call_args.args[0]]
+        self.assertEqual([media.path for media in rock_files], survived,
+                         'a refused library took the surviving one\'s plan down with it')
+        self.assertEqual({media.path: (ROCK.path,) for media in rock_files},
+                         self.presenter._metadata_owners,
+                         'the refused library left an owner entry behind, or took a '
+                         'surviving row\'s with it')
+        self.assertEqual([{media.path for media in rock_files}],
+                         [set(mapping) for mapping in pushed],
+                         'the refused library either pushed a table of its own (rows it '
+                         'never planned) or took the surviving library\'s push with it')
+        self.assertEqual({ROCK.path}, set(self.presenter._metadata_since_flush),
+                         'the refused library entered the plan\'s flush domain, so a '
+                         'store it never built would be visited for every closing write')
+
+        self.assertEqual([('refresh_all', True), ('refresh_all', False)],
+                         calls['set_action_progress'],
+                         'the refused library left its own scan unbalanced')
+        self.assertFalse(self.rail.is_running('refresh_all'))
+        self.assertIsNone(self.presenter._metadata_join,
+                         'a refused library left the collection window open')
+        self.assertIn(i18n.get('status.refreshed_files', count=3, libs=2),
+                      [args[0] for args in calls['show_toast']],
+                      'one library\'s metadata failed, so the whole refresh stopped '
+                      'short of its report -- the scan succeeded and has to say so')
 
 
 class SelfReferentialPatchTest(unittest.TestCase):

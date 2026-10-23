@@ -382,12 +382,22 @@ class AudioPlayer:
             from .metadata import extract_metadata
             metadata = extract_metadata(filepath)
 
+            # Batch 4 Task 2 turned ``SongMetadata.artist/album/duration`` into
+            # ``None`` for "nothing in the tag". ``Track`` is a different DTO and
+            # its contract is unchanged: ``artist``/``album`` were already
+            # ``Optional[str]``, but ``duration`` is a declared ``float`` whose
+            # "unknown" is ``0.0`` (spec 4.9 says so explicitly, which is why the
+            # playlist columns read the scan-side metadata, not ``Track``).
+            # Crossing that type boundary with ``None`` would reach
+            # ``get_duration()``'s metadata fallback and turn ``min(pos, None)``
+            # in ``seek()`` plus ``duration > 0`` in PlaybackService.play into
+            # TypeErrors that present as "this file will not play".
             self.current_track = Track(
                 path=filepath,
                 title=metadata.title,
                 artist=metadata.artist,
                 album=metadata.album,
-                duration=metadata.duration
+                duration=metadata.duration if metadata.duration is not None else 0.0
             )
 
             # Reset position

@@ -37,6 +37,7 @@ from view.widgets.action_rail import (
     ACTION_REFRESH_ALL,
 )
 from view.models import PlaylistModel, DisplayEntry
+from service.metadata_store import RowMetadata
 
 
 class MainWindow(QMainWindow):
@@ -687,6 +688,19 @@ class MainWindow(QMainWindow):
     def set_playlist_entries(self, entries: List[DisplayEntry]) -> None:
         """Set the playlist entries."""
         self._playlist_view.set_entries(entries)
+
+    def update_row_metadata(self, row: int, md: Optional[RowMetadata],
+                            state: str) -> None:
+        """Refresh one playlist row's three metadata columns.
+
+        The third member of this widget's forward family -- ``set_playlist_entries``
+        → ``set_entries`` and ``highlight_current_track`` → ``set_current_playing``
+        above, and the presenter only ever addresses the window. Batch 4's sweep
+        callback fills the rows one at a time using the row numbers
+        ``QueueService.apply_metadata`` returns; the rules (no reset, out-of-range
+        rows are a no-op) live on :class:`PlaylistModel`, where the emissions are.
+        """
+        self._playlist_view.update_row_metadata(row, md, state)
 
     def clear_playlist(self) -> None:
         """Clear the visible list. Zero production callers; kept for the matrix.

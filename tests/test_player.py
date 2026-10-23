@@ -4,6 +4,7 @@ import unittest
 import tempfile
 import os
 from pathlib import Path
+from unittest import mock
 
 # Suppress pygame output
 os.environ['SDL_AUDIODRIVER'] = 'dummy'
@@ -72,6 +73,76 @@ class TestPlayerModule(unittest.TestCase):
         result = ap.unregister_library_queue("test_lib")
         self.assertTrue(result)
         self.assertNotIn("test_lib", ap._library_queues)
+
+
+class TestPlayFileDurationBoundary(unittest.TestCase):
+    """Ruling B4-R9: the extraction layer's ``None`` must not cross into ``Track``.
+
+    Batch 4 Task 2 made ``SongMetadata.duration`` an ``Optional[float]`` whose
+    ``None`` means "no length was readable". ``Track.duration`` is a different
+    DTO and its contract is unchanged: a declared ``float`` whose "unknown" is
+    ``0.0``. Crossing that boundary with ``None`` is not cosmetic -- on a file
+    that decodes to 0 samples ``get_duration()`` falls through to the track
+    value and returns it verbatim, so ``duration > 0`` in
+    ``PlaybackService.play`` and ``min(position, duration)`` in ``seek()`` become
+    TypeErrors, and ``play_file``'s ``except`` swallows the whole thing into
+    "this file will not play". The narrowing at that call site is pinned here by
+    the argument it hands ``Track``.
+    """
+
+    def _play(self, metadata):
+        """Run ``play_file`` over a 0-sample decode and a handed-back metadata.
+
+        Returns ``(started, captured_kwargs, player)``; ``captured_kwargs`` is
+        what ``core.player.Track`` was called with, which is the production
+        expression under test.
+        """
+        import numpy as np
+        from core.player import AudioPlayer
+        from core.library_manager import Track
+
+        captured = {}
+
+        def capture_track(**kwargs):
+            captured.update(kwargs)
+            return Track(**kwargs)
+
+        # 0 samples at a real rate: the shape that leaves ``_total_samples`` at
+        # zero, so ``get_duration()`` has no decoded length to prefer.
+        empty = np.zeros(0, dtype='float32')
+        player = AudioPlayer()
+        with mock.patch('core.player.sf.read', return_value=(empty, 44100)), \
+                mock.patch('core.metadata.extract_metadata',
+                           return_value=metadata), \
+                mock.patch('core.player.Track', side_effect=capture_track), \
+                mock.patch.object(AudioPlayer, '_stop_playback_sync'), \
+                mock.patch.object(AudioPlayer, '_start_playback'):
+            started = player.play_file(str(Path('tests', 'media', 'silent.flac')))
+        return started, captured, player
+
+    def test_unknown_duration_is_narrowed_to_zero_for_track(self):
+        from core.metadata import SongMetadata
+
+        started, captured, player = self._play(
+            SongMetadata(title='Silent', artist=None, album=None, duration=None))
+
+        self.assertTrue(started, 'play_file fell into its except branch')
+        self.assertIn('duration', captured)
+        self.assertEqual(0.0, captured['duration'],
+                         'None was handed to a declared float: the fallbacks in '
+                         'get_duration()/seek()/PlaybackService.play would raise')
+        self.assertIsInstance(player.current_track.duration, float)
+        self.assertEqual(0.0, player.get_duration())
+
+    def test_known_duration_reaches_track_unchanged(self):
+        """The narrowing must not have become "always 0.0"."""
+        from core.metadata import SongMetadata
+
+        _started, captured, player = self._play(
+            SongMetadata(title='Silent', artist='A', album='B', duration=227.0))
+
+        self.assertEqual(227.0, captured['duration'])
+        self.assertEqual(227.0, player.current_track.duration)
 
 
 class TestLibraryManagerModule(unittest.TestCase):

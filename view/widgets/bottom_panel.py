@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from core import i18n
 from core.theme import PLAY_SIZE, TRANSPORT_SIZE
 from view.icons import icon
+from view.time_format import format_time
 from view.widgets.now_playing_strip import NowPlayingStrip
 
 # Glyph sizes, both derived from the geometry tokens so a button and its glyph
@@ -33,21 +34,6 @@ _LOOP_GLYPHS = {
     'ONE': 'loop_one',
     'ALL': 'loop_all',
 }
-
-
-def format_time(seconds: float) -> str:
-    """Format seconds as MM:SS or HH:MM:SS."""
-    if seconds < 0:
-        return "0:00"
-
-    seconds = int(seconds)
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-
-    if hours > 0:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
 
 
 def volume_glyph(volume: float) -> str:
