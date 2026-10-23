@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
+from core.metadata import normalize_duration
+
 
 #: Format stamped on every cache file this build writes (spec 4.3). 2.0 is the
 #: first version whose entries may carry the ``md`` key.
@@ -48,7 +50,9 @@ class CachedFile:
       retried, and the view shows "no metadata" rather than "not fetched yet";
       a damaged payload (a bare ``null`` or a non-mapping) reads as exactly this
       dict, and a mapping with gaps gets its missing canonical keys added as
-      ``None`` -- see :func:`_read_md`;
+      ``None`` -- see :func:`_read_md`. A value of the *wrong type* (a string
+      duration, an ``int`` artist) reads as ``None`` for that one key while the
+      key stays present -- see :func:`_read_md_value`;
     * a dict with values -- known metadata.
 
     The two first states differ by key *presence*, never by value, which is why
@@ -90,6 +94,47 @@ class CachedFile:
         )
 
 
+def _read_md_value(key: str, value: Any) -> Any:
+    """Keep one ``md`` value only if it can be the value the contract declares.
+
+    Final-review C1. The container's shape was guarded (see :func:`_read_md`) and
+    the values were not, and that stopped mattering until batch 4 made this file a
+    **display source**: a hand-edited, third-party, or half-written cache holding
+    ``{"duration": "227.0"}`` read back as a *known* row, rode the queue onto a
+    display entry, and reached ``PlaylistItemDelegate.paint`` -> ``format_time``,
+    which compares ``seconds < 0`` and raised ``TypeError`` inside a Python
+    override of a C++ virtual. Measured on this host: **exit 127, no traceback**,
+    on every launch, because the file is still there -- spec criteria 4 and 7
+    inverted into "this library will not open".
+
+    The answer is ``None``, never a raise and never the value: the reader is the
+    single place that knows what a cache entry may hold, and the consumers
+    (store -> queue -> model -> delegate) are all written to paint ``None`` as
+    "this file has no such tag". Two type traps, both measured:
+
+    * ``bool`` is an ``int`` subclass, so ``True`` would pass a plain numeric test
+      and ``format_time(True)`` paints a fabricated ``0:01`` -- the very
+      invented-length shape spec 4.2 exists to remove, arriving from the other
+      direction.
+    * a non-positive number is refused through ``normalize_duration``, the same
+      function ``LibraryMetadataStore.record`` applies on the write side
+      (ruling B4-R7 keeps that rule's author one, not several): the cache is not
+      allowed to contain ``0.0``, because a known duration of zero paints ``0:00``.
+
+    ``artist``/``album`` accept ``str`` only, and **empty strings stay**: presence,
+    not truthiness, is what makes a value an answer (ruling B4-R8), so an artist
+    the extractor reported as blank survives and an ``int`` does not.
+    """
+    if key == 'duration':
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        # The one non-negative value legal in this cell is a real length; a float
+        # NaN is not (it compares false against 0 and then formats as garbage).
+        normalized = normalize_duration(value)
+        return normalized if normalized is not None and normalized == normalized else None
+    return value if isinstance(value, str) else None
+
+
 def _read_md(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Map an entry's ``md`` key to the tri-state value ``CachedFile`` stores.
 
@@ -99,6 +144,13 @@ def _read_md(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     that extraction was tried, so a damaged or partial payload cannot mean
     "not tried", and filling the gaps keeps the consumers' index on
     ``md["album"]`` total without inventing values for the keys that are there.
+
+    Values are checked against their declared types too -- each one that fails
+    becomes ``None`` **while its key stays** (see :func:`_read_md_value`). That
+    pairing is the whole decision: downgrading a value into *dropping the key*
+    would send the row back to pending, and spec 4.1 makes key presence the only
+    claim that anything was ever tried, so a damaged file would then be retried
+    forever and its row would advertise a loading state that cannot complete.
     """
     if "md" not in entry:
         return None
@@ -114,7 +166,7 @@ def _read_md(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return {key: None for key in MD_KEYS}
     normalized = dict(value)
     for key in MD_KEYS:
-        normalized.setdefault(key, None)
+        normalized[key] = _read_md_value(key, normalized.get(key))
     return normalized
 
 

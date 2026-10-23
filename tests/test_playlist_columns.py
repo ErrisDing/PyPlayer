@@ -59,10 +59,13 @@ written, and both of which shape them:
    ten CJK glyphs. Those are the numbers the bands below are built from, and
    :meth:`ColumnTokenTest` re-measures them instead of trusting them.
 """
+import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -71,6 +74,8 @@ from PyQt6.QtGui import QFont, QFontMetrics, QImage, QPainter
 from PyQt6.QtWidgets import QStyle, QStyleOptionViewItem, QWidget
 
 from core import i18n
+from core.cache_manager import LibraryCacheManager
+from core.library_manager import Track
 from core.theme import (
     COLUMN_DURATION_WIDTH,
     COLUMN_TEXT_WIDTH,
@@ -79,12 +84,13 @@ from core.theme import (
     THEMES,
 )
 from service.metadata_store import (
+    LibraryMetadataStore,
     RowMetadata,
     STATE_KNOWN,
     STATE_PENDING,
     STATE_UNKNOWN,
 )
-from service.queue_service import DisplayEntry
+from service.queue_service import DisplayEntry, QueueService
 from view.time_format import format_time
 # ``tests.test_theme`` is deliberately NOT imported at this module's top level:
 # it holds ``ThemeContrastTest``, and a module-level import of another file's
@@ -1849,6 +1855,236 @@ class PositionReservationInvariantTest(unittest.TestCase):
             'the folder rule was forked into a second signature')
         self.assertIn('metadata_cells(state=state', source,
                       'paint no longer asks the one rule what the cells say')
+
+
+class _RecordingFormatTime:
+    """``format_time`` plus a journal of the calls that would have raised.
+
+    One-shot test-side collaborator, not a production seam: on this host an
+    exception escaping ``paint()`` (a Python override of a C++ virtual) ends the
+    process -- exit 127, no traceback, not even the runner's ``Ran`` line -- so a
+    nail that lets the raw call through can only report itself by killing the
+    session. Catching here buys the *red* and keeps the ink assertion honest:
+    the row still paints, and the journal says whether the painter was handed a
+    value it cannot format.
+    """
+
+    def __init__(self, real):
+        self.real = real
+        #: ``(value, type name)`` per call that raised TypeError.
+        self.rejected_calls = []
+
+    def __call__(self, seconds):
+        try:
+            return self.real(seconds)
+        except TypeError:
+            self.rejected_calls.append((seconds, type(seconds).__name__))
+            # A same-shaped stand-in, so the ink assertions below keep measuring
+            # the column layout and this journal stays the single point of failure.
+            return UNKNOWN_MARK
+
+
+@unittest.skipUnless(QT_AVAILABLE, 'PyQt6 not installed')
+class DamagedCacheColumnPaintTest(ColumnPixelHarness):
+    """C1: a hand-edited cache reaches the pixels as "取不到", never as a dead process.
+
+    Batch 4 made the per-library JSON a **display source** for the first time, so
+    its ``md`` *values* -- the one input in this feature a reasonable person
+    edits -- travel all the way to ``PlaylistItemDelegate.paint``, where
+    ``format_time`` compares ``seconds < 0`` and ``QFontMetrics.horizontalAdvance``
+    wants a string. The review measured it end to end with no value validation:
+    exit 127 on *every* launch, because the file is still there -- spec criteria
+    4 and 7 inverted into "this library will not open".
+
+   取证等级, stated where it belongs: the paint-level case runs against the
+    one-shot guard above rather than against a bare ``grab()``, because the defect
+    it nails is only observable as a dead session (the same measured fact that
+    made Task 4's ``except`` un-mutable at the file level). The falsifiable half is
+    ``rejected_calls == []``; the ink half is what says the row is *drawn*, not
+    merely non-crashing. The non-``str`` artist shape is nailed one layer up
+    instead, because it raises after ``metadata_cells`` returns and no guard on
+    ``format_time`` can catch it.
+    """
+
+    #: The shape the review wrote onto disk: a duration that is a string. The two
+    #: text cells are deliberately ``null`` as well, so the painted row is a whole
+    #: row of unknown marks -- and so the mutation this nail exists for stays
+    #: observable as a red assertion instead of a dead process (a non-``str``
+    #: artist raises in ``horizontalAdvance``, *after* ``metadata_cells`` returned,
+    #: where no ``format_time`` guard can catch it: that shape is nailed by
+    #: :meth:`test_a_non_string_artist_or_album_reaches_no_row`).
+    DAMAGED_MD = {'artist': None, 'album': None, 'duration': '227.0'}
+
+    # === the chain: real file -> real reader -> real store -> real queue -> rows
+
+    def _cache_library(self, md_by_name):
+        """Hand-write a 2.0 cache for ``{name: md}``; return ``(manager, library)``.
+
+        ``CachedFile.to_dict`` cannot produce a string duration, so the damage
+        enters through the file -- which is the whole point of the finding.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cache_dir = Path(tmp.name) / 'cache' / 'libraries'
+        patcher = mock.patch.object(LibraryCacheManager, '_get_cache_dir',
+                                    lambda manager: cache_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        library = str(Path(tmp.name) / 'library')
+        manager = LibraryCacheManager()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        manager._get_cache_filepath(library).write_text(
+            json.dumps({
+                'version': '2.0',
+                'library_path': library,
+                'library_name': 'library',
+                'scan_timestamp': 1700000000.0,
+                'files': [
+                    {'path': str(Path(library) / name),
+                     'title': Path(name).stem,
+                     'file_type': 'audio',
+                     'extension': Path(name).suffix,
+                     'size_bytes': 1024,
+                     'modified_time': 1700000000.0,
+                     'md': md}
+                    for name, md in md_by_name.items()
+                ],
+            }),
+            encoding='utf-8')
+        return manager, library
+
+    def _rows_from_cache(self, md_by_name):
+        """The warm-start chain's display entries, in file order.
+
+        Deliberately the *production* chain (``load_cache`` ->
+        ``LibraryMetadataStore.load_cache_entries`` -> ``QueueService.set_metadata``),
+        not a hand-built ``DisplayEntry``: the finding is about a damaged value
+        crossing every one of those hands and arriving at the painter.
+        """
+        manager, library = self._cache_library(md_by_name)
+        cached = manager.load_cache(library).files
+        store = LibraryMetadataStore()
+        store.load_cache_entries(cached)
+        queue = QueueService()
+        queue.build_from_tracks([Track(path=entry.path, title=entry.title)
+                                 for entry in cached])
+        queue.set_metadata({entry.path: store.get(entry.path) for entry in cached})
+        return queue.get_display_entries()
+
+    def _paint_rows(self, entries, mode='light'):
+        """``(image, rects, tokens, list_view)`` for entries built elsewhere."""
+        from view.widgets.playlist_view import PlaylistView
+
+        manager = make_manager(mode)
+        manager.apply_to(self.app)
+        view = PlaylistView(manager)
+        self._widgets.append(view)
+        view.set_entries(entries)
+        view.resize(VIEW_WIDTH, ROW_HEIGHT * len(entries) + 60)
+        view.show()
+        self.app.processEvents()
+
+        list_view = view._list_view
+        image = list_view.viewport().grab().toImage()
+        rects = [list_view.visualRect(list_view.model().index(index))
+                 for index in range(len(entries))]
+        self.assertEqual(ROW_HEIGHT, rects[0].height(),
+                         'the fixture row is not the token height, so no band '
+                         'measured here is the band the delegate painted')
+        return image, rects, THEMES[mode], list_view
+
+    def _guard_format_time(self):
+        """Install the one-shot paint guard described in the class docstring."""
+        from view.delegates import playlist_delegate
+
+        guard = _RecordingFormatTime(playlist_delegate.format_time)
+        patcher = mock.patch.object(playlist_delegate, 'format_time', guard)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return guard
+
+    # === the nails
+
+    def test_a_string_duration_paints_the_unknown_mark_and_reaches_no_painter(self):
+        entries = self._rows_from_cache({'damaged.mp3': dict(self.DAMAGED_MD)})
+        self.assertEqual(1, len(entries), 'the fixture lost its row')
+        guard = self._guard_format_time()
+
+        # The grab itself is part of the claim: with no value validation this is
+        # the call that ends the process.
+        image, rects, tokens, list_view = self._paint_rows(entries)
+        from view.models.playlist_model import PlaylistModel
+
+        model = list_view.model()
+        self.assertEqual(
+            [], guard.rejected_calls,
+            'the painter was handed a duration it cannot format (%s): the cache '
+            'reader let a hand-edited value through, and that TypeError escaping '
+            'paint() is exit 127 with no traceback, on every launch'
+            % (guard.rejected_calls,))
+
+        self.assertEqual(
+            STATE_UNKNOWN,
+            model.data(model.index(0), PlaylistModel.MetadataStateRole),
+            'a damaged row reads as known: its three cells would promise values '
+            'the file never carried')
+        self.assertEqual(
+            (None, None, None),
+            (model.data(model.index(0), PlaylistModel.DurationRole),
+             model.data(model.index(0), PlaylistModel.ArtistRole),
+             model.data(model.index(0), PlaylistModel.AlbumRole)),
+            'a damaged value survived the reader and reached a row')
+
+        # The cell is drawn, in the mark token and in the duration band -- and
+        # drawn the same way the fixture's own unknown row is, which is as far as
+        # this host's degenerate font can tell "—" from anything else.
+        damaged_runs = self._runs(
+            self._band_ink(image, rects[0], bands_for(rects[0])['duration'],
+                           tokens, 'text_muted'))
+        self.assertTrue(damaged_runs,
+                        'the damaged row paints nothing in the duration cell: a '
+                        "blank is a folder's answer, not an unknown one")
+
+        fixture_image, fixture_rects, fixture_tokens, _view = self._paint(
+            'light', rows=FIXTURE_ROWS)
+        reference = self._runs(self._band_ink(
+            fixture_image, fixture_rects[UNKNOWN_ROW],
+            bands_for(fixture_rects[UNKNOWN_ROW])['duration'],
+            fixture_tokens, 'text_muted'))
+        self.assertTrue(reference, 'the unknown fixture row stopped painting')
+        self.assertEqual(
+            [length for _start, length in reference],
+            [length for _start, length in damaged_runs],
+            'the damaged row marks itself with a different ink footprint than the '
+            'unknown fixture row, so it is not showing the unknown mark')
+
+    def test_a_non_string_artist_or_album_reaches_no_row(self):
+        """The ``_elide_text`` half of the same crash, nailed one layer up.
+
+        Painting this shape is the dead-process case rather than a red test (a
+        non-``str`` artist raises in ``horizontalAdvance`` *after*
+        ``metadata_cells`` returned, so no guard on ``format_time`` can see it),
+        and the reader is where both shapes are refused -- which is where this
+        asserts them.
+        """
+        entries = self._rows_from_cache({
+            'bad.mp3': {'artist': 123, 'album': None, 'duration': '227.0'},
+            'clean.mp3': {'artist': 'A', 'album': 'B', 'duration': 227.0},
+        })
+        damaged, clean = entries
+        self.assertIsNone(damaged.artist,
+                          'an int artist reached the row: the delegate elides it '
+                          'with QFontMetrics.horizontalAdvance and the exception '
+                          'escapes paint()')
+        self.assertIsNone(damaged.album)
+        self.assertIsNone(damaged.duration)
+        self.assertEqual(
+            STATE_UNKNOWN, damaged.metadata_state,
+            'a fully damaged row is pending, not unknown: it would advertise a '
+            'loading state that nothing will ever complete (spec criterion 6)')
+        self.assertEqual(STATE_KNOWN, clean.metadata_state)
+        self.assertEqual(227.0, clean.duration,
+                         'the guard took the healthy row beside it down')
 
 
 if __name__ == '__main__':

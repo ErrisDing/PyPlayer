@@ -418,5 +418,139 @@ class CacheMdReadSideToleranceTest(CacheMetadataTestCase):
         self.assertEqual(227.0, md['duration'], 'a present value was overwritten')
 
 
+class CacheMdValueShapeTest(CacheMetadataTestCase):
+    """A *mapping* ``md`` whose values have the wrong shape stays "already tried".
+
+    Final-review C1. The container is validated (see
+    :class:`CacheMdReadSideToleranceTest`) and the values were not, which stopped
+    mattering until batch 4 made this file a **display source**: a hand-edited
+    cache (someone pasting a duration, fixing a tag, a copy from another tool)
+    with ``{"duration": "227.0"}`` read back as a *known* row carrying a string,
+    the queue pushed it onto a row, and ``PlaylistItemDelegate.paint`` handed it
+    to ``format_time`` -- which compares ``seconds < 0`` and raised ``TypeError``
+    inside a Python override of a C++ virtual. Measured on this host: exit 127,
+    no traceback, on **every** launch, because the file is still there. That
+    turns spec criteria 4 and 7 into "this library will not open".
+
+    Two halves of the rule, and the first is the reason this is not a raise:
+    the **key** is what claims "extraction was tried" (spec 4.1), so a value that
+    cannot be a value downgrades to ``None`` and the entry stays in the
+    "tried, nothing" bucket -- never back to pending, which would make the sweep
+    retry damage forever. The second is that "is a value" is a *type* question
+    with two traps: ``bool`` is a subclass of ``int``, so ``True`` would pass for
+    a duration and paint ``0:01``; and a non-positive duration is not an answer
+    either (spec 4.2, the same ``normalize_duration`` ``record`` applies -- one
+    author, ruling B4-R7).
+    """
+
+    def test_wrongly_typed_values_downgrade_to_none_and_stay_tried(self):
+        """``{"artist": 123, "album": null, "duration": "227.0"}`` -> three ``None``.
+
+        Asserted against the *file*, because these are the shapes ``to_dict``
+        cannot write: a round trip through the writer would only prove the
+        writer agrees with itself.
+        """
+        self._write_entry_md(md={'artist': 123, 'album': None, 'duration': '227.0'})
+
+        raw = self._read_raw()
+        self.assertEqual({'artist': 123, 'album': None, 'duration': '227.0'},
+                         raw['files'][0]['md'], 'the fixture rewrote the damage')
+
+        loaded = self.manager.load_cache(self.library_path)
+        self.assertIsNotNone(loaded, 'a damaged md value was refused outright')
+        md = loaded.files[0].md
+        self.assertIsNotNone(
+            md,
+            'a present md key whose values are damaged read as None: presence is '
+            'the only claim that extraction was tried, so this sends the file '
+            'back to pending and the sweep retries damage on every start')
+        self.assertEqual(EMPTY_MD, md, 'a damaged md value survived the reader')
+        self.assertEqual(sorted(MD_KEYS), sorted(md),
+                         'the key set drifted while the values were being fixed')
+        # The untouched pending entry in the same file is still the other state.
+        self.assertIsNone(loaded.files[1].md)
+        self.assertNotEqual(md, loaded.files[1].md)
+
+    def test_bool_is_not_a_duration_and_not_an_artist(self):
+        """``True`` is an ``int`` subclass, and that is exactly why it is refused.
+
+        ``format_time(True)`` paints ``0:01`` and ``normalize_duration(True)``
+        answers ``True`` (``True <= 0`` is False), so a bool that survives the
+        shape test becomes a fabricated length on screen -- the same defect spec
+        4.2 exists to remove, arriving from the other direction.
+        """
+        #: ``(md, the duration the reader is allowed to hand back)``.
+        for md, expected_duration in (
+                ({'artist': None, 'album': None, 'duration': True}, None),
+                ({'artist': None, 'album': None, 'duration': False}, None),
+                ({'artist': True, 'album': 5, 'duration': 227.0}, 227.0)):
+            with self.subTest(md=md):
+                self._write_entry_md(md=dict(md))
+                loaded = self.manager.load_cache(self.library_path)
+                self.assertIsNotNone(loaded)
+                read = loaded.files[0].md
+                self.assertIsNotNone(read, 'the md key itself was lost')
+                self.assertIsNone(read['artist'], 'a bool was accepted as an artist')
+                self.assertIsNone(read['album'], 'a non-str was accepted as an album')
+                self.assertEqual(
+                    expected_duration, read['duration'],
+                    'a bool was accepted as a duration (True paints a fabricated '
+                    '0:01 -- the 0.0 ambiguity of spec 4.2 from the other side), '
+                    'or a legal number was dropped by the guard')
+
+    def test_non_positive_duration_is_not_an_answer(self):
+        """``0``/``-3`` in the file read as "no duration" (spec 4.2).
+
+        The writer never produces these (``record`` normalizes), so only an
+        external edit can; and the spec is explicit that ``0.0`` is not allowed
+        in the cache, because a known duration of zero paints ``0:00`` -- spec
+        criterion 2's forbidden shape.
+        """
+        for value in (0, 0.0, -3, -1.5):
+            with self.subTest(value=value):
+                self._write_entry_md(
+                    md={'artist': 'A', 'album': 'B', 'duration': value})
+                read = self.manager.load_cache(
+                    self.library_path).files[0].md
+                self.assertIsNone(
+                    read['duration'],
+                    f'a duration of {value!r} was kept: the cache would then hold '
+                    'a length the spec forbids and the view would paint 0:00')
+                self.assertEqual('A', read['artist'],
+                                 'one damaged field took the healthy ones with it')
+                self.assertEqual('B', read['album'])
+
+    def test_values_with_the_right_shape_survive_verbatim(self):
+        """The guard rejects shapes, not content: a real answer is untouched.
+
+        ``0.0`` and ``''`` are *falsy but present* values (ruling B4-R8), so this
+        case is also the half that stops a truthiness shortcut -- ``if value``
+        would drop an empty artist that the extractor genuinely reported.
+        """
+        self._write_entry_md(md={'artist': '', 'album': 'B', 'duration': 227})
+        read = self.manager.load_cache(self.library_path).files[0].md
+        self.assertEqual('', read['artist'],
+                         'an empty artist was dropped: presence, not truthiness, '
+                         'is what makes a value an answer (B4-R8)')
+        self.assertEqual('B', read['album'])
+        self.assertEqual(227, read['duration'],
+                         'an int duration -- a legal number -- was refused')
+
+    def test_the_damaged_values_survive_a_round_trip_as_unknown(self):
+        """Read, write, read: the downgrade is stable, not a one-load-only mask.
+
+        ``save_cache`` re-emits what the reader returned, so a repaired entry
+        lands on disk as the all-null dict and stops being damage -- otherwise
+        every launch would re-pay the same repair (and re-expose the paint path).
+        """
+        self._write_entry_md(md={'artist': 123, 'album': None, 'duration': '227.0'})
+        loaded = self.manager.load_cache(self.library_path)
+        self.assertTrue(self.manager.save_cache(loaded))
+        self.assertEqual(EMPTY_MD, self._read_raw()['files'][0]['md'],
+                         'the repaired payload did not reach the file')
+        self.assertEqual(EMPTY_MD,
+                         self.manager.load_cache(self.library_path).files[0].md)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

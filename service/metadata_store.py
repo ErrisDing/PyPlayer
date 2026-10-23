@@ -128,7 +128,11 @@ def _row_from_md(md: Optional[dict]) -> Optional[RowMetadata]:
     ``MD_KEYS`` with ``get``, so extra keys written by a future format are
     ignored and a missing canonical key reads as "no value" rather than raising.
     Values are *not* re-normalized here (ruling B4-R7 puts that gate in
-    ``record`` alone); the cache this build writes has already passed it.
+    ``record`` alone); the cache this build writes has already passed it. The one
+    input that has not passed either gate -- a hand-edited or externally written
+    file -- is type-checked by the reader instead
+    (:func:`core.cache_manager._read_md_value`, final review C1), so a string
+    duration never reaches this constructor and from there the painter.
     """
     if md is None:
         return None
